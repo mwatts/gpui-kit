@@ -1,0 +1,22 @@
+gpui-component-block-editor
+===========================
+
+Derived from Bezel (MIT), repository: https://github.com/crabtalk/bezel
+Research snapshot: 22c95a643ac6082cf6a65dab578218737f7d1e7b
+
+Loro apply/project loop informed by Catena BlockEditor and Mikra NoteDocument.
+Editor chrome from Bezel `editor` crate and gallery patterns.
+
+Ported / vendored sources:
+- `crates/editor/src/editor.rs` (surface shape)
+- `crates/editor/src/editor/keys.rs`
+- `crates/editor/src/editor/input.rs`
+- `crates/editor/src/editor/menu.rs` (handle / drop / slash placement)
+- `crates/editor/src/editor/image.rs` (URL prompt / image store seam)
+- `apps/gallery/src/patterns/editor.rs` (format toolbar below selection)
+- `crates/ui/assets/fonts/Geist*.ttf`, `GeistMono.ttf` (SIL OFL; family Geist / Geist Mono)
+- `crates/ui/assets/icons/copy.svg`, `check.svg` (Solar)
+
+Glass popovers use Bezel frost/radius recipes. Rounded backdrop blur is not
+available on the current mwatts/zed gpui pin; solid frost overlay is used
+instead (documented Task 4 gap).

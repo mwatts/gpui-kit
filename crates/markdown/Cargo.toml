@@ -1,0 +1,19 @@
+[package]
+name = "block-markdown"
+description = "Loro hydrate and project_markdown codec for the block editor"
+version = "0.1.0"
+edition.workspace = true
+license = "MIT"
+publish = false
+
+[lib]
+name = "block_markdown"
+doctest = false
+
+[dependencies]
+loro = { workspace = true }
+pulldown-cmark = { version = "0.13", default-features = false }
+uuid = { workspace = true }
+
+[lints]
+workspace = true
