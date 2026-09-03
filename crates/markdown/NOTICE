@@ -1,0 +1,8 @@
+block-markdown
+==============
+
+Derived from Bezel (MIT), repository: https://github.com/crabtalk/bezel
+Research snapshot: 22c95a643ac6082cf6a65dab578218737f7d1e7b
+
+Loro hydrate / project_markdown codec for the mwatts/gpui-component fork.
+GPUI paint and editor chrome live in sibling crates.

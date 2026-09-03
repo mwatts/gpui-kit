@@ -1,0 +1,28 @@
+[package]
+name = "gpui-component-block-editor"
+description = "Loro-backed block editor entity and chrome for gpui-component"
+version = "0.1.0"
+edition.workspace = true
+license = "MIT"
+publish = false
+
+[lib]
+name = "gpui_component_block_editor"
+doctest = false
+
+[dependencies]
+block-markdown.workspace = true
+loro = { workspace = true }
+uuid = { workspace = true }
+
+# Wired for later tasks (GPUI paint / Editor entity). Unused in Task 1 model tests.
+gpui.workspace = true
+gpui-base.workspace = true
+gpui-component.workspace = true
+gpui-component-block-view = { path = "../block-view" }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true
