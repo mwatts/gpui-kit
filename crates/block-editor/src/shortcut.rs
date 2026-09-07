@@ -221,7 +221,7 @@ pub fn inline_ops(id: BlockId, plain: &str, caret: usize) -> Option<Vec<BlockOp>
             id,
             start: inner.start - width,
             end: inner.end - width,
-            mark,
+            mark: mark.to_string(),
         },
     ])
 }
@@ -256,7 +256,7 @@ pub fn try_inline(id: BlockId, plain: &str, typed: &str) -> Option<Vec<BlockOp>>
             id,
             start: inner.start - width,
             end: inner.end - width,
-            mark,
+            mark: mark.to_string(),
         },
     ])
 }
@@ -360,11 +360,11 @@ mod tests {
         assert!(matches!(
             &ops[2],
             BlockOp::ToggleMark {
-                mark: "bold",
+                mark,
                 start: 0,
                 end: 4,
                 ..
-            }
+            } if mark == "bold"
         ));
 
         let ops = try_inline(id(), "**bold", "**").expect("complete");
@@ -379,11 +379,11 @@ mod tests {
         assert!(matches!(
             &ops[1],
             BlockOp::ToggleMark {
-                mark: "bold",
+                mark,
                 start: 0,
                 end: 4,
                 ..
-            }
+            } if mark == "bold"
         ));
         // Partial close is not enough for try_inline — use inline_ops after insert.
         assert!(try_inline(id(), "**bold*", "*").is_none());

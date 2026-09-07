@@ -15,6 +15,7 @@ mod layout;
 mod link;
 mod mark;
 mod project;
+mod registry;
 mod shortcut;
 mod slash;
 mod types;
@@ -27,6 +28,7 @@ pub use keys::{CONTEXT, init as keys_init};
 pub use layout::{Layout, set_layout};
 pub use link::{Choice as LinkChoice, Paste as LinkPaste};
 pub use mark::Mark;
+pub use registry::{MarkRegistry, MarkSpec, SlashAction, SlashCommand, SlashRegistry};
 pub use shortcut::{
     PrefixKind, inline_ops, match_inline, match_prefix, prefix_ops, try_inline, try_prefix,
 };
@@ -47,6 +49,8 @@ use gpui_component::Theme;
 /// Register keys, Geist fonts (when available), chart fence renderer, and
 /// editor layout defaults.
 pub fn init(cx: &mut App) {
+    MarkRegistry::init(cx);
+    SlashRegistry::init(cx);
     keys::init(cx);
     set_layout(cx, Layout::default());
     register_geist_fonts(cx);
