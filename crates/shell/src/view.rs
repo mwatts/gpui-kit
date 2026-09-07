@@ -24,15 +24,46 @@
 
 use std::rc::Rc;
 
-use gpui::{Context, EntityId, IntoElement, ParentElement as _, Render, Styled as _, Window, div};
+use gpui::{
+    Context, EntityId, EventEmitter, IntoElement, ParentElement as _, Render, Styled as _, Window,
+    div,
+};
 
 use crate::{
     engine::{ShellRuntime, ViewObject},
-    materialize::materialize,
+    error::ScriptFailure,
+    materialize::try_materialize,
     policy::Policy,
-    runtime::{error_banner, error_overlay},
+    runtime::{InitialFrameOutcome, error_banner, error_overlay},
     snapshot::RenderSnapshot,
 };
+
+/// Outcome of the first root snapshot-and-materialize attempt of a [`ScriptView`].
+///
+/// Emitted once, after that attempt, so a host can subscribe before drawing
+/// instead of polling `build_error`. Nested [`ScriptView`]s do not emit this
+/// event. A first failure is terminal for this view's qualification: a later
+/// manual refresh that succeeds does not emit again.
+///
+/// Deferred component factories (`ComponentElementFactory::build` after the
+/// first paint, including overlay slots) report through [`crate::DiagnosticSink`]
+/// and do not change this outcome. Those failures are later diagnostics, not a
+/// first-render success claim.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FirstRender {
+    succeeded: bool,
+    failure: Option<ScriptFailure>,
+}
+
+impl FirstRender {
+    pub fn succeeded(&self) -> bool {
+        self.succeeded
+    }
+
+    pub fn failure(&self) -> Option<&ScriptFailure> {
+        self.failure.as_ref()
+    }
+}
 
 pub struct ScriptView {
     /// Declared before `runtime` because fields drop in declaration order, and
@@ -67,7 +98,13 @@ pub struct ScriptView {
     /// Held rather than re-derived so a script that throws is not re-run on
     /// every frame: a broken render is exactly as frame-coupled as a working one
     /// if the failure re-triggers the build.
-    error: Option<String>,
+    error: Option<ScriptFailure>,
+    /// Set once the completed first frame has emitted [`FirstRender`].
+    emitted_first_render: bool,
+    /// Whether the completion callback for the first demanded frame is queued.
+    scheduled_first_render: bool,
+    /// First failure for test-only roots loaded without an application generation.
+    local_first_failure: Option<ScriptFailure>,
     /// Whose authority this view's script runs under.
     ///
     /// Captured when the view is constructed rather than read when it is used:
@@ -126,6 +163,9 @@ impl ScriptView {
             policy,
             theme: None,
             error: None,
+            emitted_first_render: false,
+            scheduled_first_render: false,
+            local_first_failure: None,
             ownership,
             runtime,
         }
@@ -185,11 +225,26 @@ impl ScriptView {
     /// finds `snapshot()` empty should report this rather than the absence,
     /// because the absence is the symptom and this is the cause.
     pub fn build_error(&self) -> Option<&str> {
-        self.error.as_deref()
+        self.error.as_ref().map(ScriptFailure::message)
+    }
+
+    pub fn build_failure(&self) -> Option<&ScriptFailure> {
+        self.error.as_ref()
     }
 
     pub fn snapshot(&self) -> Option<&RenderSnapshot> {
         self.current.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn presented_failure_text(&self) -> Option<String> {
+        self.error.as_ref().map(|failure| {
+            if self.runtime.has_diagnostic_sink() {
+                failure.safe_summary()
+            } else {
+                failure.to_string()
+            }
+        })
     }
 
     /// Whether the next GPUI render will enter the VM.
@@ -218,6 +273,9 @@ impl ScriptView {
         self.retired = true;
         self.dirty = false;
         self.error = None;
+        self.emitted_first_render = true;
+        self.scheduled_first_render = true;
+        self.local_first_failure = None;
         self.previous = None;
         self.current = None;
     }
@@ -260,8 +318,94 @@ impl ScriptView {
                 self.previous = self.current.replace(snapshot);
                 self.error = None;
             }
-            Err(error) => self.error = Some(error.to_string()),
+            Err(error) => {
+                let failure = ScriptFailure::from_error(&error);
+                self.record_initial_failure(&failure);
+                runtime.report_script_failure(failure.clone());
+                self.error = Some(failure);
+            }
         }
+    }
+
+    /// Rebuilds a dirty snapshot before the host reads diagnostics for this frame.
+    pub fn prepare_render(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.retired {
+            return;
+        }
+        let theme = crate::theme_tokens::sync(cx);
+        if self.theme.as_ref() != Some(&theme) {
+            self.theme = Some(theme);
+            self.dirty = true;
+        }
+        if self.is_dirty() {
+            self.rebuild(window, cx);
+        }
+    }
+
+    fn present_failure(
+        &self,
+        failure: &ScriptFailure,
+        overlay: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let message = if self.runtime.has_diagnostic_sink() {
+            failure.safe_summary()
+        } else {
+            failure.to_string()
+        };
+        if overlay {
+            error_overlay(&message, window, cx)
+        } else {
+            error_banner(&message, window, cx)
+        }
+    }
+
+    fn record_initial_failure(&mut self, failure: &ScriptFailure) {
+        if self.emitted_first_render {
+            return;
+        }
+        if let Some(application) = self.object.application_generation() {
+            application.record_initial_frame_failure(failure);
+        } else if matches!(self.ownership, ViewOwnership::Root)
+            && self.local_first_failure.is_none()
+        {
+            self.local_first_failure = Some(failure.clone());
+        }
+    }
+
+    fn schedule_first_render(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.scheduled_first_render || matches!(self.ownership, ViewOwnership::Nested(_)) {
+            return;
+        }
+        self.scheduled_first_render = true;
+        let entity = cx.weak_entity();
+        window.on_next_frame(move |_, cx| {
+            let _ = entity.update(cx, |view, cx| view.finish_first_render(cx));
+        });
+    }
+
+    fn finish_first_render(&mut self, cx: &mut Context<Self>) {
+        if self.retired || self.emitted_first_render {
+            return;
+        }
+        let outcome = if let Some(application) = self.object.application_generation() {
+            application.complete_initial_frame()
+        } else {
+            Some(match self.local_first_failure.take() {
+                Some(failure) => InitialFrameOutcome::Failed(failure),
+                None => InitialFrameOutcome::Succeeded,
+            })
+        };
+        let Some(outcome) = outcome else {
+            return;
+        };
+        self.emitted_first_render = true;
+        let (succeeded, failure) = match outcome {
+            InitialFrameOutcome::Succeeded => (true, None),
+            InitialFrameOutcome::Failed(failure) => (false, Some(failure)),
+        };
+        cx.emit(FirstRender { succeeded, failure });
     }
 }
 
@@ -289,33 +433,52 @@ impl Render for ScriptView {
         if self.retired {
             return div().into_any_element();
         }
-        let theme = crate::theme_tokens::sync(cx);
-        if self.theme.as_ref() != Some(&theme) {
-            self.theme = Some(theme);
-            self.dirty = true;
-        }
-        if self.is_dirty() {
-            self.rebuild(window, cx);
-        }
+        self.prepare_render(window, cx);
 
-        match (self.error.as_deref(), self.current.as_ref()) {
-            (None, Some(snapshot)) => materialize(&self.runtime, snapshot, window, cx),
+        match (self.error.clone(), self.current.clone()) {
+            (None, Some(snapshot)) => match try_materialize(&self.runtime, &snapshot, window, cx) {
+                Ok(element) => {
+                    self.schedule_first_render(window, cx);
+                    element
+                }
+                Err(error) => {
+                    let failure = self.runtime.report_materialize_error(&error);
+                    self.record_initial_failure(&failure);
+                    self.error = Some(failure.clone());
+                    self.schedule_first_render(window, cx);
+                    self.present_failure(&failure, true, window, cx)
+                }
+            },
             // A build that failed left the last good snapshot in place, so the
             // interface is still there to show. Reporting over it beats
             // replacing it: the reader keeps their scroll, their focus and
             // whatever they were reading, and still learns what broke.
-            (Some(message), Some(snapshot)) => div()
-                .relative()
-                .size_full()
-                .child(materialize(&self.runtime, snapshot, window, cx))
-                .child(error_banner(message, window, cx))
-                .into_any_element(),
+            (Some(failure), Some(snapshot)) => {
+                self.schedule_first_render(window, cx);
+                match try_materialize(&self.runtime, &snapshot, window, cx) {
+                    Ok(element) => div()
+                        .relative()
+                        .size_full()
+                        .child(element)
+                        .child(self.present_failure(&failure, false, window, cx))
+                        .into_any_element(),
+                    Err(_) => self.present_failure(&failure, true, window, cx),
+                }
+            }
             // Nothing to keep: this view has never rendered successfully.
-            (Some(message), None) => error_overlay(message, window, cx),
+            (Some(failure), None) => {
+                self.schedule_first_render(window, cx);
+                self.present_failure(&failure, true, window, cx)
+            }
             // Unreachable in practice: a build either publishes a snapshot or
             // records an error. An empty element is the honest answer if it ever
             // is reached, rather than a panic in a render.
-            (None, None) => div().into_any_element(),
+            (None, None) => {
+                self.schedule_first_render(window, cx);
+                div().into_any_element()
+            }
         }
     }
 }
+
+impl EventEmitter<FirstRender> for ScriptView {}
