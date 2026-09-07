@@ -10,10 +10,11 @@ use std::time::Duration;
 
 use block_markdown::{BlockId, BlockType, CommentState, content_text, find_block, mark_covers};
 use gpui::{
-    App, Bounds, ClipboardItem, Context, ElementInputHandler, Entity, EventEmitter, FocusHandle,
-    Focusable, MouseButton, Pixels, Point, Render, ScrollHandle, SharedString, Task, Window,
-    canvas, div, prelude::*, px,
+    AnyElement, App, Bounds, ClipboardItem, Context, ElementInputHandler, Entity, EventEmitter,
+    FocusHandle, Focusable, MouseButton, Pixels, Point, Render, ScrollHandle, SharedString, Task,
+    Window, canvas, div, prelude::*, px,
 };
+use gpui_component::ActiveTheme;
 use gpui_component::input::{Editor as CodeEditor, EditorState};
 use gpui_component_block_view::{
     Annotation, BlockLayouts, Caption, Cursor, Editing, MarkedRange, Part, Selection, render_with,
@@ -355,7 +356,7 @@ impl Editor {
             .snapshots()
             .iter()
             .find(|s| s.id == id)
-            .map(|s| s.block_type)
+            .map(|s| s.block_type.clone())
             .unwrap_or(BlockType::Paragraph);
         self.apply(
             BlockOp::SplitBlock {
@@ -713,7 +714,7 @@ impl Editor {
 
         let head = self.selection.head().clone();
         let mut offset = head.offset;
-        let marks: Vec<Mark> = self.stored.drain(..).collect();
+        let marks: Vec<Mark> = std::mem::take(&mut self.stored);
         if !marks.is_empty() {
             self.apply(
                 BlockOp::InsertText {
@@ -1582,6 +1583,36 @@ impl Editor {
         .detach();
         self.code_leaves.insert(block_id, state);
     }
+
+    /// Kit `Editor` over the focused code/markdown block, in that block's last
+    /// painted bounds — not a dump below the canvas.
+    fn code_leaf_element(&self, cx: &App) -> Option<AnyElement> {
+        let head = self.selection.head();
+        if head.part != Part::Code {
+            return None;
+        }
+        let state = self.code_leaves.get(&head.id)?.clone();
+        let bounds = self.layouts.block_bounds(&head.id)?;
+        Some(
+            gpui::deferred(
+                gpui::anchored()
+                    .position(bounds.origin)
+                    .anchor(gpui::Anchor::TopLeft)
+                    .child(
+                        div()
+                            .id("code-leaf-editor")
+                            .w(bounds.size.width)
+                            .h(bounds.size.height.max(px(24.)))
+                            .overflow_hidden()
+                            .bg(cx.theme().background)
+                            .occlude()
+                            .child(CodeEditor::new(&state).size_full()),
+                    ),
+            )
+            .priority(1)
+            .into_any_element(),
+        )
+    }
 }
 
 impl EventEmitter<EditorEvent> for Editor {}
@@ -1605,9 +1636,6 @@ impl Render for Editor {
         }
 
         let in_code_leaf = self.selection.head().part == Part::Code;
-        let code_leaf = in_code_leaf
-            .then(|| self.code_leaves.get(&self.selection.head().id).cloned())
-            .flatten();
         let handle = self.focus_handle.clone();
         let entity = cx.entity();
         let input = canvas(
@@ -1803,9 +1831,7 @@ impl Render for Editor {
             }))
             .child(input)
             .child(body)
-            .when_some(code_leaf, |el, state| {
-                el.child(CodeEditor::new(&state).h(px(180.)))
-            })
+            .when_some(self.code_leaf_element(cx), |el, overlay| el.child(overlay))
             .children(self.block_handle(focused, cx))
             .children(self.language_chip(cx))
             .children(self.drop_indicator(cx))

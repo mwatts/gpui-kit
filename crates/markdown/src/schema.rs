@@ -48,8 +48,8 @@ impl std::fmt::Display for BlockId {
     }
 }
 
-/// Closed block vocabulary (Bezel / plan).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+/// Block vocabulary. Unknown type strings become [`Self::Custom`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub enum BlockType {
     #[default]
     Paragraph,
@@ -65,11 +65,12 @@ pub enum BlockType {
     Bookmark,
     Table,
     Rule,
+    Custom(String),
 }
 
 impl BlockType {
     #[must_use]
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         match self {
             Self::Paragraph => "paragraph",
             Self::Heading { level: 1 } => "h1",
@@ -88,12 +89,13 @@ impl BlockType {
             Self::Bookmark => "bookmark",
             Self::Table => "table",
             Self::Rule => "rule",
+            Self::Custom(name) => name.as_str(),
         }
     }
 
     #[must_use]
-    pub fn parse(s: &str) -> Option<Self> {
-        Some(match s {
+    pub fn parse(s: &str) -> Self {
+        match s {
             "paragraph" => Self::Paragraph,
             "h1" => Self::Heading { level: 1 },
             "h2" => Self::Heading { level: 2 },
@@ -110,17 +112,17 @@ impl BlockType {
             "bookmark" => Self::Bookmark,
             "table" => Self::Table,
             "rule" => Self::Rule,
-            _ => return None,
-        })
+            other => Self::Custom(other.to_string()),
+        }
     }
 
     #[must_use]
-    pub fn is_list_marker(self) -> bool {
+    pub fn is_list_marker(&self) -> bool {
         matches!(self, Self::Bullet | Self::Ordered | Self::Task)
     }
 
     #[must_use]
-    pub fn has_body(self) -> bool {
+    pub fn has_body(&self) -> bool {
         matches!(
             self,
             Self::Paragraph
@@ -130,6 +132,7 @@ impl BlockType {
                 | Self::Task
                 | Self::Quote
                 | Self::Code
+                | Self::Custom(_)
         )
     }
 }
@@ -437,7 +440,7 @@ pub fn map_bool(map: &LoroMap, key: &str) -> Option<bool> {
 pub fn block_type_of(map: &LoroMap) -> BlockType {
     map_string(map, "type")
         .as_deref()
-        .and_then(BlockType::parse)
+        .map(BlockType::parse)
         .unwrap_or(BlockType::Paragraph)
 }
 

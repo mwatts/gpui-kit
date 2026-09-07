@@ -10,7 +10,10 @@ mod hydrate;
 mod project;
 mod schema;
 
-pub use dialect::{CORPUS, collapse_soft_breaks, parse_options};
+pub use dialect::{
+    CORPUS, CUSTOM_BLOCK_FENCE, collapse_soft_breaks, custom_block_language, custom_block_name,
+    parse_options,
+};
 pub use hydrate::{hydrate, hydrate_with, is_image, is_url};
 pub use project::project_markdown;
 pub use schema::{
@@ -127,5 +130,37 @@ mod tests {
             block_type_of(&block_map_at(&list, 0).unwrap()),
             BlockType::Paragraph
         );
+    }
+
+    #[test]
+    fn custom_block_fence_round_trips() {
+        let source = "```block:callout\nWatch this\n```";
+        let doc = hydrate(source);
+        let list = blocks_list(&doc);
+        assert_eq!(list.len(), 1);
+        let map = block_map_at(&list, 0).unwrap();
+        assert_eq!(
+            block_type_of(&map),
+            BlockType::Custom("callout".into()),
+            "fence language block:name hydrates to Custom"
+        );
+        let once = project_markdown(&doc);
+        assert!(
+            once.contains("block:callout"),
+            "project must emit the custom fence, got {once:?}"
+        );
+        assert_eq!(project_markdown(&hydrate(&once)), once);
+    }
+
+    #[test]
+    fn hydrate_walks_mdast_not_a_second_parser() {
+        for source in CORPUS {
+            let tree = markdown::to_mdast(source, &parse_options())
+                .unwrap_or_else(|error| panic!("mdast rejected {source:?}: {error}"));
+            let _ = tree;
+            let once = project_markdown(&hydrate(source));
+            let twice = project_markdown(&hydrate(&once));
+            assert_eq!(once, twice, "corpus item {source:?} is not a fixed point");
+        }
     }
 }

@@ -4,6 +4,7 @@ use std::ops::Range;
 
 use loro::{Container, LoroDoc, LoroMap, LoroValue, ValueOrContainer};
 
+use crate::dialect::custom_block_language;
 use crate::schema::{
     Align, BlockType, Form, RichMark, alt_text, block_map_at, block_type_of, blocks_list,
     content_text, indent_of, map_bool, map_i64, map_string, marks_from_delta,
@@ -30,14 +31,14 @@ pub fn project_markdown(doc: &LoroDoc) -> String {
             None => 0,
         };
 
-        if let Some((prev_kind, prev_indent)) = previous {
+        if let Some((prev_kind, prev_indent)) = &previous {
             out.push('\n');
-            if !tight_after(prev_kind, kind, indent > prev_indent) {
+            if !tight_after(prev_kind, &kind, indent > *prev_indent) {
                 out.push('\n');
             }
         }
 
-        write_block(&mut out, &map, kind, indent);
+        write_block(&mut out, &map, &kind, indent);
         last_was_empty_task =
             kind == BlockType::Task && content_text(&map).is_some_and(|t| t.to_string().is_empty());
         previous = Some((kind, indent));
@@ -49,7 +50,7 @@ pub fn project_markdown(doc: &LoroDoc) -> String {
     out
 }
 
-fn marker_kind(kind: BlockType) -> Option<u8> {
+fn marker_kind(kind: &BlockType) -> Option<u8> {
     match kind {
         BlockType::Bullet => Some(0),
         BlockType::Ordered => Some(1),
@@ -58,11 +59,11 @@ fn marker_kind(kind: BlockType) -> Option<u8> {
     }
 }
 
-fn is_marker(kind: BlockType) -> bool {
+fn is_marker(kind: &BlockType) -> bool {
     marker_kind(kind).is_some()
 }
 
-fn tight_after(previous: BlockType, next: BlockType, nested: bool) -> bool {
+fn tight_after(previous: &BlockType, next: &BlockType, nested: bool) -> bool {
     // Approximate Bezel without the previous map: empty-marker rules use kind only.
     if nested {
         return is_marker(previous) && is_marker(next) && !matches!(next, BlockType::Ordered);
@@ -70,7 +71,22 @@ fn tight_after(previous: BlockType, next: BlockType, nested: bool) -> bool {
     marker_kind(previous).is_some() && marker_kind(previous) == marker_kind(next)
 }
 
-fn write_block(out: &mut String, map: &LoroMap, kind: BlockType, indent: u8) {
+fn write_fence(out: &mut String, pad: &str, language: &str, code: &str) {
+    let fence = "`".repeat(fence_width(code));
+    out.push_str(pad);
+    out.push_str(&fence);
+    out.push_str(language);
+    for line in code.split('\n') {
+        out.push('\n');
+        out.push_str(pad);
+        out.push_str(line);
+    }
+    out.push('\n');
+    out.push_str(pad);
+    out.push_str(&fence);
+}
+
+fn write_block(out: &mut String, map: &LoroMap, kind: &BlockType, indent: u8) {
     let pad = INDENT.repeat(indent as usize);
     match kind {
         BlockType::Paragraph => {
@@ -78,7 +94,7 @@ fn write_block(out: &mut String, map: &LoroMap, kind: BlockType, indent: u8) {
             write_lines(out, &pad, &pad, &body);
         }
         BlockType::Heading { level } => {
-            let hashes = "#".repeat(level.clamp(1, 6) as usize);
+            let hashes = "#".repeat((*level).clamp(1, 6) as usize);
             write_lines(out, &format!("{pad}{hashes} "), &pad, &inline_of(map));
         }
         BlockType::Bullet => {
@@ -108,18 +124,10 @@ fn write_block(out: &mut String, map: &LoroMap, kind: BlockType, indent: u8) {
         BlockType::Code => {
             let code = plain_of(map);
             let language = map_string(map, "language").unwrap_or_default();
-            let fence = "`".repeat(fence_width(&code));
-            out.push_str(&pad);
-            out.push_str(&fence);
-            out.push_str(&language);
-            for line in code.split('\n') {
-                out.push('\n');
-                out.push_str(&pad);
-                out.push_str(line);
-            }
-            out.push('\n');
-            out.push_str(&pad);
-            out.push_str(&fence);
+            write_fence(out, &pad, &language, &code);
+        }
+        BlockType::Custom(name) => {
+            write_fence(out, &pad, &custom_block_language(name), &plain_of(map));
         }
         BlockType::Image => {
             let url = map_string(map, "url").unwrap_or_default();
@@ -187,7 +195,9 @@ fn write_marked(out: &mut String, pad: &str, marker: &str, body: &str, empty: bo
 fn write_lines(out: &mut String, first: &str, rest: &str, body: &str) {
     for (ix, line) in body.split('\n').enumerate() {
         if ix > 0 {
-            out.push('\n');
+            // Remaining newlines in a block body are GFM hard breaks (soft
+            // breaks already collapsed to spaces on hydrate).
+            out.push_str("  \n");
         }
         out.push_str(if ix == 0 { first } else { rest });
         out.push_str(line);

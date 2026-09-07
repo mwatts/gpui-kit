@@ -287,7 +287,7 @@ fn block_element(
     cx: &mut App,
 ) -> AnyElement {
     let body = overlay.at(Part::Body);
-    match block.block_type {
+    match &block.block_type {
         BlockType::Paragraph => text_element(
             &block.plain,
             &block.runs,
@@ -298,7 +298,7 @@ fn block_element(
             palette,
         ),
         BlockType::Heading { level } => {
-            let heading = typography.heading(level);
+            let heading = typography.heading(*level);
             text_element(
                 &block.plain,
                 &block.runs,
@@ -406,6 +406,26 @@ fn block_element(
             .h(px(1.0))
             .w_full()
             .bg(palette.border)
+            .into_any_element(),
+        BlockType::Custom(name) => div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette.text_muted)
+                    .child(SharedString::from(name.as_str())),
+            )
+            .child(text_element(
+                &block.plain,
+                &block.runs,
+                typography.body.size(),
+                typography.body.line_height(),
+                FontWeight::NORMAL,
+                body,
+                palette,
+            ))
             .into_any_element(),
     }
 }
