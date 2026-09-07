@@ -659,6 +659,7 @@ enum MotionPolicy {
 /// them today: entity-backed components (Input, Tree, Table) and tooltips need
 /// both at construction time, and they are part of this function's contract
 /// rather than an oversight.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn materialize(
     runtime: &Rc<ShellRuntime>,
     snapshot: &RenderSnapshot,
@@ -890,7 +891,10 @@ fn materialize_registered_component(
             component.id().as_u32()
         );
         return div()
-            .child(format!("Unknown component: {}", component.name()))
+            .child(crate::error::bound_text(
+                &format!("Unknown component: {}", component.name()),
+                crate::error::MAX_FAILURE_MESSAGE_BYTES,
+            ))
             .into_any_element();
     };
     let mut resolve_element = |element, window: Option<&mut Window>, cx: Option<&mut App>| {
@@ -938,6 +942,16 @@ fn materialize_registered_component(
                 "component element factory belongs to a different runtime"
             );
             materialize_factory_subtree(&runtime, snapshot, slot, inherited, window, cx)
+                .inspect_err(|error| {
+                    // An open root error frame already captures this for first-render
+                    // qualification. A later overlay/slot build has no frame, so it
+                    // reports as a deferred diagnostic and does not change FirstRender.
+                    let deferred =
+                        FACTORY_MATERIALIZE_ERRORS.with(|frames| frames.borrow().is_empty());
+                    if deferred {
+                        runtime.report_materialize_error(&error);
+                    }
+                })
         })
     };
     let mut request =
@@ -974,7 +988,10 @@ fn materialize_registered_component(
                 }
             });
             div()
-                .child(format!("Failed to render {}", component.name()))
+                .child(crate::error::bound_text(
+                    &format!("Failed to render {}", component.name()),
+                    crate::error::MAX_FAILURE_MESSAGE_BYTES,
+                ))
                 .into_any_element()
         }
     }
