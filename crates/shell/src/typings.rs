@@ -192,6 +192,7 @@ pub(crate) fn declarations_with_components(components: &crate::FrozenComponentRe
     out.push_str(&role_type());
     out.push_str(&anchor_type());
     out.push_str(&view_types());
+    out.push_str(ELEMENT_CHILD);
     out.push_str("  /**\n");
     out.push_str("   * A description of one element, built by chaining.\n");
     out.push_str("   *\n");
@@ -202,7 +203,8 @@ pub(crate) fn declarations_with_components(components: &crate::FrozenComponentRe
     out.push_str("   */\n");
     // Registered builders can override a native signature (for example size).
     // A renderable union keeps those builders valid children without pretending
-    // that an adapter's semantic size accepts native lengths.
+    // that an adapter's semantic size accepts native lengths. The brand is what
+    // makes a specialized builder an `ElementChild` without being an `Element`.
     out.push_str("  export type Element = NativeElement");
     for descriptor in components.descriptors() {
         let _ = write!(
@@ -213,7 +215,7 @@ pub(crate) fn declarations_with_components(components: &crate::FrozenComponentRe
     }
     out.push_str(";\n\n");
     out.push_str("  /** The fluent builder returned by native and Base element factories. */\n");
-    out.push_str("  export interface NativeElement {\n");
+    out.push_str("  export interface NativeElement extends ElementChildHandle {\n");
     out.push_str(ELEMENT_METHODS);
     out.push_str("    token(render: (token: import(\"gpui-base\").InlineTokenContext, cx: Context) => Element | null): this;\n    on_token_click(listener: (event: import(\"gpui-base\").InlineTokenClickEvent, cx: Context) => void): this;\n");
     out.push_str(&parametric_styles(&parametric));
@@ -233,13 +235,16 @@ pub(crate) fn declarations_with_components(components: &crate::FrozenComponentRe
     out.push_str(BASE);
     out.push_str("}\n\n");
     out.push_str("declare module \"gpui-component\" {\n");
-    out.push_str("  import { ClickEvent, Context, Element, NativeElement } from \"gpui-kit\";\n");
+    out.push_str(
+        "  import { ClickEvent, Context, Element, ElementChild, NativeElement } from \"gpui-kit\";\n",
+    );
     out.push_str(INLINE_TOKEN_TYPES);
     for state in components.states() {
         push_jsdoc(&mut out, state.documentation(), None, "  ");
         out.push_str("  export interface ");
         out.push_str(state.kind());
-        out.push_str(" { readonly __gpuiComponentState: unique symbol");
+        // No leading underscores: this brand is a script-facing type, not engine plumbing.
+        out.push_str(" { readonly gpuiComponentState: unique symbol");
         for method in state.methods() {
             out.push_str(";\n    ");
             out.push_str(method.name());
@@ -247,13 +252,20 @@ pub(crate) fn declarations_with_components(components: &crate::FrozenComponentRe
         }
         out.push_str(" }\n");
         push_jsdoc(&mut out, state.documentation(), None, "  ");
-        out.push_str("  export function ");
+        // Ordinary JS functions are both callable and constructible. Runtime
+        // state factories already support `new`; a call-only signature made
+        // `new ScrollbarHandle()` an implicit any.
+        out.push_str("  export const ");
         out.push_str(state.export());
-        out.push('(');
+        out.push_str(": {\n    (");
         push_arguments(&mut out, state.arguments());
         out.push_str("): ");
         out.push_str(state.kind());
-        out.push_str(";\n");
+        out.push_str(";\n    new (");
+        push_arguments(&mut out, state.arguments());
+        out.push_str("): ");
+        out.push_str(state.kind());
+        out.push_str(";\n  };\n");
     }
     for descriptor in components.descriptors() {
         push_jsdoc(&mut out, descriptor.documentation(), None, "  ");
@@ -310,6 +322,8 @@ pub(crate) fn declarations_with_components(components: &crate::FrozenComponentRe
         }
         // Keep unavailable behaviors visible with their explanation while a
         // `never` parameter refuses every call, including after fluent methods.
+        // Child and slot methods take `ElementChild`, so a specialized type
+        // does not need to be assignable to `Element`.
         for behavior in &withheld {
             out.push_str("    /**\n     * Not available on this component: `");
             out.push_str(descriptor.name());
@@ -377,7 +391,7 @@ fn argument_type(schema: &crate::ArgumentSchema) -> String {
         crate::ArgumentSchema::String => "string".into(),
         crate::ArgumentSchema::Number => "number".into(),
         crate::ArgumentSchema::Boolean => "boolean".into(),
-        crate::ArgumentSchema::Element => "Element".into(),
+        crate::ArgumentSchema::Element => "ElementChild".into(),
         crate::ArgumentSchema::Entity(kind) => (*kind).into(),
         crate::ArgumentSchema::Callback(signature) => (*signature).into(),
         crate::ArgumentSchema::Enum(values) => values
@@ -1253,6 +1267,26 @@ const CONTEXT_AND_VIEW: &str = r#"  /**
 
 "#;
 
+/// Opaque child type. Specialized `*Element` types override methods such as
+/// `size` and are not assignable to `Element`. They remain assignable here.
+const ELEMENT_CHILD: &str = r#"  interface ElementChildHandle {
+    readonly gpuiElementChild: unique symbol;
+  }
+  /**
+   * A rendered node, retained entity, or text consumed by child and slot methods.
+   *
+   * Specialized component types override methods such as `size` and are not
+   * assignable to `Element`. They remain assignable to this type.
+   */
+  export type ElementChild =
+    | ElementChildHandle
+    | Entity
+    | string
+    | number
+    | boolean;
+
+"#;
+
 /// The element methods that are not styles.
 ///
 /// Hand-written because each has a signature of its own; the names match the
@@ -1279,9 +1313,9 @@ const ELEMENT_METHODS: &str = r#"    /**
      * entity may appear once per parent snapshot; a second mount in the same
      * description is refused before any of it is published.
      */
-    child<Self extends Element>(this: Self, child: Element | Entity | string | number | boolean): Self;
+    child<Self extends Element>(this: Self, child: ElementChild): Self;
     /** Adds several children, in order. */
-    children<Self extends Element>(this: Self, children: Iterable<Element | Entity | string | number | boolean>): Self;
+    children<Self extends Element>(this: Self, children: Iterable<ElementChild>): Self;
     /**
      * Fills the `content` slot of a `Collapsible`, a `Popover`, a `HoverCard`
      * or a `Popup`.
@@ -1305,7 +1339,7 @@ const ELEMENT_METHODS: &str = r#"    /**
      * on the inner element; the region the pointer has to reach is the wrapper
      * around it.
      */
-    content<Self extends Element>(this: Self, element: Element): Self;
+    content<Self extends Element>(this: Self, element: ElementChild): Self;
     /**
      * Fills an `Avatar`'s `image` slot, which takes an `AvatarImage`.
      *
@@ -1313,15 +1347,15 @@ const ELEMENT_METHODS: &str = r#"    /**
      * child. Base renders this one when it is there and the `fallback` when it
      * is not, so filling both is how a picture gets something to fall back to.
      */
-    image<Self extends Element>(this: Self, element: Element): Self;
+    image<Self extends Element>(this: Self, element: ElementChild): Self;
     /** Fills an `Avatar`'s `fallback` slot, which takes an `AvatarFallback`. */
-    fallback<Self extends Element>(this: Self, element: Element): Self;
+    fallback<Self extends Element>(this: Self, element: ElementChild): Self;
     /** Fills an `AccordionItem`'s `header` slot, which takes an `AccordionHeader`. */
-    header<Self extends Element>(this: Self, element: Element): Self;
+    header<Self extends Element>(this: Self, element: ElementChild): Self;
     /** Fills a component's named `footer` slot. */
-    footer<Self extends Element>(this: Self, element: Element): Self;
+    footer<Self extends Element>(this: Self, element: ElementChild): Self;
     /** Fills an `AccordionItem`'s `panel` slot, which takes an `AccordionPanel`. */
-    panel<Self extends Element>(this: Self, element: Element): Self;
+    panel<Self extends Element>(this: Self, element: ElementChild): Self;
     /**
      * Fills the `trigger` slot of a `Popover` or a `HoverCard`: the element
      * that is on screen while the surface is closed, and that opens it.
@@ -1331,7 +1365,7 @@ const ELEMENT_METHODS: &str = r#"    /**
      * instead, because its trigger's bounds are what the content is anchored
      * to.
      */
-    trigger<Self extends Element>(this: Self, element: Element): Self;
+    trigger<Self extends Element>(this: Self, element: ElementChild): Self;
     /**
      * Fills the editor slot of a `NumberInput`.
      *
@@ -1341,7 +1375,7 @@ const ELEMENT_METHODS: &str = r#"    /**
      * editor, and a frame inside this frame draws two borders. Adornments
      * beside the editor are ordinary `child(...)` calls on the number input.
      */
-    input<Self extends Element>(this: Self, element: Element): Self;
+    input<Self extends Element>(this: Self, element: ElementChild): Self;
     /**
      * Supplies the look of a `NumberInput`'s decrement button.
      *
@@ -1361,9 +1395,9 @@ const ELEMENT_METHODS: &str = r#"    /**
      * `disabled(...)` and `on_click(...)` written here are overwritten: the
      * number input owns whether stepping is allowed and what a press does.
      */
-    decrement_button<Self extends Element>(this: Self, element: Element): Self;
+    decrement_button<Self extends Element>(this: Self, element: ElementChild): Self;
     /** The increment button, replayed exactly as `decrement_button` is. */
-    increment_button<Self extends Element>(this: Self, element: Element): Self;
+    increment_button<Self extends Element>(this: Self, element: ElementChild): Self;
     /**
      * Stacks both of a `NumberInput`'s step buttons to the right of the text,
      * rather than putting one on each side of it.
@@ -1978,7 +2012,7 @@ const SHELL_TYPES: &str = r#"  /** A path coordinate in pixels or as a percentag
   export type Props = Record<string, any>;
 
   /** Element-local event bounds assembled by the shell. */
-  export interface ElementBounds extends import("gpui-kit").Point {
+  export type ElementBounds = import("gpui-kit").Point & {
     width: number;
     height: number;
   }
@@ -2505,7 +2539,7 @@ const BASE: &str = r#"  /** A row. */
    * `aria_level(n)` is what a screen reader reads out — "heading level 3" —
    * and defaults to 3. It announces; it does not size any text.
    */
-  export const AccordionHeader: { new(trigger: Element): Element };
+  export const AccordionHeader: { new(trigger: ElementChild): Element };
   /**
    * The region an item reveals. Left out of the tree entirely while shut,
    * unless `keep_mounted(true)` — which is how its content keeps a scroll
@@ -2773,7 +2807,7 @@ const BASE: &str = r#"  /** A row. */
    * and `track_focus` all land on it.
    */
   export const Popup: {
-    new: (id: string | number, trigger: Element) => NativeElement;
+    new: (id: string | number, trigger: ElementChild) => NativeElement;
   };
 
   /**
@@ -3566,6 +3600,7 @@ const BASE_IMPORTS: &str = r#"  import {
     Color,
     Context,
     Element,
+    ElementChild,
     NativeElement,
     FocusHandle,
   } from "gpui-kit";
@@ -3659,11 +3694,15 @@ const CAPABILITIES: &str = r#"
 
 const STANDARD_RUNTIME: &str = r#"
 declare module "buffer" {
-  export class Buffer extends Uint8Array {
-    static from(value: string | ArrayBuffer | ArrayLike<number>, encoding?: string): Buffer;
-    static alloc(size: number): Buffer;
+  export interface Buffer extends Uint8Array {
     toString(encoding?: string): string;
   }
+  export const Buffer: {
+    new (size?: number): Buffer;
+    from(value: string | ArrayBuffer | ArrayLike<number>, encoding?: string): Buffer;
+    alloc(size: number): Buffer;
+    prototype: Buffer;
+  };
 }
 declare module "path" {
   export function join(...parts: string[]): string;
@@ -3674,16 +3713,78 @@ declare module "path" {
   export default path;
 }
 declare module "url" {
-  export const URL: typeof globalThis.URL;
-  export const URLSearchParams: typeof globalThis.URLSearchParams;
+  export interface URLSearchParams {
+    append(name: string, value: string): void;
+    delete(name: string, value?: string): void;
+    get(name: string): string | null;
+    getAll(name: string): string[];
+    has(name: string, value?: string): boolean;
+    set(name: string, value: string): void;
+    sort(): void;
+    toString(): string;
+    forEach(callback: (value: string, name: string, parent: URLSearchParams) => void): void;
+    readonly size: number;
+  }
+  export const URLSearchParams: {
+    new (init?: string | string[][] | Record<string, string> | URLSearchParams): URLSearchParams;
+    prototype: URLSearchParams;
+  };
+  export interface URL {
+    hash: string;
+    host: string;
+    hostname: string;
+    href: string;
+    readonly origin: string;
+    password: string;
+    pathname: string;
+    port: string;
+    protocol: string;
+    search: string;
+    readonly searchParams: URLSearchParams;
+    username: string;
+    toString(): string;
+    toJSON(): string;
+  }
+  export const URL: {
+    new (url: string | URL, base?: string | URL): URL;
+    prototype: URL;
+    canParse(url: string | URL, base?: string | URL): boolean;
+    parse(url: string | URL, base?: string | URL): URL | null;
+  };
 }
+declare const URL: typeof import("url").URL;
+declare const URLSearchParams: typeof import("url").URLSearchParams;
 declare module "crypto" {
+  export type WebCryptoAlgorithmIdentifier = string | { name: string };
+  export interface WebCryptoSubtle {
+    decrypt(algorithm: WebCryptoAlgorithmIdentifier, key: unknown, data: ArrayBuffer | ArrayBufferView): Promise<ArrayBuffer>;
+    deriveBits(algorithm: WebCryptoAlgorithmIdentifier, baseKey: unknown, length: number): Promise<ArrayBuffer>;
+    deriveKey(algorithm: WebCryptoAlgorithmIdentifier, baseKey: unknown, derivedKeyType: WebCryptoAlgorithmIdentifier, extractable: boolean, keyUsages: string[]): Promise<unknown>;
+    digest(algorithm: WebCryptoAlgorithmIdentifier, data: ArrayBuffer | ArrayBufferView): Promise<ArrayBuffer>;
+    encrypt(algorithm: WebCryptoAlgorithmIdentifier, key: unknown, data: ArrayBuffer | ArrayBufferView): Promise<ArrayBuffer>;
+    exportKey(format: string, key: unknown): Promise<ArrayBuffer>;
+    generateKey(algorithm: WebCryptoAlgorithmIdentifier, extractable: boolean, keyUsages: string[]): Promise<unknown>;
+    importKey(format: string, keyData: ArrayBuffer | ArrayBufferView, algorithm: WebCryptoAlgorithmIdentifier, extractable: boolean, keyUsages: string[]): Promise<unknown>;
+    sign(algorithm: WebCryptoAlgorithmIdentifier, key: unknown, data: ArrayBuffer | ArrayBufferView): Promise<ArrayBuffer>;
+    unwrapKey(format: string, wrappedKey: ArrayBuffer | ArrayBufferView, unwrappingKey: unknown, unwrapAlgorithm: WebCryptoAlgorithmIdentifier, unwrappedKeyAlgorithm: WebCryptoAlgorithmIdentifier, extractable: boolean, keyUsages: string[]): Promise<unknown>;
+    verify(algorithm: WebCryptoAlgorithmIdentifier, key: unknown, signature: ArrayBuffer | ArrayBufferView, data: ArrayBuffer | ArrayBufferView): Promise<boolean>;
+    wrapKey(format: string, key: unknown, wrappingKey: unknown, wrapAlgorithm: WebCryptoAlgorithmIdentifier): Promise<ArrayBuffer>;
+  }
+  export interface WebCrypto {
+    readonly subtle: WebCryptoSubtle;
+    getRandomValues<T extends Int8Array | Uint8Array | Uint8ClampedArray | Int16Array | Uint16Array | Int32Array | Uint32Array | BigInt64Array | BigUint64Array>(array: T): T;
+    randomUUID(): string;
+  }
   export interface Hash { update(data: string | Uint8Array): Hash; digest(encoding?: string): string | import("buffer").Buffer; }
   export function createHash(algorithm: string): Hash;
+  export function createHmac(algorithm: string, key: string | Uint8Array): Hash;
   export function randomBytes(size: number): import("buffer").Buffer;
   export function randomUUID(): string;
-  export const webcrypto: Crypto;
+  export const webcrypto: WebCrypto;
+  export const crypto: WebCrypto;
 }
+declare const crypto: import("crypto").WebCrypto;
+declare const Buffer: typeof import("buffer").Buffer;
 declare module "zlib" {
   export function deflateSync(data: string | Uint8Array): import("buffer").Buffer;
   export function inflateSync(data: Uint8Array): import("buffer").Buffer;
@@ -3872,8 +3973,77 @@ mod tests {
         let declarations = declarations_with_components(&registry.freeze().unwrap());
 
         assert!(declarations.contains("export interface InputState"));
-        assert!(declarations.contains("export function InputState(text: string): InputState;"));
+        assert!(declarations.contains(
+            "export const InputState: {\n    (text: string): InputState;\n    new (text: string): InputState;\n  };"
+        ));
         assert!(declarations.contains("Retained input state."));
+    }
+
+    #[test]
+    fn empty_state_factories_declare_call_and_construct_signatures() {
+        let mut registry = crate::ComponentRegistry::new(
+            crate::COMPONENT_REGISTRY_API_VERSION,
+            crate::DEFAULT_COMPONENT_MODULE,
+        )
+        .unwrap();
+        registry
+            .register_state(crate::StateDescriptor::new(
+                "ScrollbarHandle",
+                "ScrollbarHandle",
+                vec![],
+                |_, _, _| Ok(Box::new(())),
+            ))
+            .unwrap();
+
+        let declarations = declarations_with_components(&registry.freeze().unwrap());
+        assert!(declarations.contains(
+            "export const ScrollbarHandle: {\n    (): ScrollbarHandle;\n    new (): ScrollbarHandle;\n  };"
+        ));
+        assert!(!declarations.contains("export function ScrollbarHandle("));
+    }
+
+    #[test]
+    fn rendered_children_use_element_child() {
+        let declarations = base_declarations();
+        assert!(declarations.contains("interface ElementChildHandle"));
+        assert!(declarations.contains("export type ElementChild ="));
+        assert!(declarations.contains("export interface NativeElement extends ElementChildHandle"));
+        assert!(
+            declarations.contains(
+                "    child<Self extends Element>(this: Self, child: ElementChild): Self;"
+            )
+        );
+        assert!(declarations.contains(
+            "    children<Self extends Element>(this: Self, children: Iterable<ElementChild>): Self;"
+        ));
+        assert!(declarations.contains(
+            "    content<Self extends Element>(this: Self, element: ElementChild): Self;"
+        ));
+        assert!(
+            !declarations.contains("child(child: Element | Entity | string | number | boolean)")
+        );
+        assert!(!declarations.contains("export interface ElementBounds extends import("));
+        assert!(
+            declarations.contains(
+                "export type ElementBounds = import(\"gpui-kit\").Point & {\n    width: number;\n    height: number;\n  }"
+            )
+        );
+    }
+
+    #[test]
+    fn standard_runtime_buffer_url_and_webcrypto_are_self_contained() {
+        let declarations = base_declarations();
+        assert!(!declarations.contains("export class Buffer extends Uint8Array"));
+        assert!(declarations.contains("export interface Buffer extends Uint8Array"));
+        assert!(declarations.contains("export const Buffer:"));
+        assert!(!declarations.contains("typeof globalThis.URL"));
+        assert!(!declarations.contains("typeof globalThis.URLSearchParams"));
+        assert!(declarations.contains("export interface URL {"));
+        assert!(declarations.contains("export interface URLSearchParams {"));
+        assert!(!declarations.contains("export const webcrypto: Crypto;"));
+        assert!(declarations.contains("export const webcrypto: WebCrypto;"));
+        assert!(declarations.contains("export interface WebCrypto {"));
+        assert!(declarations.contains("declare const crypto: import(\"crypto\").WebCrypto;"));
     }
 
     /// The element methods that are not style methods, so a test can subtract
@@ -4034,7 +4204,9 @@ mod tests {
             );
         }
         // The common native surface is retained, with unsupported behaviors
-        // explicitly redeclared as uncallable.
+        // explicitly redeclared as uncallable. Child and slot methods take
+        // `ElementChild`, so a specialized type does not need to be assignable
+        // to `Element`.
         assert!(
             declarations.contains(
                 "export type PlainElement = Omit<NativeElement, \"disabled\" | \"selected\" | \"on_click\" | \"role\" | \"transition\">"
@@ -4046,7 +4218,9 @@ mod tests {
     fn element_methods(declarations: &str) -> Vec<String> {
         declarations
             .lines()
-            .skip_while(|line| !line.starts_with("  export interface NativeElement {"))
+            .skip_while(|line| {
+                !line.starts_with("  export interface NativeElement extends ElementChildHandle {")
+            })
             .skip(1)
             .take_while(|line| !line.starts_with("  }"))
             .filter_map(|line| {
@@ -4755,7 +4929,7 @@ mod tests {
         for expected in [
             "    anchor<Self extends Element>(this: Self, value: Anchor): Self;",
             "    mouse_button<Self extends Element>(this: Self, value: MouseButton): Self;",
-            "    trigger<Self extends Element>(this: Self, element: Element): Self;",
+            "    trigger<Self extends Element>(this: Self, element: ElementChild): Self;",
             "    open_delay<Self extends Element>(this: Self, ms: number): Self;",
             "    close_delay<Self extends Element>(this: Self, ms: number): Self;",
             "  export const Popover: ComponentType;",
