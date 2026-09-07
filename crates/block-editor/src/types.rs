@@ -73,7 +73,7 @@ pub enum BlockOp {
         id: BlockId,
         start: usize,
         end: usize,
-        mark: &'static str,
+        mark: String,
     },
     SetLink {
         id: BlockId,

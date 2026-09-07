@@ -12,6 +12,10 @@ use gpui_component_block_view::{
 use loro::TextDelta;
 
 fn snap(id: &str, block_type: BlockType, plain: &str, language: Option<&str>) -> BlockSnapshot {
+    let checked = matches!(block_type, BlockType::Task).then_some(false);
+    let number = matches!(block_type, BlockType::Ordered).then_some(1);
+    let url = matches!(block_type, BlockType::Image).then(String::new);
+    let table = matches!(block_type, BlockType::Table).then_some(Default::default());
     BlockSnapshot {
         id: BlockId(id.into()),
         block_type,
@@ -26,13 +30,13 @@ fn snap(id: &str, block_type: BlockType, plain: &str, language: Option<&str>) ->
             }]
         },
         props: HashMap::new(),
-        checked: matches!(block_type, BlockType::Task).then_some(false),
-        number: matches!(block_type, BlockType::Ordered).then_some(1),
+        checked,
+        number,
         language: language.map(str::to_string),
-        url: matches!(block_type, BlockType::Image).then(String::new),
+        url,
         form: None,
         width: None,
-        table: matches!(block_type, BlockType::Table).then_some(Default::default()),
+        table,
     }
 }
 
@@ -54,6 +58,12 @@ fn sample_doc() -> Vec<BlockSnapshot> {
         snap("img", BlockType::Image, "", None),
         snap("tbl", BlockType::Table, "", None),
         snap("rule", BlockType::Rule, "", None),
+        snap(
+            "custom",
+            BlockType::Custom("callout".into()),
+            "Watch this",
+            None,
+        ),
     ]
 }
 
@@ -78,10 +88,10 @@ impl gpui::Render for SmokeView {
         cx: &mut gpui::Context<Self>,
     ) -> impl gpui::IntoElement {
         let h1_id = self.snapshots[0].id.clone();
-        let selection = Selection::caret(Cursor::new(h1_id, Part::Body, 0));
+        let selections = [Selection::caret(Cursor::new(h1_id, Part::Body, 0))];
         let annotations: &[(Selection, Annotation)] = &[];
         let editing = Editing {
-            selection: Some(selection),
+            selections: &selections,
             caret_on: true,
             layouts: Some(&self.layouts),
             annotations,

@@ -12,7 +12,7 @@ doctest = false
 
 [dependencies]
 loro = { workspace = true }
-pulldown-cmark = { version = "0.13", default-features = false }
+markdown = { version = "1.0.0", features = ["serde"] }
 uuid = { workspace = true }
 
 [lints]

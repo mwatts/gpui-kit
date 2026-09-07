@@ -11,7 +11,7 @@ use gpui_component::input::{Input, InputState};
 use gpui_component_block_view::{Cursor, Part, ink};
 
 /// Key context while the image URL prompt holds focus.
-pub const PROMPT_CONTEXT: &str = "LimenBlockEditorUrlPrompt";
+pub const PROMPT_CONTEXT: &str = "BlockEditorUrlPrompt";
 
 /// Bytes or a file path the host can turn into a durable image URL.
 pub enum Source<'a> {

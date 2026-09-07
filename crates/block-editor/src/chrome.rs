@@ -81,17 +81,13 @@ impl Editor {
         let slash = self.slash.as_ref()?;
         let (point, line) = self.layouts.position(&slash.at)?;
         let origin = gpui::point(point.x, point.y + line + px(4.0));
-        let labels: Vec<_> = crate::slash::items()
-            .into_iter()
-            .map(|(label, _)| label)
-            .collect();
+        let commands = slash.commands().to_vec();
         let filtered = slash.filter.filtered().to_vec();
         let active = slash.filter.active();
 
         let rows = filtered.into_iter().enumerate().map(|(view_ix, item_ix)| {
-            let label = labels[item_ix];
+            let command = commands[item_ix].clone();
             let lit = active == Some(view_ix);
-            let kind = crate::slash::items()[item_ix].1;
             div()
                 .id(ElementId::Name(format!("slash-row-{view_ix}").into()))
                 .w_full()
@@ -99,11 +95,11 @@ impl Editor {
                 .py(px(5.0))
                 .rounded(px(6.0))
                 .when(lit, |el| el.bg(ink(cx, 0.08)))
-                .child(label)
+                .child(command.label.clone())
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
-                        this.confirm_slash(Some(kind), cx);
+                        this.confirm_slash(Some(command.action.clone()), cx);
                     }),
                 )
         });

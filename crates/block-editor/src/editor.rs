@@ -5,14 +5,17 @@
 //!
 //! Copyright (c) Bezel contributors. MIT. See crate `NOTICE`.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use block_markdown::{BlockId, BlockType, CommentState, content_text, find_block, mark_covers};
 use gpui::{
-    App, Bounds, ClipboardItem, Context, ElementInputHandler, EventEmitter, FocusHandle, Focusable,
-    MouseButton, Pixels, Point, Render, ScrollHandle, SharedString, Task, Window, canvas, div,
-    prelude::*, px,
+    AnyElement, App, Bounds, ClipboardItem, Context, ElementInputHandler, Entity, EventEmitter,
+    FocusHandle, Focusable, MouseButton, Pixels, Point, Render, ScrollHandle, SharedString, Task,
+    Window, canvas, div, prelude::*, px,
 };
+use gpui_component::ActiveTheme;
+use gpui_component::input::{Editor as CodeEditor, EditorState};
 use gpui_component_block_view::{
     Annotation, BlockLayouts, Caption, Cursor, Editing, MarkedRange, Part, Selection, render_with,
 };
@@ -30,6 +33,7 @@ use crate::keys::{
 };
 use crate::link::{self, Choice as LinkChoice};
 use crate::mark::Mark;
+use crate::registry::SlashAction;
 use crate::shortcut::{inline_ops, try_prefix};
 use crate::slash::Slash;
 use crate::types::{ApplyResult, BlockOp, BlockSnapshot, CommentId, LwwValue};
@@ -42,6 +46,8 @@ const BLINK: Duration = Duration::from_millis(500);
 pub enum EditorEvent {
     Changed,
     CommentActivated(CommentId),
+    /// A host-registered slash command was confirmed.
+    SlashCustom(SharedString),
 }
 
 /// One comment thread projected for the host list.
@@ -58,6 +64,8 @@ pub struct CommentThread {
 pub struct Editor {
     pub(crate) document: BlockDocument,
     pub(crate) selection: Selection,
+    extra_selections: Vec<Selection>,
+    code_leaves: HashMap<BlockId, Entity<EditorState>>,
     focus_handle: FocusHandle,
     pub(crate) marked: Option<MarkedRange>,
     /// Composition fragment while IME is active (not yet in Loro).
@@ -103,7 +111,11 @@ impl Editor {
 
     /// Hydrate from markdown.
     pub fn from_markdown(source: &str, cx: &mut Context<Self>) -> Self {
-        Self::from_document(BlockDocument::from_markdown(source), cx)
+        let styles = crate::MarkRegistry::styles_in(cx);
+        Self::from_document(
+            BlockDocument::from_loro(block_markdown::hydrate_with(source, &styles)),
+            cx,
+        )
     }
 
     fn from_document(document: BlockDocument, cx: &mut Context<Self>) -> Self {
@@ -115,6 +127,8 @@ impl Editor {
         let mut editor = Self {
             document,
             selection: Selection::caret(Cursor::new(id, Part::Body, 0)),
+            extra_selections: Vec::new(),
+            code_leaves: HashMap::new(),
             focus_handle: cx.focus_handle(),
             marked: None,
             composition: String::new(),
@@ -173,8 +187,24 @@ impl Editor {
         self.selection.clone()
     }
 
+    #[must_use]
+    pub fn selections(&self) -> Vec<Selection> {
+        let mut all = Vec::with_capacity(1 + self.extra_selections.len());
+        all.push(self.selection.clone());
+        all.extend(self.extra_selections.iter().cloned());
+        all
+    }
+
     pub fn select(&mut self, selection: Selection, cx: &mut Context<Self>) {
+        self.extra_selections.clear();
         self.selection = self.clamp_selection(selection);
+        self.reveal = true;
+        self.caret_moved();
+        cx.notify();
+    }
+
+    pub fn add_selection(&mut self, selection: Selection, cx: &mut Context<Self>) {
+        self.extra_selections.push(self.clamp_selection(selection));
         self.reveal = true;
         self.caret_moved();
         cx.notify();
@@ -228,8 +258,15 @@ impl Editor {
     }
 
     pub fn toggle_mark(&mut self, mark: Mark, cx: &mut Context<Self>) {
-        if matches!(mark, Mark::Code) && self.selection.head().part == Part::Code {
-            let id = self.selection.head().id.clone();
+        let ranges = self.selections();
+        for selection in ranges {
+            self.toggle_mark_in(&selection, mark, cx);
+        }
+    }
+
+    fn toggle_mark_in(&mut self, selection: &Selection, mark: Mark, cx: &mut Context<Self>) {
+        if matches!(mark, Mark::Code) && selection.head().part == Part::Code {
+            let id = selection.head().id.clone();
             self.apply(
                 BlockOp::SetType {
                     id,
@@ -239,7 +276,7 @@ impl Editor {
             );
             return;
         }
-        if self.selection.is_collapsed() {
+        if selection.is_collapsed() {
             match self.stored.iter().position(|m| *m == mark) {
                 Some(ix) => {
                     self.stored.remove(ix);
@@ -248,7 +285,7 @@ impl Editor {
             }
             return cx.notify();
         }
-        let (start, end) = self.selection.ordered();
+        let (start, end) = selection.ordered();
         if start.id != end.id {
             // Multi-block code → fence the first block for now.
             if matches!(mark, Mark::Code) {
@@ -285,7 +322,7 @@ impl Editor {
                 id: start.id.clone(),
                 start: start.offset.min(end.offset),
                 end: start.offset.max(end.offset),
-                mark: mark.key(),
+                mark: mark.key().to_string(),
             },
             cx,
         );
@@ -319,7 +356,7 @@ impl Editor {
             .snapshots()
             .iter()
             .find(|s| s.id == id)
-            .map(|s| s.block_type)
+            .map(|s| s.block_type.clone())
             .unwrap_or(BlockType::Paragraph);
         self.apply(
             BlockOp::SplitBlock {
@@ -637,7 +674,7 @@ impl Editor {
     }
 
     pub(crate) fn after_edit(&mut self, typed: &str, cx: &mut Context<Self>) {
-        self.track_slash(typed);
+        self.track_slash(typed, cx);
         self.reveal = true;
         self.caret_moved();
         self.refresh_annotations();
@@ -677,7 +714,7 @@ impl Editor {
 
         let head = self.selection.head().clone();
         let mut offset = head.offset;
-        let marks: Vec<Mark> = self.stored.drain(..).collect();
+        let marks: Vec<Mark> = std::mem::take(&mut self.stored);
         if !marks.is_empty() {
             self.apply(
                 BlockOp::InsertText {
@@ -694,7 +731,7 @@ impl Editor {
                         id: head.id.clone(),
                         start: offset,
                         end,
-                        mark: mark.key(),
+                        mark: mark.key().to_string(),
                     },
                     cx,
                 );
@@ -732,7 +769,7 @@ impl Editor {
         self.after_edit(text, cx);
     }
 
-    fn track_slash(&mut self, typed: &str) {
+    fn track_slash(&mut self, typed: &str, cx: &App) {
         let at = self.selection.head().clone();
         let text = self
             .snapshots()
@@ -749,7 +786,10 @@ impl Editor {
                     .is_none_or(char::is_whitespace)
             });
             if let Some(slash) = opened.filter(|_| starts_word && at.part == Part::Body) {
-                self.slash = Some(Slash::open(Cursor::new(at.id.clone(), at.part, slash)));
+                self.slash = Some(Slash::open_in(
+                    Cursor::new(at.id.clone(), at.part, slash),
+                    cx,
+                ));
             }
             return;
         }
@@ -769,16 +809,16 @@ impl Editor {
 
     pub(crate) fn confirm_slash(
         &mut self,
-        kind: Option<BlockType>,
+        action: Option<SlashAction>,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some(slash) = &self.slash else {
             return false;
         };
         let at = slash.at.clone();
-        let kind = kind.or_else(|| slash.choice());
+        let action = action.or_else(|| slash.choice());
         self.slash = None;
-        let Some(kind) = kind else {
+        let Some(action) = action else {
             return false;
         };
         let caret = self.selection.head().clone();
@@ -790,10 +830,28 @@ impl Editor {
                 end: caret.offset,
             });
         }
-        ops.push(BlockOp::SetType {
-            id: at.id.clone(),
-            kind,
-        });
+        match action {
+            SlashAction::Custom(id) => {
+                self.apply_many(&ops, cx);
+                cx.emit(EditorEvent::SlashCustom(id));
+                return true;
+            }
+            SlashAction::Insert(kind) => ops.push(BlockOp::SetType {
+                id: at.id.clone(),
+                kind,
+            }),
+            SlashAction::InsertCode { language } => {
+                ops.push(BlockOp::SetType {
+                    id: at.id.clone(),
+                    kind: BlockType::Code,
+                });
+                ops.push(BlockOp::SetProp {
+                    id: at.id.clone(),
+                    key: "language",
+                    value: LwwValue::String(language.to_string()),
+                });
+            }
+        }
         self.apply_many(&ops, cx);
         self.selection = Selection::caret(Cursor::new(at.id, Part::Body, at.offset));
         true
@@ -942,7 +1000,7 @@ impl Editor {
                 cx,
             );
             self.selection = Selection::caret(Cursor::new(at.id, at.part, prev));
-            self.track_slash("");
+            self.track_slash("", cx);
             self.after_edit("", cx);
             return;
         }
@@ -954,7 +1012,7 @@ impl Editor {
         if let Some(sel) = result.selection {
             self.selection = sel;
         }
-        self.track_slash("");
+        self.track_slash("", cx);
         self.after_edit("", cx);
     }
 
@@ -1468,6 +1526,93 @@ impl Editor {
         self.url_prompt = None;
         cx.notify();
     }
+
+    fn sync_code_leaves(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let head = self.selection.head().clone();
+        if head.part != Part::Code {
+            return;
+        }
+        if self.code_leaves.contains_key(&head.id) {
+            return;
+        }
+        let Some(snapshot) = self.snapshots().iter().find(|s| s.id == head.id).cloned() else {
+            return;
+        };
+        let language = snapshot
+            .language
+            .clone()
+            .filter(|language| language != gpui_component_block_view::PLAIN_LANGUAGE)
+            .unwrap_or_else(|| "markdown".to_string());
+        let value = snapshot.plain.clone();
+        let block_id = head.id.clone();
+        let state = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .language(language)
+                .default_value(value)
+        });
+        cx.subscribe(&state, {
+            let block_id = block_id.clone();
+            move |this, incoming, event: &gpui_component::input::InputEvent, cx| {
+                if !matches!(event, gpui_component::input::InputEvent::Change) {
+                    return;
+                }
+                let text = incoming.read(cx).value().to_string();
+                let len = this
+                    .snapshots()
+                    .iter()
+                    .find(|s| s.id == block_id)
+                    .map(|s| s.plain.len())
+                    .unwrap_or(0);
+                this.apply_many(
+                    &[
+                        BlockOp::DeleteRange {
+                            id: block_id.clone(),
+                            start: 0,
+                            end: len,
+                        },
+                        BlockOp::InsertText {
+                            id: block_id.clone(),
+                            offset: 0,
+                            text,
+                        },
+                    ],
+                    cx,
+                );
+            }
+        })
+        .detach();
+        self.code_leaves.insert(block_id, state);
+    }
+
+    /// Kit `Editor` over the focused code/markdown block, in that block's last
+    /// painted bounds — not a dump below the canvas.
+    fn code_leaf_element(&self, cx: &App) -> Option<AnyElement> {
+        let head = self.selection.head();
+        if head.part != Part::Code {
+            return None;
+        }
+        let state = self.code_leaves.get(&head.id)?.clone();
+        let bounds = self.layouts.block_bounds(&head.id)?;
+        Some(
+            gpui::deferred(
+                gpui::anchored()
+                    .position(bounds.origin)
+                    .anchor(gpui::Anchor::TopLeft)
+                    .child(
+                        div()
+                            .id("code-leaf-editor")
+                            .w(bounds.size.width)
+                            .h(bounds.size.height.max(px(24.)))
+                            .overflow_hidden()
+                            .bg(cx.theme().background)
+                            .occlude()
+                            .child(CodeEditor::new(&state).size_full()),
+                    ),
+            )
+            .priority(1)
+            .into_any_element(),
+        )
+    }
 }
 
 impl EventEmitter<EditorEvent> for Editor {}
@@ -1480,6 +1625,7 @@ impl Focusable for Editor {
 
 impl Render for Editor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_code_leaves(window, cx);
         let focused = self.focus_handle.is_focused(window);
         if focused {
             if self.blink.is_none() {
@@ -1489,6 +1635,7 @@ impl Render for Editor {
             self.blink = None;
         }
 
+        let in_code_leaf = self.selection.head().part == Part::Code;
         let handle = self.focus_handle.clone();
         let entity = cx.entity();
         let input = canvas(
@@ -1498,23 +1645,25 @@ impl Render for Editor {
                     this.origin = bounds.origin;
                     this.width = bounds.size.width;
                 });
-                window.handle_input(
-                    &handle,
-                    ElementInputHandler::new(bounds, entity.clone()),
-                    cx,
-                );
+                if !in_code_leaf {
+                    window.handle_input(
+                        &handle,
+                        ElementInputHandler::new(bounds, entity.clone()),
+                        cx,
+                    );
+                }
             },
         )
         .absolute()
         .size_full();
 
         let handle = self.focus_handle.clone().tab_stop(true);
-        let selection = focused.then(|| self.selection.clone());
+        let painted_selections = focused.then(|| self.selections()).unwrap_or_default();
         let marked = self.marked.clone();
         let annotations = self.annotations_cache.clone();
         let placeholder: Option<SharedString> = Some(PLACEHOLDER.into());
         let editing = Editing {
-            selection,
+            selections: &painted_selections,
             caret_on: focused && self.caret_on,
             layouts: Some(&self.layouts),
             annotations: &annotations,
@@ -1525,7 +1674,7 @@ impl Render for Editor {
         let body = render_with(self.snapshots(), editing, window, cx);
 
         div()
-            .id("limen-block-editor")
+            .id("block-editor")
             .key_context(keys::CONTEXT)
             .track_focus(&handle)
             .size_full()
@@ -1604,9 +1753,19 @@ impl Render for Editor {
                         return cx.notify();
                     }
                     this.selection = match event.click_count {
+                        _ if event.modifiers.secondary() => {
+                            this.extra_selections.push(Selection::caret(hit.clone()));
+                            this.selection.clone()
+                        }
                         _ if event.modifiers.shift => this.selection.extend_to(hit),
-                        1 => Selection::caret(hit),
-                        _ => Selection::caret(hit),
+                        1 => {
+                            this.extra_selections.clear();
+                            Selection::caret(hit)
+                        }
+                        _ => {
+                            this.extra_selections.clear();
+                            Selection::caret(hit)
+                        }
                     };
                     this.dragging = event.click_count == 1 && !event.modifiers.shift;
                     this.caret_moved();
@@ -1672,6 +1831,7 @@ impl Render for Editor {
             }))
             .child(input)
             .child(body)
+            .when_some(self.code_leaf_element(cx), |el, overlay| el.child(overlay))
             .children(self.block_handle(focused, cx))
             .children(self.language_chip(cx))
             .children(self.drop_indicator(cx))
