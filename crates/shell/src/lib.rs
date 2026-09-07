@@ -114,7 +114,11 @@ pub use component_registry::{
 };
 pub(crate) use component_registry::{ComponentCallbackValue, ComponentId, RecordedComponentMethod};
 pub use engine::{LoadedApplication, ShellRuntime};
-pub use error::ShellError;
+pub(crate) use error::InactiveCallback;
+pub use error::{
+    DiagnosticSink, ScriptFailure, ScriptFailureCategory, ScriptPhase, ScriptSourceLocation,
+    ShellError,
+};
 #[cfg(not(feature = "gpui-fast"))]
 pub use gpui;
 pub use host_modules::{
@@ -128,7 +132,7 @@ pub use runtime::{
 };
 pub use scope::{ScopePhase, with_current_app};
 pub use snapshot::RenderSnapshot;
-pub use view::ScriptView;
+pub use view::{FirstRender, ScriptView};
 pub use watch::Watcher;
 
 use std::path::PathBuf;

@@ -7,6 +7,7 @@
 //! to be able to see them.
 
 mod benchmark;
+mod diagnostics;
 mod dock;
 mod fs;
 mod host_api;

@@ -24,7 +24,7 @@ use gpui_base::{
     Button, ColorTokens, TextSelectionHandle, TextSelectionRegistration, TextSelectionRun,
 };
 
-use crate::{spec::CallbackId, view::ScriptView};
+use crate::{error::ScriptFailure, spec::CallbackId, view::ScriptView};
 
 /// Where an application's data lives, given who it is.
 pub(crate) fn app_data_dir(id: &str) -> Result<PathBuf> {
@@ -201,6 +201,17 @@ Applications found below this directory:",
 pub(crate) struct ApplicationGeneration {
     id: u64,
     active: Cell<bool>,
+    initial_frame: RefCell<InitialFrameState>,
+}
+
+enum InitialFrameState {
+    Pending(Option<ScriptFailure>),
+    Complete,
+}
+
+pub(crate) enum InitialFrameOutcome {
+    Succeeded,
+    Failed(ScriptFailure),
 }
 
 impl ApplicationGeneration {
@@ -208,11 +219,34 @@ impl ApplicationGeneration {
         Rc::new(Self {
             id,
             active: Cell::new(true),
+            initial_frame: RefCell::new(InitialFrameState::Pending(None)),
         })
     }
 
     pub(crate) fn is_active(&self) -> bool {
         self.active.get()
+    }
+
+    pub(crate) fn record_initial_frame_failure(&self, failure: &ScriptFailure) {
+        if !self.is_active() {
+            return;
+        }
+        if let InitialFrameState::Pending(first) = &mut *self.initial_frame.borrow_mut()
+            && first.is_none()
+        {
+            *first = Some(failure.clone());
+        }
+    }
+
+    pub(crate) fn complete_initial_frame(&self) -> Option<InitialFrameOutcome> {
+        if !self.is_active() {
+            return None;
+        }
+        match self.initial_frame.replace(InitialFrameState::Complete) {
+            InitialFrameState::Pending(Some(failure)) => Some(InitialFrameOutcome::Failed(failure)),
+            InitialFrameState::Pending(None) => Some(InitialFrameOutcome::Succeeded),
+            InitialFrameState::Complete => None,
+        }
     }
 
     pub(crate) fn retire(&self) {
@@ -221,6 +255,7 @@ impl ApplicationGeneration {
             "retiring shell application generation"
         );
         self.active.set(false);
+        *self.initial_frame.borrow_mut() = InitialFrameState::Complete;
     }
 }
 
