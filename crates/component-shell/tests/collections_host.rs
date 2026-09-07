@@ -212,6 +212,62 @@ export default class App extends View {{ render() {{ return {expression}; }} }}"
 }
 
 #[gpui::test]
+fn tree_click_emits_on_select_skips_duplicate_rebuild_and_clears_when_removed(
+    cx: &mut TestAppContext,
+) {
+    let source = r#"
+import { View } from "gpui-kit";
+import { Tree, TreeItem } from "gpui-component";
+export default class App extends View {
+  init() { this.renders = 0; }
+  render() {
+    const round = this.renders++;
+    const tree = new Tree("files").on_select((id) => {});
+    if (round < 2) {
+      return tree.p(2).child(new TreeItem("main", round === 1 ? "main.rs renamed" : "main.rs"));
+    }
+    return tree.p(2).child(new TreeItem("other", "other.rs"));
+  }
+}
+"#;
+    let (mut context, view, _app) = mount(cx, source);
+    collections::test_probe::take_selected();
+    draw(&mut context, view.clone());
+    context.update(|_, cx| {
+        assert_eq!(view.read(cx).build_error(), None);
+    });
+
+    context.simulate_click(point(px(20.), px(20.)), Modifiers::default());
+    context.run_until_parked();
+    assert_eq!(
+        collections::test_probe::take_selected(),
+        [Some("main".into())],
+        "pointer selection must invoke on_select with the item id"
+    );
+
+    context.update(|_, cx| view.update(cx, |view, cx| view.refresh(cx)));
+    context.run_until_parked();
+    draw(&mut context, view.clone());
+    context.update(|_, cx| {
+        assert_eq!(view.read(cx).build_error(), None);
+    });
+    assert_eq!(
+        collections::test_probe::take_selected(),
+        [] as [Option<String>; 0],
+        "a fingerprint rebuild that keeps main must not emit a duplicate on_select"
+    );
+
+    context.update(|_, cx| view.update(cx, |view, cx| view.refresh(cx)));
+    context.run_until_parked();
+    draw(&mut context, view);
+    assert_eq!(
+        collections::test_probe::take_selected(),
+        [None],
+        "removing the selected id must emit one clear"
+    );
+}
+
+#[gpui::test]
 fn typed_materializer_boundary_rejects_ordinary_and_registered_wrong_children(
     cx: &mut TestAppContext,
 ) {

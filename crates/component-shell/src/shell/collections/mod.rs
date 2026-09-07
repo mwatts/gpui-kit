@@ -1,11 +1,8 @@
-//! Typed Tree binding plus explicit delegate-heavy collection deferrals.
+//! Typed Tree binding for gpui-component.
 //!
-//! List/DataTable need mutable generic delegates and lazy row/cell element
-//! renderers. Select/Combobox/SearchableList additionally need value lookup,
-//! async search and retained selection subscriptions. VirtualList needs an
-//! owning `Entity<V: Render>`, visible-range callbacks returning elements, and
-//! a measurement budget. None of those capabilities exists in the shell yet,
-//! so only the native Tree surface that fits typed children is registered.
+//! `list` / `uniform_list` and `DockArea` already bind in gpui-shell. Select,
+//! Combobox, and DataTable live in their own component-shell families. This
+//! module registers only Tree / TreeItem.
 
 pub(super) use super::support::{bool_method, require_child};
 
