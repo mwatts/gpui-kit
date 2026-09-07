@@ -42,7 +42,8 @@ use crate::{
     entities::{EntityHandle, EntityStore},
     error::{
         DiagnosticSink, InactiveCallback, MAX_FAILURE_MESSAGE_BYTES, MAX_FAILURE_STACK_BYTES,
-        ScriptFailure, ScriptFailureCategory, ScriptPhase, entry_from_stack, location_from_stack,
+        ScriptFailure, ScriptFailureCategory, ScriptPhase, ScriptSourceLocation, entry_from_stack,
+        location_from_stack,
     },
     host_modules::HostValue,
     metrics::Metrics,
@@ -1443,6 +1444,27 @@ impl ShellRuntime {
         if let Some(application) = scope::current_application_generation() {
             application.record_initial_frame_failure(&failure);
         }
+        self.emit_script_failure(failure);
+    }
+
+    pub(crate) fn report_scheduler_failure(
+        &self,
+        application: Option<&Rc<ApplicationGeneration>>,
+        failure: ScriptFailure,
+    ) {
+        let application = application
+            .cloned()
+            .or_else(scope::current_application_generation);
+        if let Some(application) = application {
+            if !application.is_active() {
+                return;
+            }
+            application.record_initial_frame_failure(&failure);
+        }
+        self.emit_script_failure(failure);
+    }
+
+    fn emit_script_failure(&self, failure: ScriptFailure) {
         if let Some(sink) = self.diagnostic_sink.borrow().as_ref() {
             tracing::error!("{}", failure.safe_summary());
             sink.report(failure);
@@ -1505,6 +1527,23 @@ impl ShellRuntime {
     }
 
     fn capture_js_error(&self, ctx: &Ctx<'_>, error: JsError) -> ScriptFailure {
+        self.capture_js_error_in_phase(ctx, error, self.current_failure_phase())
+    }
+
+    pub(crate) fn capture_scheduler_error(
+        &self,
+        ctx: &Ctx<'_>,
+        error: JsError,
+    ) -> ScriptFailure {
+        self.capture_js_error_in_phase(ctx, error, ScriptPhase::Callback)
+    }
+
+    fn capture_js_error_in_phase(
+        &self,
+        ctx: &Ctx<'_>,
+        error: JsError,
+        phase: ScriptPhase,
+    ) -> ScriptFailure {
         let budget = sandbox::take_budget_interrupt();
         let caught = matches!(error, JsError::Exception).then(|| ctx.catch());
         let uncatchable = caught.as_ref().is_some_and(Value::is_uncatchable_error);
@@ -1519,51 +1558,55 @@ impl ShellRuntime {
             ScriptFailureCategory::Engine
         };
 
-        let mut stack = None;
-        let mut location = None;
-        let mut entry = None;
-        let message = if budget || uncatchable {
-            String::new()
-        } else if let Some(value) = caught {
-            if let Some(exception) = value.as_exception() {
-                stack = own_data_string(
-                    ctx,
-                    exception.as_object(),
-                    qjs::JS_ATOM_stack,
-                    MAX_FAILURE_STACK_BYTES,
-                );
-                location = stack.as_deref().and_then(location_from_stack);
-                entry = stack.as_deref().and_then(entry_from_stack);
-                own_data_string(
-                    ctx,
-                    exception.as_object(),
-                    qjs::JS_ATOM_message,
-                    MAX_FAILURE_MESSAGE_BYTES,
-                )
-                .unwrap_or_else(|| "script exception".to_owned())
-            } else if value.as_string().is_some() {
-                bounded_js_string(&value, MAX_FAILURE_MESSAGE_BYTES)
-                    .unwrap_or_else(|| "script threw a string".to_owned())
-            } else {
-                "script threw a non-Error value".to_owned()
-            }
+        let captured = if budget || uncatchable {
+            CapturedScriptFailure::without_payload()
+        } else if let Some(value) = caught.as_ref() {
+            capture_failure_value(ctx, value)
         } else {
-            error.to_string()
+            CapturedScriptFailure::message(error.to_string())
         };
+        self.finish_captured_failure(phase, category, captured)
+    }
 
+    pub(crate) fn capture_scheduler_rejection(
+        &self,
+        ctx: &Ctx<'_>,
+        value: &Value<'_>,
+    ) -> ScriptFailure {
+        let budget = sandbox::take_budget_interrupt();
+        let uncatchable = value.is_uncatchable_error();
+        let category = if budget || uncatchable {
+            ScriptFailureCategory::ExecutionBudget
+        } else {
+            ScriptFailureCategory::Exception
+        };
+        let captured = if budget || uncatchable {
+            CapturedScriptFailure::without_payload()
+        } else {
+            capture_failure_value(ctx, value)
+        };
+        self.finish_captured_failure(ScriptPhase::Callback, category, captured)
+    }
+
+    fn finish_captured_failure(
+        &self,
+        phase: ScriptPhase,
+        category: ScriptFailureCategory,
+        captured: CapturedScriptFailure,
+    ) -> ScriptFailure {
         let mut failure = ScriptFailure::new(
-            self.current_failure_phase(),
+            phase,
             category,
-            message,
+            captured.message,
             self.next_correlation_id(),
         );
-        if let Some(entry) = entry {
+        if let Some(entry) = captured.entry {
             failure = failure.with_entry(entry);
         }
-        if let Some(location) = location {
+        if let Some(location) = captured.location {
             failure = failure.with_location(location);
         }
-        if let Some(stack) = stack {
+        if let Some(stack) = captured.stack {
             failure = failure.with_stack(stack);
         }
         failure
@@ -9832,25 +9875,6 @@ fn upgrade(runtime: &Weak<ShellRuntime>, ctx: &Ctx<'_>) -> JsResult<Rc<ShellRunt
         .ok_or_else(|| Exception::throw_message(ctx, "the shell runtime has already shut down"))
 }
 
-/// Turns a QuickJS error into a message that includes the script's own stack,
-/// which is the part an author actually needs.
-fn describe(ctx: &Ctx<'_>, error: JsError) -> String {
-    if !matches!(error, JsError::Exception) {
-        return error.to_string();
-    }
-    let value = ctx.catch();
-    match value.as_exception() {
-        Some(exception) => match exception.stack() {
-            Some(stack) => format!(
-                "{}\n{stack}",
-                exception.message().unwrap_or_else(|| "error".into())
-            ),
-            None => exception.message().unwrap_or_else(|| "error".into()),
-        },
-        None => format!("{value:?}"),
-    }
-}
-
 fn own_data_string(
     ctx: &Ctx<'_>,
     object: &Object<'_>,
@@ -9882,6 +9906,62 @@ fn own_data_string(
         return None;
     }
     bounded_js_string(&value, max_bytes)
+}
+
+struct CapturedScriptFailure {
+    message: String,
+    stack: Option<String>,
+    location: Option<ScriptSourceLocation>,
+    entry: Option<String>,
+}
+
+impl CapturedScriptFailure {
+    fn message(message: String) -> Self {
+        Self {
+            message,
+            stack: None,
+            location: None,
+            entry: None,
+        }
+    }
+
+    fn without_payload() -> Self {
+        Self::message(String::new())
+    }
+}
+
+fn capture_failure_value(ctx: &Ctx<'_>, value: &Value<'_>) -> CapturedScriptFailure {
+    let Some(exception) = value.as_exception() else {
+        let message = if value.as_string().is_some() {
+            bounded_js_string(value, MAX_FAILURE_MESSAGE_BYTES)
+                .unwrap_or_else(|| "script threw a string".to_owned())
+        } else {
+            "script threw a non-Error value".to_owned()
+        };
+        return CapturedScriptFailure::message(message);
+    };
+
+    let stack = own_data_string(
+        ctx,
+        exception.as_object(),
+        qjs::JS_ATOM_stack,
+        MAX_FAILURE_STACK_BYTES,
+    );
+    let location = stack.as_deref().and_then(location_from_stack);
+    let entry = stack.as_deref().and_then(entry_from_stack);
+    let message = own_data_string(
+        ctx,
+        exception.as_object(),
+        qjs::JS_ATOM_message,
+        MAX_FAILURE_MESSAGE_BYTES,
+    )
+    .unwrap_or_else(|| "script exception".to_owned());
+    CapturedScriptFailure {
+        message,
+        stack,
+        location,
+        entry,
+    }
 }
 
 fn bounded_js_string(value: &Value<'_>, max_bytes: usize) -> Option<String> {
