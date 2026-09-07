@@ -65,6 +65,7 @@ pub(crate) mod entities;
 pub(crate) mod error;
 pub mod host;
 pub mod host_modules;
+mod host_source;
 pub(crate) mod materialize;
 pub mod metrics;
 pub(crate) mod path;
@@ -113,6 +114,7 @@ pub use gpui;
 pub use host_modules::{
     HostArguments, HostError, HostModule, HostObject, HostResult, HostValue, RESERVED_SPECIFIERS,
 };
+pub use host_source::HostSource;
 pub use metrics::RuntimeMetrics;
 pub use root::{DialogOptions, ShellRoot, ToastLevel, ToastRequest};
 pub use runtime::{

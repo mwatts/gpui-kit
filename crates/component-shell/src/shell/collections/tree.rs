@@ -6,14 +6,16 @@ use gpui_component::{
     tree::{Tree, TreeItem, TreeState},
 };
 use gpui_shell::{
-    ArgumentDescriptor, ArgumentSchema, ComponentArgument, ComponentDescriptor,
-    ComponentMaterializer, ComponentPayload, ComponentRegistry, ConstructorDescriptor,
-    MaterializeRequest, RegistryError, anyhow,
+    ArgumentDescriptor, ArgumentSchema, ComponentArgument, ComponentCallback,
+    ComponentCallbackArgument, ComponentDescriptor, ComponentMaterializer, ComponentPayload,
+    ComponentRegistry, ConstructorDescriptor, MaterializeRequest, MethodDescriptor, RegistryError,
+    anyhow,
     gpui::{
-        self, AppContext as _, IntoElement as _, ParentElement as _, Refineable as _, Styled as _,
+        self, App, AppContext as _, Entity, IntoElement as _, ParentElement as _, Refineable as _,
+        RenderOnce, Styled as _, Subscription, Window,
     },
 };
-use std::{collections::HashSet, sync::Arc};
+use std::{cell::RefCell, collections::HashSet, rc::Rc, sync::Arc};
 #[derive(Clone)]
 struct ItemPayload {
     id: String,
@@ -26,10 +28,24 @@ enum ItemOp {
 }
 #[derive(Clone)]
 struct TreePayload(String);
-struct RetainedTree {
-    native: gpui::Entity<TreeState>,
+#[derive(Clone)]
+enum TreeOp {
+    OnSelect(ComponentArgument),
+}
+struct Host {
+    native: Entity<TreeState>,
     fingerprint: Vec<ItemFingerprint>,
     roots: Vec<TreeItem>,
+    callback: Rc<RefCell<Option<ComponentCallback>>>,
+    last_selected: Rc<RefCell<Option<String>>>,
+    _selection: Subscription,
+}
+#[derive(gpui::IntoElement)]
+struct BoundTree {
+    id: String,
+    items: Vec<TreeItem>,
+    on_select: Option<ComponentCallback>,
+    style: gpui::StyleRefinement,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ItemFingerprint {
@@ -84,52 +100,93 @@ impl ComponentMaterializer for ItemMaterializer {
         Ok(Carrier::new(item).into_any_element())
     }
 }
-struct TreeMaterializer;
-impl ComponentMaterializer for TreeMaterializer {
-    fn materialize(&self, mut request: MaterializeRequest<'_>) -> anyhow::Result<gpui::AnyElement> {
-        let id = request
-            .payload()
-            .downcast_ref::<TreePayload>()
-            .ok_or_else(|| anyhow::anyhow!("Tree incompatible payload"))?
-            .0
-            .clone();
-        let mut items = Vec::new();
-        for mut child in request.take_typed_children()? {
-            require_tree_item("Tree", child.component_name())?;
-            let mut element = request.materialize_child(&mut child)?;
-            items.push(take::<TreeItem>(&mut element, "TreeItem")?);
+fn emit_selection(
+    native: &Entity<TreeState>,
+    last_selected: &Rc<RefCell<Option<String>>>,
+    callback: &Rc<RefCell<Option<ComponentCallback>>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let current = native
+        .read(cx)
+        .selected_item()
+        .map(|item| item.id.to_string());
+    if *last_selected.borrow() == current {
+        return;
+    }
+    last_selected.replace(current.clone());
+    let Some(callback) = callback.borrow().clone() else {
+        return;
+    };
+    let arguments = match &current {
+        Some(id) => {
+            #[cfg(test)]
+            test_probe::selected(Some(id.clone()));
+            vec![ComponentCallbackArgument::String(id.clone())]
         }
-        validate_unique_ids(&items)?;
-        let fingerprint = fingerprint(&items);
-        let state = request.with_window_app(|window, cx| {
-            let retained =
-                window.use_keyed_state(format!("shell-tree:{id}"), cx, |_, cx| RetainedTree {
-                    native: cx.new(|cx| TreeState::new(cx).items(items.clone())),
-                    fingerprint: fingerprint.clone(),
-                    roots: items.clone(),
+        None => {
+            #[cfg(test)]
+            test_probe::selected(None);
+            vec![ComponentCallbackArgument::Array(Vec::new())]
+        }
+    };
+    callback.invoke_and_report_with("Tree.on_select", &arguments, window, cx);
+}
+
+impl RenderOnce for BoundTree {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl gpui::IntoElement {
+        let fingerprint = fingerprint(&self.items);
+        let init_fingerprint = fingerprint.clone();
+        let init_callback = self.on_select.clone();
+        let initial_items = self.items.clone();
+        let host: Entity<Host> =
+            window.use_keyed_state(format!("shell-tree:{}", self.id), cx, move |window, cx| {
+                let native = cx.new(|cx| TreeState::new(cx).items(initial_items.clone()));
+                let callback = Rc::new(RefCell::new(init_callback));
+                let last_selected = Rc::new(RefCell::new(None));
+                let event_callback = callback.clone();
+                let event_last = last_selected.clone();
+                let selection = window.observe(&native, cx, move |native, window, cx| {
+                    emit_selection(&native, &event_last, &event_callback, window, cx);
                 });
-            retained.update(cx, |retained, cx| {
-                if retained.fingerprint != fingerprint {
-                    preserve_expansion(&mut items, &retained.roots);
-                    let selected_id = retained
-                        .native
-                        .read(cx)
-                        .selected_item()
-                        .map(|item| item.id.clone());
-                    retained.native.update(cx, |native, cx| {
-                        native.set_items(items.clone(), cx);
-                        let selected_ix = selected_id
-                            .as_ref()
-                            .and_then(|selected_id| native.index_of(selected_id));
-                        native.set_selected_index(selected_ix, cx);
-                    });
-                    retained.fingerprint = fingerprint.clone();
-                    retained.roots = items.clone();
+                Host {
+                    native,
+                    fingerprint: init_fingerprint,
+                    roots: initial_items,
+                    callback,
+                    last_selected,
+                    _selection: selection,
                 }
             });
-            Ok(retained.read(cx).native.clone())
-        })?;
-        let mut tree = Tree::new(&state, move |_ix, entry, selected, _, _| {
+        let (native, callback_slot, last_selected) = {
+            let host = host.read(cx);
+            (
+                host.native.clone(),
+                host.callback.clone(),
+                host.last_selected.clone(),
+            )
+        };
+        *callback_slot.borrow_mut() = self.on_select;
+        host.update(cx, |host, cx| {
+            if host.fingerprint != fingerprint {
+                let mut items = self.items.clone();
+                preserve_expansion(&mut items, &host.roots);
+                let selected_id = host
+                    .native
+                    .read(cx)
+                    .selected_item()
+                    .map(|item| item.id.clone());
+                host.native.update(cx, |native, cx| {
+                    native.set_items(items.clone(), cx);
+                    let selected_ix = selected_id.as_ref().and_then(|id| native.index_of(id));
+                    native.set_selected_index(selected_ix, cx);
+                });
+                host.fingerprint = fingerprint;
+                host.roots = items;
+            }
+        });
+        emit_selection(&native, &last_selected, &callback_slot, window, cx);
+        let mut tree = Tree::new(&native, move |_ix, entry, selected, _, _| {
             #[cfg(test)]
             test_probe::row(entry.item(), selected);
             ListItem::new(entry.item().id.clone())
@@ -150,8 +207,44 @@ impl ComponentMaterializer for TreeMaterializer {
                         .child(entry.item().label.clone()),
                 )
         });
-        tree.style().refine(&request.take_style());
-        Ok(tree.into_any_element())
+        tree.style().refine(&self.style);
+        tree
+    }
+}
+
+struct TreeMaterializer;
+impl ComponentMaterializer for TreeMaterializer {
+    fn materialize(&self, mut request: MaterializeRequest<'_>) -> anyhow::Result<gpui::AnyElement> {
+        let id = request
+            .payload()
+            .downcast_ref::<TreePayload>()
+            .ok_or_else(|| anyhow::anyhow!("Tree incompatible payload"))?
+            .0
+            .clone();
+        let on_select = request
+            .methods()
+            .filter_map(|method| method.payload().downcast_ref::<TreeOp>())
+            .filter_map(|op| match op {
+                TreeOp::OnSelect(argument) => Some(argument.clone()),
+            })
+            .last();
+        let on_select = on_select
+            .map(|argument| request.resolve_callback(&argument))
+            .transpose()?;
+        let mut items = Vec::new();
+        for mut child in request.take_typed_children()? {
+            require_tree_item("Tree", child.component_name())?;
+            let mut element = request.materialize_child(&mut child)?;
+            items.push(take::<TreeItem>(&mut element, "TreeItem")?);
+        }
+        validate_unique_ids(&items)?;
+        Ok(BoundTree {
+            id,
+            items,
+            on_select,
+            style: request.take_style(),
+        }
+        .into_any_element())
     }
 }
 fn validate_unique_ids(items: &[TreeItem]) -> anyhow::Result<()> {
@@ -185,6 +278,7 @@ pub(crate) mod test_probe {
     thread_local! {
         static ROWS: RefCell<Vec<(String, String, bool)>> = const { RefCell::new(Vec::new()) };
         static ERRORS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        static SELECTED: RefCell<Vec<Option<String>>> = const { RefCell::new(Vec::new()) };
     }
     pub(super) fn row(item: &TreeItem, selected: bool) {
         ROWS.with(|rows| {
@@ -195,11 +289,17 @@ pub(crate) mod test_probe {
     pub(super) fn error(error: &str) {
         ERRORS.with(|errors| errors.borrow_mut().push(error.to_owned()));
     }
+    pub(super) fn selected(id: Option<String>) {
+        SELECTED.with(|values| values.borrow_mut().push(id));
+    }
     pub(crate) fn take_rows() -> Vec<(String, String, bool)> {
         ROWS.with(|rows| std::mem::take(&mut *rows.borrow_mut()))
     }
     pub(crate) fn take_errors() -> Vec<String> {
         ERRORS.with(|errors| std::mem::take(&mut *errors.borrow_mut()))
+    }
+    pub(crate) fn take_selected() -> Vec<Option<String>> {
+        SELECTED.with(|values| std::mem::take(&mut *values.borrow_mut()))
     }
 }
 fn preserve_expansion(incoming: &mut [TreeItem], previous: &[TreeItem]) {
@@ -272,9 +372,26 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
                 _ => Err("Tree expects non-empty id".into()),
             },
         )])
-.with_methods(vec![])
+.with_methods(vec![
+            MethodDescriptor::new(
+                "on_select",
+                vec![ArgumentDescriptor::new(
+                    "callback",
+                    ArgumentSchema::Callback("(id: string | [], cx: Context) => void"),
+                )],
+                |arguments| match arguments {
+                    [argument @ ComponentArgument::Callback(_)] => {
+                        Ok(ComponentPayload::new(TreeOp::OnSelect(argument.clone())))
+                    }
+                    _ => Err("Tree.on_select expects one callback".into()),
+                },
+            )
+            .with_documentation(
+                "Invokes the callback with the selected item id, or [] when selection is cleared. A rebuild that keeps the same id does not emit again.",
+            ),
+        ])
 .with_documentation(
-            "Native retained tree keyed only by a stable id that must be unique among Trees in the same window; label/structure/disabled data syncs by unique item id while native expansion, selection, focus, and scroll state persist.",
+            "Native retained tree keyed only by a stable id that must be unique among Trees in the same window; label/structure/disabled data syncs by unique item id while native expansion, selection, focus, and scroll state persist. Pointer and keyboard selection invoke on_select.",
         ))?;
     Ok(())
 }

@@ -10568,3 +10568,169 @@ fn a_list_reports_which_item_was_clicked(cx: &mut TestAppContext) {
     // covers 60..80.
     assert_a_click_reports_the_row_key(cx, measured_list_source(), 70.);
 }
+
+fn keyed_rows_source(list_kind: &str) -> String {
+    let renderer = if list_kind == "uniform_list" {
+        r#"(range) => {
+              const rows = [];
+              for (let index = range.start; index < range.end; index++) {
+                rows.push(div().h(40).child(this.items[index].key));
+              }
+              return rows;
+            }"#
+    } else {
+        r#"(index) => div().h(40).child(this.items[index].key)"#
+    };
+    format!(
+        r#"
+import {{ div, View, {list_kind} }} from "gpui-kit";
+import {{ v_flex }} from "gpui-base";
+
+export default class Rows extends View {{
+  init() {{
+    this.items = [{{ key: "alpha" }}, {{ key: "beta" }}];
+    this.clicked = [];
+  }}
+  render(cx) {{
+    return v_flex()
+      .w(300)
+      .h(100)
+      .child(
+        {list_kind}(
+          "rows",
+          this.items.length,
+          (index) => this.items[index].key,
+          {renderer},
+        ).on_item_click((key, cx) => {{
+          this.clicked.push(key);
+          this.items.reverse();
+          cx.notify();
+        }}),
+      )
+      .child(`clicked ${{this.clicked.join(",")}}`);
+  }}
+}}
+"#
+    )
+}
+
+fn on_item_click_callback(snapshot: &crate::RenderSnapshot) -> u64 {
+    fn walk(arena: &crate::spec::SpecArena, id: crate::spec::SpecId) -> Option<u64> {
+        let node = arena.node(id)?;
+        for op in node.ops() {
+            if let crate::spec::SpecOp::Callback("on_item_click", callback) = op {
+                return Some(*callback);
+            }
+        }
+        node.children().iter().find_map(|child| walk(arena, *child))
+    }
+    walk(snapshot.arena(), snapshot.root()).expect("on_item_click")
+}
+
+fn assert_shuffled_key_click_keeps_identity(cx: &mut TestAppContext, source: &str) {
+    let (runtime, _window, view, mut context) = mount_list_source(cx, source);
+    let old_callback = context.update(|_, cx| {
+        on_item_click_callback(view.read(cx).snapshot().expect("initial snapshot"))
+    });
+
+    context.simulate_click(point(px(150.), px(20.)), Modifiers::default());
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    context.update(|window, cx| runtime.dispatch_item_key(old_callback, "alpha", window, cx));
+    context.update(|window, cx| window.draw(cx).clear(cx));
+
+    let tree = redraw_and_read(&mut context, &view);
+    assert!(
+        tree.contains("clicked alpha,alpha"),
+        "a shuffled-key click must still report the same key: {tree}"
+    );
+}
+
+fn filtered_rows_source(list_kind: &str) -> String {
+    let renderer = if list_kind == "uniform_list" {
+        r#"(range) => {
+              const rows = [];
+              for (let index = range.start; index < range.end; index++) {
+                rows.push(div().h(40).child(this.items[index].key));
+              }
+              return rows;
+            }"#
+    } else {
+        r#"(index) => div().h(40).child(this.items[index].key)"#
+    };
+    format!(
+        r#"
+import {{ div, View, {list_kind} }} from "gpui-kit";
+import {{ v_flex }} from "gpui-base";
+
+export default class Rows extends View {{
+  init() {{
+    this.items = [{{ key: "alpha" }}, {{ key: "beta" }}];
+    this.clicked = [];
+  }}
+  render(cx) {{
+    return v_flex()
+      .w(300)
+      .h(100)
+      .child(
+        {list_kind}(
+          "rows",
+          this.items.length,
+          (index) => this.items[index].key,
+          {renderer},
+        ).on_item_click((key, cx) => {{
+          this.clicked.push(key);
+          this.items = this.items.filter((item) => item.key !== key);
+          cx.notify();
+        }}),
+      )
+      .child(`clicked ${{this.clicked.join(",")}}`);
+  }}
+}}
+"#
+    )
+}
+
+fn assert_filtered_away_key_is_not_clickable(cx: &mut TestAppContext, source: &str) {
+    let (_runtime, _window, view, mut context) = mount_list_source(cx, source);
+    context.simulate_click(point(px(150.), px(20.)), Modifiers::default());
+    context.run_until_parked();
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    let after_filter = redraw_and_read(&mut context, &view);
+    assert!(
+        after_filter.contains("clicked alpha"),
+        "the first click must name alpha before it is filtered away: {after_filter}"
+    );
+
+    context.simulate_click(point(px(150.), px(20.)), Modifiers::default());
+    context.run_until_parked();
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    let tree = redraw_and_read(&mut context, &view);
+    assert!(
+        tree.contains("clicked alpha,beta"),
+        "a filtered-away key must not remain clickable: {tree}"
+    );
+    assert!(
+        !tree.contains("clicked alpha,alpha"),
+        "alpha must not be reported after it left the collection: {tree}"
+    );
+}
+
+#[gpui::test]
+fn a_uniform_list_click_keeps_the_stable_item_key_across_reordering(cx: &mut TestAppContext) {
+    assert_shuffled_key_click_keeps_identity(cx, &keyed_rows_source("uniform_list"));
+}
+
+#[gpui::test]
+fn a_list_click_keeps_the_stable_item_key_across_reordering(cx: &mut TestAppContext) {
+    assert_shuffled_key_click_keeps_identity(cx, &keyed_rows_source("list"));
+}
+
+#[gpui::test]
+fn a_uniform_list_filtered_away_key_is_not_clickable(cx: &mut TestAppContext) {
+    assert_filtered_away_key_is_not_clickable(cx, &filtered_rows_source("uniform_list"));
+}
+
+#[gpui::test]
+fn a_list_filtered_away_key_is_not_clickable(cx: &mut TestAppContext) {
+    assert_filtered_away_key_is_not_clickable(cx, &filtered_rows_source("list"));
+}

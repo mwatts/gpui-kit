@@ -38,6 +38,7 @@ use smallvec::SmallVec;
 use crate::{
     ArgumentDescriptor, ArgumentSchema, ComponentArgument, ComponentCallbackArgument,
     ComponentCallbackValue, ComponentDataValue, ComponentPayload, FrozenComponentRegistry,
+    HostSource,
     dependencies::{GitDependencyStore, MaterializedDependency},
     entities::{EntityHandle, EntityStore},
     error::{
@@ -46,6 +47,7 @@ use crate::{
         location_from_stack,
     },
     host_modules::HostValue,
+    host_source::{MAX_MODULE_BYTES, normalize_module_specifier},
     metrics::Metrics,
     policy::Policy,
     runtime::{ApplicationGeneration, CallbackArena, CallbackEntry},
@@ -57,7 +59,8 @@ use crate::{
     view::ScriptView,
 };
 
-const MAX_MODULE_BYTES: u64 = 8 * 1024 * 1024;
+/// Prefix for resolved names of in-memory [`HostSource`] modules.
+const HOST_MODULE_PREFIX: &str = "host:";
 
 /// A script value that defines a view type — a JS class.
 #[derive(Clone)]
@@ -807,6 +810,40 @@ pub struct LoadedApplication {
     mounted: Cell<bool>,
 }
 
+impl LoadedApplication {
+    /// The application-generation id allocated for this load.
+    #[must_use]
+    pub fn generation_id(&self) -> u64 {
+        self.view_type
+            .application
+            .as_ref()
+            .map(|generation| generation.id())
+            .expect("loaded applications always hold a generation")
+    }
+}
+
+impl Drop for LoadedApplication {
+    fn drop(&mut self) {
+        if self.mounted.get() {
+            return;
+        }
+        let Some(runtime) = self.runtime.upgrade() else {
+            return;
+        };
+        if let Some(application) = self.view_type.application.clone() {
+            runtime.release_application_generation_without_context(&application);
+        }
+    }
+}
+
+impl std::fmt::Debug for LoadedApplication {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LoadedApplication")
+            .finish_non_exhaustive()
+    }
+}
+
 impl ViewType {
     /// A view class handed straight to the host rather than read off a
     /// module's default export.
@@ -1406,6 +1443,19 @@ impl ShellRuntime {
         })
     }
 
+    /// Loads a sealed in-memory [`HostSource`] without writing editor files.
+    ///
+    /// Resolution is confined to the frozen map plus built-in modules. Failure
+    /// releases the allocated generation; dropping an unmounted handle does the
+    /// same.
+    pub fn load_host_source(self: &Rc<Self>, source: &HostSource) -> Result<LoadedApplication> {
+        Ok(LoadedApplication {
+            runtime: Rc::downgrade(self),
+            view_type: self.load_host(source)?,
+            mounted: Cell::new(false),
+        })
+    }
+
     /// Creates, initializes and mounts a loaded application as a [`ScriptView`].
     ///
     /// The owner consumes the handle before construction. This makes a failed
@@ -1533,11 +1583,7 @@ impl ShellRuntime {
         self.capture_js_error_in_phase(ctx, error, self.current_failure_phase())
     }
 
-    pub(crate) fn capture_scheduler_error(
-        &self,
-        ctx: &Ctx<'_>,
-        error: JsError,
-    ) -> ScriptFailure {
+    pub(crate) fn capture_scheduler_error(&self, ctx: &Ctx<'_>, error: JsError) -> ScriptFailure {
         self.capture_js_error_in_phase(ctx, error, ScriptPhase::Callback)
     }
 
@@ -2247,6 +2293,38 @@ impl ShellRuntime {
         let loaded = self.load_source_with_lease(
             &format!("{}?v={}", entry.to_string_lossy(), generation),
             &source,
+            Some(module_lease),
+            Some(application.clone()),
+        );
+        if loaded.is_err() {
+            self.release_application_generation_without_context(&application);
+        }
+        loaded
+    }
+
+    /// Loads a sealed host module graph. Skips declaration writes and Git
+    /// materialization; the loader never opens files for this origin.
+    fn load_host(self: &Rc<Self>, source: &HostSource) -> Result<ViewType> {
+        let module_lease = self.app_modules.register_host(source.clone());
+        let generation = module_lease.generation();
+        let application = ApplicationGeneration::new(self.next_application_generation.get());
+        self.next_application_generation.set(
+            self.next_application_generation
+                .get()
+                .checked_add(1)
+                .expect("a shell runtime exhausted its application generations"),
+        );
+
+        let entry_source = source
+            .source(source.entry())
+            .ok_or_else(|| anyhow!("host source entry `{}` is missing", source.entry()))?
+            .to_owned();
+        let name = format!("{HOST_MODULE_PREFIX}{}?v={generation}", source.entry());
+
+        let _application_scope = scope::enter_application(application.clone());
+        let loaded = self.load_source_with_lease(
+            &name,
+            &entry_source,
             Some(module_lease),
             Some(application.clone()),
         );
@@ -5142,8 +5220,36 @@ struct AppModules {
 }
 
 #[derive(Clone)]
+enum ModuleOrigin {
+    Directory(std::path::PathBuf),
+    Host(HostSource),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum OriginKey {
+    Directory(std::path::PathBuf),
+    Host,
+}
+
+impl ModuleOrigin {
+    fn key(&self) -> OriginKey {
+        match self {
+            Self::Directory(root) => OriginKey::Directory(root.clone()),
+            Self::Host(_) => OriginKey::Host,
+        }
+    }
+
+    fn directory_root(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::Directory(root) => Some(root.as_path()),
+            Self::Host(_) => None,
+        }
+    }
+}
+
+#[derive(Clone)]
 struct ApplicationModules {
-    root: std::path::PathBuf,
+    origin: ModuleOrigin,
     generation: u32,
     dependencies: BTreeMap<String, MaterializedDependency>,
 }
@@ -5153,7 +5259,7 @@ struct ApplicationModuleLease(Rc<ApplicationModuleRegistration>);
 
 struct ApplicationModuleRegistration {
     applications: Rc<RefCell<Vec<ApplicationModules>>>,
-    root: std::path::PathBuf,
+    origin_key: OriginKey,
     generation: u32,
 }
 
@@ -5166,7 +5272,7 @@ impl ApplicationModuleLease {
 impl Drop for ApplicationModuleRegistration {
     fn drop(&mut self) {
         self.applications.borrow_mut().retain(|application| {
-            application.root != self.root || application.generation != self.generation
+            application.origin.key() != self.origin_key || application.generation != self.generation
         });
     }
 }
@@ -5182,16 +5288,29 @@ impl AppModules {
         root: std::path::PathBuf,
         dependencies: BTreeMap<String, MaterializedDependency>,
     ) -> ApplicationModuleLease {
+        self.register_origin(ModuleOrigin::Directory(root), dependencies)
+    }
+
+    fn register_host(&self, source: HostSource) -> ApplicationModuleLease {
+        self.register_origin(ModuleOrigin::Host(source), BTreeMap::new())
+    }
+
+    fn register_origin(
+        &self,
+        origin: ModuleOrigin,
+        dependencies: BTreeMap<String, MaterializedDependency>,
+    ) -> ApplicationModuleLease {
         let generation = self.next_generation.get().wrapping_add(1);
         self.next_generation.set(generation);
+        let origin_key = origin.key();
         self.applications.borrow_mut().push(ApplicationModules {
-            root: root.clone(),
+            origin,
             generation,
             dependencies,
         });
         ApplicationModuleLease(Rc::new(ApplicationModuleRegistration {
             applications: self.applications.clone(),
-            root,
+            origin_key,
             generation,
         }))
     }
@@ -5201,21 +5320,38 @@ impl AppModules {
         name.split_once("?v=").map(|(path, _)| path).unwrap_or(name)
     }
 
+    fn host_specifier(untagged: &str) -> Option<&str> {
+        untagged.strip_prefix(HOST_MODULE_PREFIX)
+    }
+
     fn application_for_base(&self, base: &str) -> Option<ApplicationModules> {
         let generation = Self::generation(base)?;
-        let base = Path::new(Self::untag(base));
+        let untagged = Self::untag(base);
         self.applications
             .borrow()
             .iter()
             .filter(|application| {
-                application.generation == generation
-                    && (base.starts_with(&application.root)
-                        || application
-                            .dependencies
-                            .values()
-                            .any(|dependency| base.starts_with(&dependency.root)))
+                if application.generation != generation {
+                    return false;
+                }
+                match &application.origin {
+                    ModuleOrigin::Host(_) => untagged.starts_with(HOST_MODULE_PREFIX),
+                    ModuleOrigin::Directory(root) => {
+                        let path = Path::new(untagged);
+                        path.starts_with(root)
+                            || application
+                                .dependencies
+                                .values()
+                                .any(|dependency| path.starts_with(&dependency.root))
+                    }
+                }
             })
-            .max_by_key(|application| application.root.components().count())
+            .max_by_key(|application| {
+                application
+                    .origin
+                    .directory_root()
+                    .map_or(0, |root| root.components().count())
+            })
             .cloned()
     }
 
@@ -5234,6 +5370,9 @@ impl AppModules {
         base: &str,
         name: &str,
     ) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+        let ModuleOrigin::Directory(root) = &application.origin else {
+            return None;
+        };
         let base_path = Path::new(Self::untag(base));
         let importing_dependency = application
             .dependencies
@@ -5242,7 +5381,7 @@ impl AppModules {
         let (joined, boundary) = if name.starts_with('.') {
             let boundary = importing_dependency
                 .map(|dependency| dependency.root.clone())
-                .unwrap_or_else(|| application.root.clone());
+                .unwrap_or_else(|| root.clone());
             (base_path.parent()?.join(name), boundary)
         } else if let Some((dependency_name, dependency)) = application
             .dependencies
@@ -5263,7 +5402,7 @@ impl AppModules {
         } else if importing_dependency.is_some() {
             return None;
         } else {
-            (application.root.join(name), application.root.clone())
+            (root.join(name), root.clone())
         };
 
         for candidate in [joined.clone(), joined.with_extension("js")] {
@@ -5272,6 +5411,41 @@ impl AppModules {
             }
         }
         None
+    }
+
+    fn host_candidate(source: &HostSource, base: &str, name: &str) -> Result<String, String> {
+        if !name.starts_with('.') {
+            return Err(if !name.contains('/') {
+                "bare".to_owned()
+            } else {
+                format!("cannot resolve module `{name}` from `{base}`")
+            });
+        }
+        let Some(from) = Self::host_specifier(Self::untag(base)) else {
+            return Err(format!(
+                "cannot identify the host module importing `{name}`"
+            ));
+        };
+        let parent = from
+            .rsplit_once('/')
+            .map(|(parent, _)| parent)
+            .unwrap_or("");
+        let combined = if parent.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{parent}/{name}")
+        };
+        let resolved = normalize_module_specifier(&combined).map_err(|error| error.to_string())?;
+        if source.contains(&resolved) {
+            return Ok(resolved);
+        }
+        if !resolved.ends_with(".js") {
+            let with_js = format!("{resolved}.js");
+            if source.contains(&with_js) {
+                return Ok(with_js);
+            }
+        }
+        Err(format!("cannot resolve module `{name}` from `{base}`"))
     }
 }
 
@@ -5289,6 +5463,25 @@ impl Resolver for AppModules {
                 &format!("cannot identify the application importing `{name}` from `{base}`"),
             ));
         };
+        if let ModuleOrigin::Host(source) = &application.origin {
+            return match Self::host_candidate(source, base, name) {
+                Ok(specifier) => Ok(format!(
+                    "{HOST_MODULE_PREFIX}{specifier}?v={}",
+                    application.generation
+                )),
+                Err(kind) if kind == "bare" => Err(Exception::throw_message(
+                    ctx,
+                    &format!(
+                        "cannot resolve module `{name}`: this runtime's built-in modules are {}, \
+                         and an application may otherwise import only its own files. If the \
+                         script expects a module this runtime does not have, the two are \
+                         different versions.",
+                        builtin_specifiers()
+                    ),
+                )),
+                Err(message) => Err(Exception::throw_message(ctx, &message)),
+            };
+        }
         let Some((path, boundary)) = self.candidate(&application, base, name) else {
             // A bare specifier reached the last resolver in the chain, so it is
             // neither a built-in nor a file. Saying which built-ins this
@@ -5338,10 +5531,35 @@ impl Loader for AppModules {
         name: &str,
         _attributes: Option<ImportAttributes<'js>>,
     ) -> JsResult<Module<'js, Declared>> {
-        let path = Self::untag(name);
-        let source = read_module_source(Path::new(path))
-            .map_err(|error| Exception::throw_message(ctx, &error.to_string()))?;
-        Module::declare(ctx.clone(), name, source)
+        let Some(application) = self.application_for_base(name) else {
+            return Err(Exception::throw_message(
+                ctx,
+                &format!("cannot identify the application loading `{name}`"),
+            ));
+        };
+        match &application.origin {
+            ModuleOrigin::Host(source) => {
+                let Some(specifier) = Self::host_specifier(Self::untag(name)) else {
+                    return Err(Exception::throw_message(
+                        ctx,
+                        &format!("host module name `{name}` is malformed"),
+                    ));
+                };
+                let Some(source) = source.source(specifier) else {
+                    return Err(Exception::throw_message(
+                        ctx,
+                        &format!("host module `{specifier}` is not in the sealed map"),
+                    ));
+                };
+                Module::declare(ctx.clone(), name, source)
+            }
+            ModuleOrigin::Directory(_) => {
+                let path = Self::untag(name);
+                let source = read_module_source(Path::new(path))
+                    .map_err(|error| Exception::throw_message(ctx, &error.to_string()))?;
+                Module::declare(ctx.clone(), name, source)
+            }
+        }
     }
 }
 

@@ -381,6 +381,10 @@ export default class Workspace extends View {
         "the panel's own serialize() payload rode along: {tree}"
     );
     assert!(
+        tree.contains(r#"\"label\":\"saved\""#),
+        "dump() must carry serialize() JSON through register_panel reload: {tree}"
+    );
+    assert!(
         tree.contains("count: 1"),
         "the reload replaced the panel rather than adding a second: {tree}"
     );
