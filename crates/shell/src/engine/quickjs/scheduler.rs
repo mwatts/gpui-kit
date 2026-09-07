@@ -69,13 +69,14 @@ use rquickjs::{
 };
 
 use crate::{
+    ScriptFailure, ScriptFailureCategory, ScriptPhase,
     policy::Policy,
     runtime::ApplicationGeneration,
     scope::{self, ScopePhase},
     view::ScriptView,
 };
 
-use super::{ContextBinding, ShellRuntime, context_object, describe};
+use super::{ContextBinding, ShellRuntime, context_object};
 
 /// Installs the scheduling surface.
 ///
@@ -188,11 +189,10 @@ fn drain_runtime_job_batch(
                     .pending_nested
                     .borrow_mut()
                     .truncate(pending_checkpoint);
-                let message = exception.0.with(|ctx| {
-                    let thrown = ctx.catch();
-                    describe_value(&ctx, &thrown)
+                let failure = exception.0.with(|ctx| {
+                    runtime.capture_scheduler_error(&ctx, rquickjs::Error::Exception)
                 });
-                tracing::error!("error in a promise continuation: {message}");
+                runtime.report_script_failure(failure);
             }
         }
     }
@@ -209,11 +209,8 @@ fn drain_job_batch(runtime: &JsRuntime) -> bool {
             // `JobException` is not a nameable type outside rquickjs, but its
             // context — the one that threw — is a public field.
             Err(exception) => {
-                let message = exception.0.with(|ctx| {
-                    let thrown = ctx.catch();
-                    describe_value(&ctx, &thrown)
-                });
-                tracing::error!("error in a promise continuation: {message}");
+                exception.0.with(|ctx| drop(ctx.catch()));
+                tracing::error!("callback exception");
             }
         }
     }
@@ -252,11 +249,10 @@ pub(crate) fn drain_jobs_transactionally(
                     .pending_nested
                     .borrow_mut()
                     .truncate(pending_checkpoint);
-                let message = exception.0.with(|ctx| {
-                    let thrown = ctx.catch();
-                    describe_value(&ctx, &thrown)
+                let failure = exception.0.with(|ctx| {
+                    runtime.capture_scheduler_error(&ctx, rquickjs::Error::Exception)
                 });
-                tracing::error!("error in a transactional promise continuation: {message}");
+                runtime.report_script_failure(failure);
             }
         }
     }
@@ -570,7 +566,13 @@ fn js_spawn<'js>(
             None => finish(&task),
         },
         Err(error) => {
-            tracing::error!("error in gpui.spawn: {}", describe(&ctx, error));
+            if let Some(runtime) = task.runtime.upgrade() {
+                let failure = runtime.capture_scheduler_error(&ctx, error);
+                runtime.report_scheduler_failure(task.application.as_ref(), failure);
+            } else {
+                discard_js_error(&ctx, error);
+                tracing::error!("callback exception");
+            }
             finish(&task);
         }
     }
@@ -704,27 +706,36 @@ fn adopt<'js>(promise: &Promise<'js>, task: &Rc<TaskState>) -> JsResult<()> {
     promise.then()?.call::<_, ()>((
         This(promise.clone()),
         Func::from(move || finish(&settled)),
-        Func::from(move |failure: ScriptFailure| {
-            if !failed.cancelled.get() {
-                tracing::error!("unhandled rejection in gpui.spawn: {}", failure.0);
+        Func::from(move |failure: TaskRejection| {
+            if matches!(failed.readiness(), Readiness::Ready(_)) {
+                if let Some(runtime) = failed.runtime.upgrade() {
+                    runtime.report_scheduler_failure(failed.application.as_ref(), failure.0);
+                } else {
+                    tracing::error!("{}", failure.0.safe_summary());
+                }
             }
             finish(&failed);
         }),
     ))
 }
 
-/// A rejection value, already rendered as a message.
-///
-/// The formatting has to happen in `FromJs`: a closure taking both `Ctx<'js>`
-/// and `Value<'js>` cannot be inferred, because the two elided lifetimes are
-/// separate parameters as far as inference is concerned. Inside `from_js` they
-/// are one lifetime again. `Arguments` in the parent module exists for the same
-/// reason.
-struct ScriptFailure(String);
+/// A rejection converted to an owned failure while its QuickJS context is live.
+struct TaskRejection(ScriptFailure);
 
-impl<'js> FromJs<'js> for ScriptFailure {
+impl<'js> FromJs<'js> for TaskRejection {
     fn from_js(ctx: &Ctx<'js>, value: Value<'js>) -> JsResult<Self> {
-        Ok(Self(describe_value(ctx, &value)))
+        let failure = scope::current_runtime().map_or_else(
+            || {
+                ScriptFailure::new(
+                    ScriptPhase::Callback,
+                    ScriptFailureCategory::Exception,
+                    "Script task rejected.",
+                    "unscoped-task",
+                )
+            },
+            |runtime| runtime.capture_scheduler_rejection(ctx, &value),
+        );
+        Ok(Self(failure))
     }
 }
 
@@ -812,10 +823,13 @@ fn resume(
             ScopePhase::Task,
             owner,
             policy,
-            application,
+            application.clone(),
         );
         if let Err(error) = runtime.with_js(|ctx| body(ctx, generation)) {
-            tracing::error!("error in script task: {error}");
+            runtime.report_scheduler_failure(
+                application.as_ref(),
+                ScriptFailure::from_error(&error),
+            );
         }
         drain_runtime_jobs(&runtime, window, cx);
         drop(guard);
@@ -1543,24 +1557,9 @@ fn outside_host_call(ctx: &Ctx<'_>, api: &str) -> rquickjs::Error {
     )
 }
 
-/// Renders a thrown value the way its author would want to read it: message
-/// first, then the script stack that produced it.
-fn describe_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> String {
-    if let Some(exception) = value.as_exception() {
-        let message = exception.message().unwrap_or_else(|| "error".to_owned());
-        return match exception.stack() {
-            Some(stack) => format!("{message}\n{stack}"),
-            None => message,
-        };
-    }
-
-    if let Some(text) = value.as_string().and_then(|text| text.to_string().ok()) {
-        return text;
-    }
-
-    match ctx.json_stringify(value.clone()) {
-        Ok(Some(text)) => text.to_string().unwrap_or_else(|_| format!("{value:?}")),
-        _ => format!("{value:?}"),
+fn discard_js_error(ctx: &Ctx<'_>, error: rquickjs::Error) {
+    if matches!(error, rquickjs::Error::Exception) {
+        drop(ctx.catch());
     }
 }
 
@@ -1576,6 +1575,17 @@ mod tests {
         let runtime = JsRuntime::new().expect("runtime");
         let context = rquickjs::Context::full(&runtime).expect("context");
         (runtime, context)
+    }
+
+    fn describe(ctx: &Ctx<'_>, error: rquickjs::Error) -> String {
+        if !matches!(error, rquickjs::Error::Exception) {
+            return error.to_string();
+        }
+        let value = ctx.catch();
+        match value.as_exception() {
+            Some(exception) => exception.message().unwrap_or_else(|| "error".into()),
+            None => format!("{value:?}"),
+        }
     }
 
     /// The scheduler alone on `globalThis.gpui`, which is all these tests need.

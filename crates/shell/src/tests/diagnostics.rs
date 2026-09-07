@@ -541,6 +541,158 @@ fn visible_virtual_list_failure_fails_the_completed_root_frame(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn timer_task_throw_reports_a_safe_callback_failure(cx: &mut TestAppContext) {
+    let source = r#"
+        import { View, div } from "gpui-kit";
+        globalThis.__asyncDiagnosticGetterCalls = 0;
+        export default class Lens extends View {
+          init(_props, cx) {
+            cx.timer.after(0, () => {
+              const failure = new Error("ordinary task failure");
+              Object.defineProperties(failure, {
+                message: { get() { __asyncDiagnosticGetterCalls++; return "PRIVATE_TASK_MESSAGE résumé 🔒"; } },
+                stack: { get() { __asyncDiagnosticGetterCalls++; return "PRIVATE_TASK_STACK (/private/task.js:7:9)"; } },
+              });
+              throw failure;
+            });
+          }
+          render() { return div(); }
+        }
+    "#;
+    let (runtime, context, _view, _directory) = application_view(cx, source);
+    let records = sink(&runtime);
+
+    context.run_until_parked();
+
+    let records = records.borrow();
+    assert_eq!(records.len(), 1, "task throw must reach the sink once");
+    assert_eq!(records[0].phase(), ScriptPhase::Callback);
+    assert_eq!(records[0].category(), ScriptFailureCategory::Exception);
+    assert_eq!(records[0].safe_summary(), "callback exception");
+    assert_eq!(
+        runtime
+            .test_global_i32("__asyncDiagnosticGetterCalls")
+            .unwrap(),
+        0
+    );
+}
+
+#[gpui::test]
+fn spawned_promise_rejection_reports_a_safe_callback_failure(cx: &mut TestAppContext) {
+    let source = r#"
+        import { View, div } from "gpui-kit";
+        globalThis.__asyncDiagnosticGetterCalls = 0;
+        export default class Lens extends View {
+          init(_props, cx) {
+            cx.spawn(async () => {
+              await Promise.resolve();
+              const failure = new Error("ordinary rejection");
+              Object.defineProperties(failure, {
+                message: { get() { __asyncDiagnosticGetterCalls++; return "PRIVATE_REJECTION_MESSAGE résumé 🔒"; } },
+                stack: { get() { __asyncDiagnosticGetterCalls++; return "PRIVATE_REJECTION_STACK (/private/rejection.js:8:4)"; } },
+              });
+              throw failure;
+            });
+          }
+          render() { return div(); }
+        }
+    "#;
+    let (runtime, mut context, view, _directory) = application_view(cx, source);
+    let records = sink(&runtime);
+
+    render_once(&mut context, &view);
+    context.run_until_parked();
+
+    let records = records.borrow();
+    assert_eq!(records.len(), 1, "spawn rejection must reach the sink once");
+    assert_eq!(records[0].phase(), ScriptPhase::Callback);
+    assert_eq!(records[0].category(), ScriptFailureCategory::Exception);
+    assert_eq!(records[0].safe_summary(), "callback exception");
+    assert_eq!(
+        runtime
+            .test_global_i32("__asyncDiagnosticGetterCalls")
+            .unwrap(),
+        0
+    );
+}
+
+#[gpui::test]
+fn runaway_timer_task_reports_a_callback_budget_failure(cx: &mut TestAppContext) {
+    let source = r#"
+        import { View, div } from "gpui-kit";
+        export default class Lens extends View {
+          init(_props, cx) {
+            cx.timer.after(0, () => { while (true) {} });
+          }
+          render() { return div(); }
+        }
+    "#;
+    let (runtime, context, _view, _directory) = application_view(cx, source);
+    let records = sink(&runtime);
+
+    context.run_until_parked();
+
+    let records = records.borrow();
+    assert_eq!(records.len(), 1, "runaway task must reach the sink once");
+    assert_eq!(records[0].phase(), ScriptPhase::Callback);
+    assert_eq!(
+        records[0].category(),
+        ScriptFailureCategory::ExecutionBudget
+    );
+    assert_eq!(records[0].safe_summary(), "callback execution_budget");
+}
+
+#[gpui::test]
+fn retired_spawn_rejection_does_not_replace_current_diagnostics(cx: &mut TestAppContext) {
+    let source = r#"
+        import { View, div } from "gpui-kit";
+        export default class Lens extends View {
+          init(_props, cx) {
+            cx.spawn(async () => {
+              await Promise.resolve();
+              throw new Error("retired rejection");
+            });
+          }
+          render() { return div(); }
+        }
+    "#;
+    let (runtime, mut context, view, _directory) = application_view(cx, source);
+    let records = sink(&runtime);
+    render_once(&mut context, &view);
+    let retired = context.update(|_, cx| {
+        view.read(cx)
+            .application_generation()
+            .expect("application generation")
+    });
+    retired.retire();
+
+    let replacement_directory = TestApplicationDirectory::with_source(
+        r#"
+            import { View, div } from "gpui-kit";
+            export default class Replacement extends View {
+              render() { return div(); }
+            }
+        "#,
+    );
+    let replacement = runtime
+        .load_application(&replacement_directory.0, "main.js")
+        .expect("load replacement");
+    let replacement_view = context.update(|window, cx| {
+        runtime
+            .mount_application(&replacement, window, cx)
+            .expect("mount replacement")
+    });
+    render_once(&mut context, &replacement_view);
+    context.run_until_parked();
+
+    assert!(
+        records.borrow().is_empty(),
+        "retired task failure reached the current sink: {:?}",
+        records.borrow()
+    );
+}
+
+#[gpui::test]
 fn root_materialize_failure_fails_first_render(cx: &mut TestAppContext) {
     use crate::{
         COMPONENT_REGISTRY_API_VERSION, ComponentDescriptor, ComponentMaterializer,
