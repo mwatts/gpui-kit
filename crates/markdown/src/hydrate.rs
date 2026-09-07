@@ -3,8 +3,10 @@
 use std::ops::Range;
 
 use loro::LoroDoc;
-use pulldown_cmark::{Alignment, CodeBlockKind, Event, LinkType, Options, Parser, Tag, TagEnd};
+use markdown::mdast::{self, Node};
+use markdown::to_mdast;
 
+use crate::dialect::{collapse_soft_breaks, custom_block_name, parse_options};
 use crate::schema::{
     Align, BlockId, BlockType, Form, MarkStyle, RichMark, blocks_list, configure_text_styles_with,
     ensure_alt, ensure_content, insert_block_map, repair_numbers, write_rich_text,
@@ -19,12 +21,12 @@ pub fn hydrate(source: &str) -> LoroDoc {
 /// Parse markdown and configure extra host marks on the document.
 #[must_use]
 pub fn hydrate_with(source: &str, styles: &[MarkStyle]) -> LoroDoc {
-    let options =
-        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    let tree = to_mdast(source, &parse_options()).unwrap_or(Node::Root(mdast::Root {
+        children: Vec::new(),
+        position: None,
+    }));
     let mut state = ParseState::default();
-    for event in Parser::new_ext(source, options) {
-        state.event(event);
-    }
+    state.walk(&tree);
     state.renumber();
 
     let doc = LoroDoc::new();
@@ -40,7 +42,13 @@ pub fn hydrate_with(source: &str, styles: &[MarkStyle]) -> LoroDoc {
 
     for (ix, block) in state.blocks.iter().enumerate() {
         let id = BlockId::new();
-        let map = match insert_block_map(&list, ix, &id, block.block_type, block.indent as i64) {
+        let map = match insert_block_map(
+            &list,
+            ix,
+            &id,
+            block.block_type.clone(),
+            block.indent as i64,
+        ) {
             Ok(m) => m,
             Err(_) => continue,
         };
@@ -82,6 +90,11 @@ pub fn hydrate_with(source: &str, styles: &[MarkStyle]) -> LoroDoc {
                 write_table(&map, block);
             }
             BlockType::Rule => {}
+            BlockType::Custom(_) => {
+                if let Ok(text) = ensure_content(&map) {
+                    let _ = write_rich_text(&text, &block.text, &block.marks);
+                }
+            }
             _ => {
                 if let Ok(text) = ensure_content(&map) {
                     let _ = write_rich_text(&text, &block.text, &block.marks);
@@ -258,9 +271,6 @@ struct ParseState {
     lists: Vec<Option<u64>>,
     quote_depth: u8,
     pending_marker: Option<Marker>,
-    heading: Option<u8>,
-    code: Option<(Option<String>, String)>,
-    table: Option<TableBuild>,
 }
 
 impl ParseState {
@@ -283,7 +293,7 @@ impl ParseState {
     }
 
     fn flush_inline(&mut self) {
-        if self.table.is_none() && !self.builder.is_empty() {
+        if !self.builder.is_empty() {
             self.finish_paragraph();
         }
     }
@@ -377,25 +387,63 @@ impl ParseState {
         }
     }
 
-    fn event(&mut self, event: Event<'_>) {
-        match event {
-            Event::Start(tag) => self.start(tag),
-            Event::End(tag) => self.end(tag),
-            Event::Text(t) => match &mut self.code {
-                Some((_, code)) => code.push_str(&t),
-                None => self.builder.text.push_str(&t),
-            },
-            Event::Code(t) => self.builder.wrap(RichMark::Code, &t),
-            Event::Html(t) | Event::InlineHtml(t) => self.builder.text.push_str(&t),
-            Event::SoftBreak => match &mut self.code {
-                Some((_, code)) => code.push('\n'),
-                None => self.builder.text.push(' '),
-            },
-            Event::HardBreak => match &mut self.code {
-                Some((_, code)) => code.push('\n'),
-                None => self.builder.text.push('\n'),
-            },
-            Event::Rule => {
+    fn walk(&mut self, node: &Node) {
+        match node {
+            Node::Root(root) => {
+                for child in &root.children {
+                    self.walk(child);
+                }
+                self.flush_inline();
+                self.flush_marker();
+            }
+            Node::Paragraph(paragraph) => {
+                for child in &paragraph.children {
+                    self.walk_inline(child);
+                }
+                self.flush_inline();
+            }
+            Node::Heading(heading) => self.walk_heading(heading),
+            Node::Blockquote(quote) => {
+                self.flush_inline();
+                self.quote_depth += 1;
+                for child in &quote.children {
+                    self.walk(child);
+                }
+                self.flush_inline();
+                self.quote_depth = self.quote_depth.saturating_sub(1);
+            }
+            Node::List(list) => {
+                self.flush_inline();
+                self.flush_marker();
+                self.lists
+                    .push(list.ordered.then_some(u64::from(list.start.unwrap_or(1))));
+                for child in &list.children {
+                    self.walk(child);
+                }
+                self.flush_inline();
+                self.lists.pop();
+            }
+            Node::ListItem(item) => {
+                self.flush_inline();
+                self.pending_marker = Some(match item.checked {
+                    Some(checked) => Marker::Task(checked),
+                    None => match self.lists.last_mut() {
+                        Some(Some(number)) => {
+                            let n = *number;
+                            *number += 1;
+                            Marker::Ordered(n)
+                        }
+                        _ => Marker::Bullet,
+                    },
+                });
+                for child in &item.children {
+                    self.walk(child);
+                }
+                self.flush_inline();
+                self.flush_marker();
+            }
+            Node::Code(code) => self.walk_code(code),
+            Node::ThematicBreak(_) => {
                 self.flush_inline();
                 self.flush_marker();
                 let indent = self.indent();
@@ -407,193 +455,200 @@ impl ParseState {
                     indent,
                 );
             }
-            Event::TaskListMarker(checked) => {
-                self.pending_marker = Some(Marker::Task(checked));
+            Node::Table(table) => self.walk_table(table),
+            Node::Html(html) => {
+                self.builder.text.push_str(&html.value);
+                self.flush_inline();
             }
-            Event::FootnoteReference(label) => {
-                self.builder.text.push_str(&format!("[^{label}]"));
-            }
-            _ => {}
+            other => self.walk_inline(other),
         }
     }
 
-    fn start(&mut self, tag: Tag<'_>) {
-        match tag {
-            Tag::Heading { level, .. } => {
-                self.flush_inline();
-                self.heading = Some(level as u8);
-            }
-            Tag::BlockQuote(_) => {
-                self.flush_inline();
-                self.quote_depth += 1;
-            }
-            Tag::CodeBlock(kind) => {
-                self.flush_inline();
-                self.flush_marker();
-                let language = match kind {
-                    CodeBlockKind::Fenced(info) => {
-                        let tag = info.split_whitespace().next().unwrap_or("");
-                        (!tag.is_empty()).then(|| tag.to_string())
-                    }
-                    CodeBlockKind::Indented => None,
+    fn walk_heading(&mut self, heading: &mdast::Heading) {
+        self.flush_inline();
+        for child in &heading.children {
+            self.walk_inline(child);
+        }
+        self.flush_marker();
+        let level = heading.depth.clamp(1, 6);
+        let (mut text, marks) = self.builder.take();
+        if text.contains('\n') {
+            text = text.replace('\n', " ");
+        }
+        let indent = self.indent();
+        self.push(
+            BlockDraft {
+                block_type: BlockType::Heading { level },
+                text,
+                marks,
+                ..Default::default()
+            },
+            indent,
+        );
+    }
+
+    fn walk_code(&mut self, code: &mdast::Code) {
+        self.flush_inline();
+        self.flush_marker();
+        let indent = self.indent();
+        let text = code
+            .value
+            .strip_suffix('\n')
+            .map_or_else(|| code.value.clone(), str::to_string);
+        if let Some(name) = code.lang.as_deref().and_then(custom_block_name) {
+            self.push(
+                BlockDraft {
+                    block_type: BlockType::Custom(name.to_string()),
+                    text,
+                    ..Default::default()
+                },
+                indent,
+            );
+            return;
+        }
+        let language = code.lang.clone().filter(|tag| !tag.is_empty());
+        self.push(
+            BlockDraft {
+                block_type: BlockType::Code,
+                language,
+                text,
+                ..Default::default()
+            },
+            indent,
+        );
+    }
+
+    fn walk_table(&mut self, table: &mdast::Table) {
+        self.flush_inline();
+        self.flush_marker();
+        let mut build = TableBuild {
+            align: table.align.iter().map(align_of).collect(),
+            ..TableBuild::default()
+        };
+        for (row_ix, row) in table.children.iter().enumerate() {
+            let Node::TableRow(row) = row else {
+                continue;
+            };
+            build.in_head = row_ix == 0;
+            for cell in &row.children {
+                let Node::TableCell(cell) = cell else {
+                    continue;
                 };
-                self.code = Some((language, String::new()));
-            }
-            Tag::List(start) => {
-                self.flush_inline();
-                self.flush_marker();
-                self.lists.push(start);
-            }
-            Tag::Item => {
-                self.flush_inline();
-                self.pending_marker = Some(match self.lists.last_mut() {
-                    Some(Some(number)) => {
-                        let n = *number;
-                        *number += 1;
-                        Marker::Ordered(n)
-                    }
-                    _ => Marker::Bullet,
-                });
-            }
-            Tag::Table(aligns) => {
-                self.flush_inline();
-                self.flush_marker();
-                self.table = Some(TableBuild {
-                    align: aligns.iter().map(align_of).collect(),
-                    ..TableBuild::default()
-                });
-            }
-            Tag::TableHead => {
-                if let Some(table) = &mut self.table {
-                    table.in_head = true;
+                for child in &cell.children {
+                    self.walk_inline(child);
                 }
+                let (mut text, marks) = self.builder.take();
+                if text.contains('\n') {
+                    text = text.replace('\n', " ");
+                }
+                build.row.push((text, marks));
             }
-            Tag::Emphasis => self.builder.open_emphasis(Emphasis::Italic),
-            Tag::Strong => self.builder.open_emphasis(Emphasis::Bold),
-            Tag::Strikethrough => self.builder.open_emphasis(Emphasis::Strike),
-            Tag::Link {
-                link_type,
-                dest_url,
-                title,
-                ..
-            } => {
-                let url = dest_url.into_string();
-                let form = match link_type {
-                    LinkType::Autolink => Some(Form::Auto),
-                    _ => Form::from_title(&title),
-                };
+            let row = std::mem::take(&mut build.row);
+            if build.in_head {
+                build.header = row;
+            } else {
+                build.rows.push(row);
+            }
+        }
+        let indent = self.indent();
+        self.push(
+            BlockDraft {
+                block_type: BlockType::Table,
+                align: build.align,
+                header: build.header,
+                rows: build.rows,
+                ..Default::default()
+            },
+            indent,
+        );
+    }
+
+    fn walk_inline(&mut self, node: &Node) {
+        match node {
+            Node::Text(text) => {
+                self.builder
+                    .text
+                    .push_str(&collapse_soft_breaks(&text.value));
+            }
+            Node::InlineCode(code) => self.builder.wrap(RichMark::Code, &code.value),
+            Node::Html(html) => self.builder.text.push_str(&html.value),
+            Node::Break(_) => self.builder.text.push('\n'),
+            Node::Emphasis(emphasis) => {
+                self.builder.open_emphasis(Emphasis::Italic);
+                for child in &emphasis.children {
+                    self.walk_inline(child);
+                }
+                self.builder.close();
+            }
+            Node::Strong(strong) => {
+                self.builder.open_emphasis(Emphasis::Bold);
+                for child in &strong.children {
+                    self.walk_inline(child);
+                }
+                self.builder.close();
+            }
+            Node::Delete(delete) => {
+                self.builder.open_emphasis(Emphasis::Strike);
+                for child in &delete.children {
+                    self.walk_inline(child);
+                }
+                self.builder.close();
+            }
+            Node::Link(link) => {
+                let form = link
+                    .title
+                    .as_deref()
+                    .and_then(Form::from_title)
+                    .or_else(|| is_autolink(link).then_some(Form::Auto));
+                let url = link.url.clone();
                 self.builder.open(match form {
                     Some(form) => RichMark::Mention { url, form },
                     None => RichMark::Link(url),
                 });
-            }
-            Tag::Image { dest_url, .. } => {
-                self.builder.open(RichMark::Image(dest_url.into_string()));
-            }
-            _ => {}
-        }
-    }
-
-    fn end(&mut self, tag: TagEnd) {
-        match tag {
-            TagEnd::Paragraph | TagEnd::HtmlBlock => self.flush_inline(),
-            TagEnd::Heading(_) => {
-                self.flush_marker();
-                let level = self.heading.take().unwrap_or(1).clamp(1, 6);
-                let (mut text, marks) = self.builder.take();
-                if text.contains('\n') {
-                    text = text.replace('\n', " ");
+                for child in &link.children {
+                    self.walk_inline(child);
                 }
-                let indent = self.indent();
-                self.push(
-                    BlockDraft {
-                        block_type: BlockType::Heading { level },
-                        text,
-                        marks,
-                        ..Default::default()
-                    },
-                    indent,
-                );
-            }
-            TagEnd::BlockQuote(_) => {
-                self.flush_inline();
-                self.quote_depth = self.quote_depth.saturating_sub(1);
-            }
-            TagEnd::CodeBlock => {
-                if let Some((language, code)) = self.code.take() {
-                    let indent = self.indent();
-                    let code = code.strip_suffix('\n').map_or(code.clone(), str::to_string);
-                    self.push(
-                        BlockDraft {
-                            block_type: BlockType::Code,
-                            language,
-                            text: code,
-                            ..Default::default()
-                        },
-                        indent,
-                    );
-                }
-            }
-            TagEnd::List(_) => {
-                self.flush_inline();
-                self.lists.pop();
-            }
-            TagEnd::Item => {
-                self.flush_inline();
-                self.flush_marker();
-            }
-            TagEnd::Table => {
-                if let Some(table) = self.table.take() {
-                    let indent = self.indent();
-                    self.push(
-                        BlockDraft {
-                            block_type: BlockType::Table,
-                            align: table.align,
-                            header: table.header,
-                            rows: table.rows,
-                            ..Default::default()
-                        },
-                        indent,
-                    );
-                }
-            }
-            TagEnd::TableHead => {
-                if let Some(table) = &mut self.table {
-                    table.header = std::mem::take(&mut table.row);
-                    table.in_head = false;
-                }
-            }
-            TagEnd::TableRow => {
-                if let Some(table) = &mut self.table {
-                    let row = std::mem::take(&mut table.row);
-                    if !table.in_head {
-                        table.rows.push(row);
-                    }
-                }
-            }
-            TagEnd::TableCell => {
-                let (mut text, marks) = self.builder.take();
-                if text.contains('\n') {
-                    text = text.replace('\n', " ");
-                }
-                if let Some(table) = &mut self.table {
-                    table.row.push((text, marks));
-                }
-            }
-            TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link => {
                 self.builder.close();
             }
-            TagEnd::Image => self.builder.close(),
+            Node::Image(image) => {
+                self.builder
+                    .wrap(RichMark::Image(image.url.clone()), &image.alt);
+            }
+            Node::FootnoteReference(note) => {
+                self.builder
+                    .text
+                    .push_str(&format!("[^{}]", note.identifier));
+            }
+            Node::LinkReference(link) => {
+                for child in &link.children {
+                    self.walk_inline(child);
+                }
+            }
+            Node::Paragraph(paragraph) => {
+                for child in &paragraph.children {
+                    self.walk_inline(child);
+                }
+            }
             _ => {}
         }
     }
 }
 
-fn align_of(alignment: &Alignment) -> Align {
-    match alignment {
-        Alignment::Center => Align::Center,
-        Alignment::Right => Align::Right,
-        Alignment::Left | Alignment::None => Align::Left,
+fn align_of(kind: &mdast::AlignKind) -> Align {
+    match kind {
+        mdast::AlignKind::Center => Align::Center,
+        mdast::AlignKind::Right => Align::Right,
+        mdast::AlignKind::Left | mdast::AlignKind::None => Align::Left,
+    }
+}
+
+fn is_autolink(link: &mdast::Link) -> bool {
+    if link.title.is_some() {
+        return false;
+    }
+    match link.children.as_slice() {
+        [Node::Text(text)] => text.value == link.url && is_url(&link.url),
+        _ => false,
     }
 }
 

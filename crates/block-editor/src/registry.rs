@@ -41,6 +41,16 @@ impl SlashCommand {
             action: SlashAction::Insert(kind),
         }
     }
+
+    /// Insert an app-defined block type (`BlockType::Custom`).
+    #[must_use]
+    pub fn insert_custom(
+        id: impl Into<SharedString>,
+        label: impl Into<SharedString>,
+        name: impl Into<String>,
+    ) -> Self {
+        Self::insert(id, label, BlockType::Custom(name.into()))
+    }
 }
 
 /// Slash catalog installed on [`App`].
@@ -239,5 +249,14 @@ mod tests {
     fn insert_command_keeps_block_type() {
         let command = SlashCommand::insert("task", "Task", BlockType::Task);
         assert_eq!(command.action, SlashAction::Insert(BlockType::Task));
+    }
+
+    #[test]
+    fn insert_custom_is_a_first_class_block_type() {
+        let command = SlashCommand::insert_custom("callout", "Callout", "callout");
+        assert_eq!(
+            command.action,
+            SlashAction::Insert(BlockType::Custom("callout".into()))
+        );
     }
 }

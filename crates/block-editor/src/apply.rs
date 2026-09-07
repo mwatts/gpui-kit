@@ -279,7 +279,7 @@ fn split_block(doc: &LoroDoc, id: &BlockId, offset: usize) -> LoroResult<ApplyRe
         other => other,
     };
     let indent = indent_of(&map);
-    let new_map = insert_block_map(&list, insert_at, &new_id, new_kind, indent)?;
+    let new_map = insert_block_map(&list, insert_at, &new_id, new_kind.clone(), indent)?;
     if new_kind == BlockType::Ordered {
         let number = map
             .get("number")

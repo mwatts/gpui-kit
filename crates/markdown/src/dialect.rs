@@ -27,6 +27,7 @@ pub const CORPUS: &[&str] = &[
     "```\ncode\n```",
     "```rust\nfn main() {}\n```",
     "```markdown\n# nested\n```",
+    "```block:callout\nWatch this\n```",
     "---",
     "para\n\nnext",
     "**bold** and _italic_",
@@ -38,9 +39,26 @@ pub const CORPUS: &[&str] = &[
     "Owner: Jane  \nPersona: assistant",
 ];
 
+/// Fence language prefix that hydrates to [`crate::BlockType::Custom`].
+pub const CUSTOM_BLOCK_FENCE: &str = "block:";
+
 /// Collapse CommonMark soft breaks the way kit TextView does.
 pub fn collapse_soft_breaks(text: &str) -> String {
     text.replace("\r\n", " ").replace(['\n', '\r'], " ")
+}
+
+/// Fence info string for a custom block (`block:{name}`).
+#[must_use]
+pub fn custom_block_language(name: &str) -> String {
+    format!("{CUSTOM_BLOCK_FENCE}{name}")
+}
+
+/// Custom block name encoded in a fence language, if any.
+#[must_use]
+pub fn custom_block_name(language: &str) -> Option<&str> {
+    language
+        .strip_prefix(CUSTOM_BLOCK_FENCE)
+        .filter(|name| !name.is_empty())
 }
 
 #[cfg(test)]
@@ -87,5 +105,13 @@ mod tests {
             collapse_soft_breaks(&text.value),
             "this sentence continues as a soft wrap"
         );
+    }
+
+    #[test]
+    fn custom_block_fence_round_trips_the_name() {
+        assert_eq!(custom_block_language("callout"), "block:callout");
+        assert_eq!(custom_block_name("block:callout"), Some("callout"));
+        assert_eq!(custom_block_name("rust"), None);
+        assert_eq!(custom_block_name("block:"), None);
     }
 }
