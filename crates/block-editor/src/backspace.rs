@@ -41,6 +41,7 @@ pub fn backspace_at_start(snapshots: &[BlockSnapshot], cursor: &Cursor) -> Vec<B
             | BlockType::Ordered
             | BlockType::Task
             | BlockType::Code
+            | BlockType::Custom(_)
     );
     if unwrap {
         return vec![BlockOp::UnwrapToParagraph {
