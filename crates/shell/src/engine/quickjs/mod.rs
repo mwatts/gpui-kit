@@ -17,6 +17,7 @@
 use std::{
     cell::{Cell, RefCell, RefMut},
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    mem::MaybeUninit,
     path::Path,
     rc::{Rc, Weak},
 };
@@ -30,6 +31,7 @@ use rquickjs::{
     loader::{BuiltinResolver, ImportAttributes, Loader, ModuleLoader, Resolver},
     module::Declared,
     module::{Declarations, Exports, Module, ModuleDef},
+    qjs,
 };
 use smallvec::SmallVec;
 
@@ -38,6 +40,10 @@ use crate::{
     ComponentCallbackValue, ComponentDataValue, ComponentPayload, FrozenComponentRegistry,
     dependencies::{GitDependencyStore, MaterializedDependency},
     entities::{EntityHandle, EntityStore},
+    error::{
+        DiagnosticSink, InactiveCallback, MAX_FAILURE_MESSAGE_BYTES, MAX_FAILURE_STACK_BYTES,
+        ScriptFailure, ScriptFailureCategory, ScriptPhase, entry_from_stack, location_from_stack,
+    },
     host_modules::HostValue,
     metrics::Metrics,
     policy::Policy,
@@ -1308,6 +1314,9 @@ pub struct ShellRuntime {
     /// pending-job removal, so terminal quarantine is the only way to prevent
     /// the unfinished wave from later running under another view.
     terminal_job_error: RefCell<Option<String>>,
+    diagnostic_sink: RefCell<Option<Rc<dyn DiagnosticSink>>>,
+    in_init: Cell<bool>,
+    next_correlation: Cell<u64>,
     /// What the runtime is spending. See [`Self::metrics`].
     metrics: Metrics,
     /// An HTTP client supplied by tests that exercise a loopback server.
@@ -1421,6 +1430,174 @@ impl ShellRuntime {
             window,
             cx,
         )
+    }
+
+    /// Installs the host sink that receives owned execution failures.
+    ///
+    /// The sink must not re-enter JavaScript or mutate GPUI synchronously.
+    pub fn set_diagnostic_sink(&self, sink: Rc<dyn DiagnosticSink>) {
+        *self.diagnostic_sink.borrow_mut() = Some(sink);
+    }
+
+    pub(crate) fn report_script_failure(&self, failure: ScriptFailure) {
+        if let Some(application) = scope::current_application_generation() {
+            application.record_initial_frame_failure(&failure);
+        }
+        if let Some(sink) = self.diagnostic_sink.borrow().as_ref() {
+            tracing::error!("{}", failure.safe_summary());
+            sink.report(failure);
+        } else {
+            tracing::error!("{failure}");
+        }
+    }
+
+    pub(crate) fn report_anyhow(&self, error: anyhow::Error) {
+        self.report_script_failure(ScriptFailure::from_error(&error));
+    }
+
+    pub(crate) fn has_diagnostic_sink(&self) -> bool {
+        self.diagnostic_sink.borrow().is_some()
+    }
+
+    pub(crate) fn report_materialize_error(&self, error: &anyhow::Error) -> ScriptFailure {
+        if let Some(reported) = error.downcast_ref::<crate::error::ReportedScriptFailure>() {
+            return reported.failure().clone();
+        }
+        let failure = ScriptFailure::new(
+            ScriptPhase::Render,
+            ScriptFailureCategory::Engine,
+            format!("{error:#}"),
+            self.next_correlation_id(),
+        );
+        self.report_script_failure(failure.clone());
+        failure
+    }
+
+    fn current_failure_phase(&self) -> ScriptPhase {
+        match scope::current_phase() {
+            Some(ScopePhase::Render | ScopePhase::Layout) => ScriptPhase::Render,
+            Some(ScopePhase::Event | ScopePhase::Task) => {
+                if self.in_init.get() {
+                    ScriptPhase::Init
+                } else {
+                    ScriptPhase::Callback
+                }
+            }
+            None => ScriptPhase::Load,
+        }
+    }
+
+    fn with_init_phase<T>(&self, body: impl FnOnce() -> T) -> T {
+        let previous = self.in_init.replace(true);
+        let result = body();
+        self.in_init.set(previous);
+        result
+    }
+
+    fn next_correlation_id(&self) -> String {
+        let correlation = self.next_correlation.get();
+        self.next_correlation.set(
+            correlation
+                .checked_add(1)
+                .expect("gpui-shell exhausted script failure correlation ids"),
+        );
+        correlation.to_string()
+    }
+
+    fn capture_js_error(&self, ctx: &Ctx<'_>, error: JsError) -> ScriptFailure {
+        let budget = sandbox::take_budget_interrupt();
+        let caught = matches!(error, JsError::Exception).then(|| ctx.catch());
+        let uncatchable = caught.as_ref().is_some_and(Value::is_uncatchable_error);
+        let category = if budget || uncatchable {
+            ScriptFailureCategory::ExecutionBudget
+        } else if caught
+            .as_ref()
+            .is_some_and(|value| value.as_exception().is_some())
+        {
+            ScriptFailureCategory::Exception
+        } else {
+            ScriptFailureCategory::Engine
+        };
+
+        let mut stack = None;
+        let mut location = None;
+        let mut entry = None;
+        let message = if budget || uncatchable {
+            String::new()
+        } else if let Some(value) = caught {
+            if let Some(exception) = value.as_exception() {
+                stack = own_data_string(
+                    ctx,
+                    exception.as_object(),
+                    qjs::JS_ATOM_stack,
+                    MAX_FAILURE_STACK_BYTES,
+                );
+                location = stack.as_deref().and_then(location_from_stack);
+                entry = stack.as_deref().and_then(entry_from_stack);
+                own_data_string(
+                    ctx,
+                    exception.as_object(),
+                    qjs::JS_ATOM_message,
+                    MAX_FAILURE_MESSAGE_BYTES,
+                )
+                .unwrap_or_else(|| "script exception".to_owned())
+            } else if value.as_string().is_some() {
+                bounded_js_string(&value, MAX_FAILURE_MESSAGE_BYTES)
+                    .unwrap_or_else(|| "script threw a string".to_owned())
+            } else {
+                "script threw a non-Error value".to_owned()
+            }
+        } else {
+            error.to_string()
+        };
+
+        let mut failure = ScriptFailure::new(
+            self.current_failure_phase(),
+            category,
+            message,
+            self.next_correlation_id(),
+        );
+        if let Some(entry) = entry {
+            failure = failure.with_entry(entry);
+        }
+        if let Some(location) = location {
+            failure = failure.with_location(location);
+        }
+        if let Some(stack) = stack {
+            failure = failure.with_stack(stack);
+        }
+        failure
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_script_callback(
+        self: &Rc<Self>,
+        source: &str,
+    ) -> anyhow::Result<(CallbackId, u64)> {
+        let value = self.with_js(|ctx| {
+            let function: Function<'_> = ctx.eval(source)?;
+            Ok(Persistent::save(ctx, function))
+        })?;
+        let mut callbacks = self.callbacks.borrow_mut();
+        let generation = callbacks.begin();
+        let id = callbacks.push(CallbackEntry {
+            value,
+            view: None,
+            application: None,
+            registered_in: None,
+        });
+        callbacks.commit();
+        Ok((id, generation))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_global_i32(&self, name: &str) -> anyhow::Result<i32> {
+        self.with_js(|ctx| ctx.globals().get(name))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retire_callback_generation(&self, generation: u64) {
+        self.callbacks.borrow_mut().retire(generation);
     }
 
     /// Creates the application's default runtime and makes it available to
@@ -1541,6 +1718,9 @@ impl ShellRuntime {
             panel_scripts: RefCell::new(HashMap::new()),
             active_context: Cell::new(None),
             terminal_job_error: RefCell::new(None),
+            diagnostic_sink: RefCell::new(None),
+            in_init: Cell::new(false),
+            next_correlation: Cell::new(1),
             metrics: Metrics::default(),
             #[cfg(test)]
             test_http_client: RefCell::new(None),
@@ -2037,6 +2217,13 @@ impl ShellRuntime {
         self.load_source_with_lease(name, source, None, None)
     }
 
+    fn surface<T>(&self, result: Result<T>) -> Result<T> {
+        if let Err(error) = &result {
+            self.report_script_failure(ScriptFailure::from_error(error));
+        }
+        result
+    }
+
     fn load_source_with_lease(
         self: &Rc<Self>,
         name: &str,
@@ -2044,7 +2231,7 @@ impl ShellRuntime {
         module_lease: Option<ApplicationModuleLease>,
         application: Option<Rc<ApplicationGeneration>>,
     ) -> Result<ViewType> {
-        self.with_js(|ctx| {
+        self.surface(self.with_js(|ctx| {
             let (module, promise) = rquickjs::Module::declare(ctx.clone(), name, source)?.eval()?;
             promise.finish::<()>()?;
 
@@ -2060,7 +2247,7 @@ impl ShellRuntime {
                 module_lease,
                 application,
             })
-        })
+        }))
     }
 
     /// Constructs one instance of a view class.
@@ -2781,16 +2968,18 @@ impl ShellRuntime {
     }
 
     fn construct(&self, view_type: &ViewType) -> Result<ViewObject> {
-        self.with_js(|ctx| {
-            let class = view_type.value.clone().restore(ctx)?;
-            let construct: Function = ctx.globals().get("__construct")?;
-            let instance: Object = construct.call((class,))?;
-            Ok(ViewObject {
-                value: Persistent::save(ctx, instance),
-                module_lease: view_type.module_lease.clone(),
-                application: view_type.application.clone(),
+        self.surface(self.with_init_phase(|| {
+            self.with_js(|ctx| {
+                let class = view_type.value.clone().restore(ctx)?;
+                let construct: Function = ctx.globals().get("__construct")?;
+                let instance: Object = construct.call((class,))?;
+                Ok(ViewObject {
+                    value: Persistent::save(ctx, instance),
+                    module_lease: view_type.module_lease.clone(),
+                    application: view_type.application.clone(),
+                })
             })
-        })
+        }))
     }
 
     /// Captures reachable ordinary objects and callable objects without invoking getters.
@@ -2842,15 +3031,17 @@ impl ShellRuntime {
         initial_props: Option<Persistent<Value<'static>>>,
     ) -> Result<()> {
         self.initializing_views.borrow_mut().push(object.clone());
-        let initialized = self.with_js(|ctx| {
-            let instance = object.value.clone().restore(ctx)?;
-            let initialize: Function = ctx.globals().get("__initialize")?;
-            let props = match initial_props {
-                Some(props) => props.restore(ctx)?,
-                None => Value::new_undefined(ctx.clone()),
-            };
-            initialize.call::<_, ()>((instance, props))
-        });
+        let initialized = self.surface(self.with_init_phase(|| {
+            self.with_js(|ctx| {
+                let instance = object.value.clone().restore(ctx)?;
+                let initialize: Function = ctx.globals().get("__initialize")?;
+                let props = match initial_props {
+                    Some(props) => props.restore(ctx)?,
+                    None => Value::new_undefined(ctx.clone()),
+                };
+                initialize.call::<_, ()>((instance, props))
+            })
+        }));
         let initializing = self.initializing_views.borrow_mut().pop();
         debug_assert!(initializing.is_some());
         initialized
@@ -3108,7 +3299,7 @@ impl ShellRuntime {
         match described {
             Ok((roots, keys)) => Some(crate::spec::ItemSpecs::new(arena, roots, keys)),
             Err(error) => {
-                tracing::error!("error in virtual list item renderer: {error}");
+                self.report_anyhow(error);
                 None
             }
         }
@@ -3193,7 +3384,7 @@ impl ShellRuntime {
             match described {
                 Ok(root) => Some((arena, root)),
                 Err(error) => {
-                    tracing::error!("error in a dock chrome handler: {error}");
+                    self.report_anyhow(error);
                     None
                 }
             }
@@ -3271,7 +3462,7 @@ impl ShellRuntime {
         match produced {
             Ok(value) => value,
             Err(error) => {
-                tracing::error!("error in a dock panel's serialize(): {error}");
+                self.report_anyhow(error);
                 None
             }
         }
@@ -3312,7 +3503,7 @@ impl ShellRuntime {
             deserialize.call::<_, ()>((This(instance), dock_api::to_js(ctx, data)?))
         });
         if let Err(error) = result {
-            tracing::error!("error in a dock panel's deserialize(data): {error}");
+            self.report_anyhow(error);
         }
         // The view described itself before the payload arrived, so what it
         // described is now out of date.
@@ -3397,7 +3588,7 @@ impl ShellRuntime {
             handler.call::<_, ()>((context_object(ctx, ContextBinding::Call(generation))?,))
         });
         if let Err(error) = result {
-            tracing::error!("error in dock layout handler: {error}");
+            self.report_anyhow(error);
         }
         scheduler::drain_runtime_jobs(self, window, cx);
     }
@@ -3488,7 +3679,7 @@ impl ShellRuntime {
         });
 
         if let Err(error) = result {
-            tracing::error!("error in {what} handler: {error}");
+            self.report_anyhow(error);
         }
         scheduler::drain_runtime_jobs(self, window, cx);
     }
@@ -3531,7 +3722,7 @@ impl ShellRuntime {
         });
 
         if let Err(error) = result {
-            tracing::error!("error in OTP handler: {error}");
+            self.report_anyhow(error);
         }
         scheduler::drain_runtime_jobs(self, window, cx);
     }
@@ -3591,7 +3782,7 @@ impl ShellRuntime {
         });
 
         if let Err(error) = result {
-            tracing::error!("error in click handler: {error}");
+            self.report_anyhow(error);
         }
         scheduler::drain_runtime_jobs(self, window, cx);
     }
@@ -3650,7 +3841,7 @@ impl ShellRuntime {
         });
 
         if let Err(error) = result {
-            tracing::error!("error in input handler: {error}");
+            self.report_anyhow(error);
         }
         scheduler::drain_runtime_jobs(self, window, cx);
     }
@@ -3706,7 +3897,7 @@ impl ShellRuntime {
             ))
         });
         if let Err(error) = result {
-            tracing::error!("error in calendar handler: {error}");
+            self.report_anyhow(error);
         }
         scheduler::drain_runtime_jobs(self, window, cx);
     }
@@ -3759,7 +3950,7 @@ impl ShellRuntime {
         });
 
         if let Err(error) = result {
-            tracing::error!("error in slider handler: {error}");
+            self.report_anyhow(error);
         }
         scheduler::drain_runtime_jobs(self, window, cx);
     }
@@ -3823,7 +4014,7 @@ impl ShellRuntime {
         });
 
         if let Err(error) = result {
-            tracing::error!("error in resize handler: {error}");
+            self.report_anyhow(error);
         }
         scheduler::drain_runtime_jobs(self, window, cx);
     }
@@ -3890,7 +4081,7 @@ impl ShellRuntime {
             ))
         });
         if let Err(error) = result {
-            tracing::error!("error in mouse move handler: {error}");
+            self.report_anyhow(error);
         }
         scheduler::drain_runtime_jobs(self, window, cx);
     }
@@ -4042,7 +4233,7 @@ impl ShellRuntime {
             ))
         });
         if let Err(error) = result {
-            tracing::error!("error in {what} handler: {error}");
+            self.report_anyhow(error);
         }
         scheduler::drain_runtime_jobs(self, window, cx);
     }
@@ -4135,7 +4326,7 @@ impl ShellRuntime {
             ))
         });
         if let Err(error) = result {
-            tracing::error!("error in key handler: {error}");
+            self.report_anyhow(error);
         }
         scheduler::drain_runtime_jobs(self, window, cx);
     }
@@ -4190,7 +4381,7 @@ impl ShellRuntime {
         });
 
         if let Err(error) = result {
-            tracing::error!("error in change handler: {error}");
+            self.report_anyhow(error);
         }
         scheduler::drain_runtime_jobs(self, window, cx);
     }
@@ -4238,7 +4429,7 @@ impl ShellRuntime {
             ))
         });
         if let Err(error) = result {
-            tracing::error!("error in host component handler: {error}");
+            self.report_anyhow(error);
         }
         scheduler::drain_runtime_jobs(self, window, cx);
     }
@@ -4298,7 +4489,7 @@ impl ShellRuntime {
         });
 
         if let Err(error) = result {
-            tracing::error!("error in step handler: {error}");
+            self.report_anyhow(error);
         }
         scheduler::drain_runtime_jobs(self, window, cx);
     }
@@ -4357,7 +4548,7 @@ impl ShellRuntime {
         });
 
         if let Err(error) = result {
-            tracing::error!("error in signal handler: {error}");
+            self.report_anyhow(error);
         }
         scheduler::drain_runtime_jobs(self, window, cx);
     }
@@ -4369,23 +4560,24 @@ impl ShellRuntime {
         window: &mut Window,
         cx: &mut App,
     ) -> Result<ComponentCallbackValue> {
-        let entry = self
-            .callbacks
-            .borrow()
-            .get(id)
-            .ok_or_else(|| anyhow!("component callback {id} belongs to a superseded render"))?;
+        let entry = self.callbacks.borrow().get(id).ok_or_else(|| {
+            anyhow!(InactiveCallback).context(format!(
+                "component callback {id} belongs to a superseded render"
+            ))
+        })?;
         if entry
             .application
             .as_ref()
             .is_some_and(|application| !application.is_active())
         {
-            return Err(anyhow!(
+            return Err(anyhow!(InactiveCallback).context(format!(
                 "component callback {id} belongs to a retired application"
-            ));
+            )));
         }
-        let view = entry
-            .live_view()
-            .ok_or_else(|| anyhow!("component callback {id} owner has been released"))?;
+        let view = entry.live_view().ok_or_else(|| {
+            anyhow!(InactiveCallback)
+                .context(format!("component callback {id} owner has been released"))
+        })?;
         let policy = view
             .as_ref()
             .map(|view| view.read(cx).policy())
@@ -4433,19 +4625,20 @@ impl ShellRuntime {
         window: &mut Window,
         cx: &mut App,
     ) -> Result<ComponentDataValue> {
-        let entry = self
-            .callbacks
-            .borrow()
-            .get(id)
-            .ok_or_else(|| anyhow!("component callback {id} belongs to a superseded render"))?;
+        let entry = self.callbacks.borrow().get(id).ok_or_else(|| {
+            anyhow!(InactiveCallback).context(format!(
+                "component callback {id} belongs to a superseded render"
+            ))
+        })?;
         if entry.application.as_ref().is_some_and(|a| !a.is_active()) {
-            return Err(anyhow!(
+            return Err(anyhow!(InactiveCallback).context(format!(
                 "component callback {id} belongs to a retired application"
-            ));
+            )));
         }
-        let view = entry
-            .live_view()
-            .ok_or_else(|| anyhow!("component callback {id} owner has been released"))?;
+        let view = entry.live_view().ok_or_else(|| {
+            anyhow!(InactiveCallback)
+                .context(format!("component callback {id} owner has been released"))
+        })?;
         let policy = view
             .as_ref()
             .map(|v| v.read(cx).policy())
@@ -4482,19 +4675,20 @@ impl ShellRuntime {
         window: &mut Window,
         cx: &mut App,
     ) -> Result<Option<gpui::AnyElement>> {
-        let entry = self
-            .callbacks
-            .borrow()
-            .get(id)
-            .ok_or_else(|| anyhow!("component callback {id} belongs to a superseded render"))?;
+        let entry = self.callbacks.borrow().get(id).ok_or_else(|| {
+            anyhow!(InactiveCallback).context(format!(
+                "component callback {id} belongs to a superseded render"
+            ))
+        })?;
         if entry.application.as_ref().is_some_and(|a| !a.is_active()) {
-            return Err(anyhow!(
+            return Err(anyhow!(InactiveCallback).context(format!(
                 "component callback {id} belongs to a retired application"
-            ));
+            )));
         }
-        let view = entry
-            .live_view()
-            .ok_or_else(|| anyhow!("component callback {id} owner has been released"))?;
+        let view = entry.live_view().ok_or_else(|| {
+            anyhow!(InactiveCallback)
+                .context(format!("component callback {id} owner has been released"))
+        })?;
         let policy = view
             .as_ref()
             .map(|v| v.read(cx).policy())
@@ -4542,19 +4736,20 @@ impl ShellRuntime {
         window: &mut Window,
         cx: &mut App,
     ) -> Result<Option<gpui::AnyElement>> {
-        let entry = self
-            .callbacks
-            .borrow()
-            .get(id)
-            .ok_or_else(|| anyhow!("component callback {id} belongs to a superseded render"))?;
+        let entry = self.callbacks.borrow().get(id).ok_or_else(|| {
+            anyhow!(InactiveCallback).context(format!(
+                "component callback {id} belongs to a superseded render"
+            ))
+        })?;
         if entry.application.as_ref().is_some_and(|a| !a.is_active()) {
-            return Err(anyhow!(
+            return Err(anyhow!(InactiveCallback).context(format!(
                 "component callback {id} belongs to a retired application"
-            ));
+            )));
         }
-        let view = entry
-            .live_view()
-            .ok_or_else(|| anyhow!("component callback {id} owner has been released"))?;
+        let view = entry.live_view().ok_or_else(|| {
+            anyhow!(InactiveCallback)
+                .context(format!("component callback {id} owner has been released"))
+        })?;
         let policy = view
             .as_ref()
             .map(|v| v.read(cx).policy())
@@ -4700,7 +4895,7 @@ impl ShellRuntime {
             let outer = self.active_context.replace(Some(ctx.as_raw()));
             let produced = match body(&ctx) {
                 Ok(value) => Ok(value),
-                Err(error) => Err(anyhow!("{}", describe(&ctx, error))),
+                Err(error) => Err(Box::new(self.capture_js_error(&ctx, error))),
             };
             self.active_context.set(outer);
             produced
@@ -4711,7 +4906,7 @@ impl ShellRuntime {
                 self.pending_nested
                     .borrow_mut()
                     .truncate(pending_checkpoint);
-                Err(error)
+                Err(anyhow::Error::new(*error))
             }
         }
     }
@@ -4736,7 +4931,7 @@ impl ShellRuntime {
         let ctx = unsafe { Ctx::from_raw(raw) };
         match body(&ctx) {
             Ok(value) => Ok(value),
-            Err(error) => Err(anyhow!("{}", describe(&ctx, error))),
+            Err(error) => Err(self.capture_js_error(&ctx, error).into()),
         }
     }
 
@@ -9654,6 +9849,48 @@ fn describe(ctx: &Ctx<'_>, error: JsError) -> String {
         },
         None => format!("{value:?}"),
     }
+}
+
+fn own_data_string(
+    ctx: &Ctx<'_>,
+    object: &Object<'_>,
+    atom: qjs::JSAtom,
+    max_bytes: usize,
+) -> Option<String> {
+    let mut descriptor = MaybeUninit::<qjs::JSPropertyDescriptor>::uninit();
+    let status = unsafe {
+        qjs::JS_GetOwnProperty(
+            ctx.as_raw().as_ptr(),
+            descriptor.as_mut_ptr(),
+            object.as_value().as_raw(),
+            atom,
+        )
+    };
+    if status <= 0 {
+        if status < 0 {
+            drop(ctx.catch());
+        }
+        return None;
+    }
+
+    let descriptor = unsafe { descriptor.assume_init() };
+    let value = unsafe { Value::from_raw(ctx.clone(), descriptor.value) };
+    let getter = unsafe { Value::from_raw(ctx.clone(), descriptor.getter) };
+    let setter = unsafe { Value::from_raw(ctx.clone(), descriptor.setter) };
+    drop((getter, setter));
+    if descriptor.flags as u32 & qjs::JS_PROP_TMASK != qjs::JS_PROP_NORMAL {
+        return None;
+    }
+    bounded_js_string(&value, max_bytes)
+}
+
+fn bounded_js_string(value: &Value<'_>, max_bytes: usize) -> Option<String> {
+    let text = value.as_string()?.clone().to_cstring().ok()?;
+    let mut end = text.len().min(max_bytes);
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(text[..end].to_owned())
 }
 
 fn js_setup_error(error: JsError) -> anyhow::Error {

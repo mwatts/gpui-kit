@@ -1187,7 +1187,9 @@ impl ComponentDataCallback {
             .runtime
             .upgrade()
             .ok_or_else(|| anyhow::anyhow!("component callback runtime has been released"))?;
-        runtime.dispatch_component_data_callback(self.callback.id, arguments, window, cx)
+        runtime
+            .dispatch_component_data_callback(self.callback.id, arguments, window, cx)
+            .map_err(|error| report_callback_failure(&runtime, error))
     }
 
     pub fn snapshot_rows_with(
@@ -1233,7 +1235,11 @@ impl ComponentElementCallback {
             .runtime
             .upgrade()
             .ok_or_else(|| anyhow::anyhow!("component callback runtime has been released"))?;
-        runtime.dispatch_component_element_callback(self.callback.id, arguments, window, cx)
+        match runtime.dispatch_component_element_callback(self.callback.id, arguments, window, cx) {
+            Ok(element) => Ok(element),
+            Err(error) if error.downcast_ref::<crate::InactiveCallback>().is_some() => Ok(None),
+            Err(error) => Err(report_callback_failure(&runtime, error)),
+        }
     }
 
     pub fn build_data_with(
@@ -1258,7 +1264,32 @@ impl ComponentElementCallback {
             .runtime
             .upgrade()
             .ok_or_else(|| anyhow::anyhow!("component callback runtime has been released"))?;
-        runtime.dispatch_component_element_data_callback(self.callback.id, arguments, window, cx)
+        match runtime.dispatch_component_element_data_callback(
+            self.callback.id,
+            arguments,
+            window,
+            cx,
+        ) {
+            Ok(element) => Ok(element),
+            Err(error) if error.downcast_ref::<crate::InactiveCallback>().is_some() => Ok(None),
+            Err(error) => Err(report_callback_failure(&runtime, error)),
+        }
+    }
+}
+
+fn report_callback_failure(
+    runtime: &Rc<crate::ShellRuntime>,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    if error.downcast_ref::<crate::InactiveCallback>().is_some() {
+        return error;
+    }
+    let failure = crate::ScriptFailure::from_error(&error);
+    runtime.report_script_failure(failure.clone());
+    if runtime.has_diagnostic_sink() {
+        anyhow::Error::new(crate::error::ReportedScriptFailure::new(failure))
+    } else {
+        error
     }
 }
 
@@ -1503,7 +1534,19 @@ impl ComponentCallback {
         cx: &mut App,
     ) {
         if let Err(error) = self.invoke_with(arguments, window, cx) {
-            tracing::error!("{context}: {error:#}");
+            if error.downcast_ref::<crate::InactiveCallback>().is_some() {
+                tracing::debug!("{context}: {error:#}");
+                return;
+            }
+            if let Some(runtime) = self.runtime.upgrade() {
+                let mut failure = crate::ScriptFailure::from_error(&error);
+                if failure.entry().is_none() {
+                    failure = failure.with_entry(context);
+                }
+                runtime.report_script_failure(failure);
+            } else {
+                tracing::error!("{context}: {error:#}");
+            }
         }
     }
 }

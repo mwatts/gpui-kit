@@ -464,6 +464,15 @@ thread_local! {
     /// Monotonic identity for host-initiated evaluations that have no GPUI call
     /// scope. Scoped calls already carry their own generation in `scope`.
     static DETACHED_EXECUTION: Cell<u64> = const { Cell::new(0) };
+    /// Set when the interrupt handler cuts off an evaluation. Consumed when the
+    /// engine records a structured failure so budget interruption is detected
+    /// at this boundary rather than by matching exception text.
+    static BUDGET_INTERRUPTED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Returns whether the interrupt handler ended the current evaluation.
+pub fn take_budget_interrupt() -> bool {
+    BUDGET_INTERRUPTED.with(|flag| flag.replace(false))
 }
 
 /// Starts one host-initiated entry into the JavaScript context.
@@ -510,7 +519,11 @@ fn deadline(budgets: Budgets) -> impl FnMut() -> bool + 'static {
             None => budgets.detached,
         };
 
-        started.elapsed() > budget
+        let exceeded = started.elapsed() > budget;
+        if exceeded {
+            BUDGET_INTERRUPTED.with(|flag| flag.set(true));
+        }
+        exceeded
     }
 }
 
