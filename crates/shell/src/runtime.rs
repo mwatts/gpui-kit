@@ -223,6 +223,10 @@ impl ApplicationGeneration {
         })
     }
 
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
+
     pub(crate) fn is_active(&self) -> bool {
         self.active.get()
     }
