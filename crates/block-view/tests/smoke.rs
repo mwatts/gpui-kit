@@ -78,10 +78,10 @@ impl gpui::Render for SmokeView {
         cx: &mut gpui::Context<Self>,
     ) -> impl gpui::IntoElement {
         let h1_id = self.snapshots[0].id.clone();
-        let selection = Selection::caret(Cursor::new(h1_id, Part::Body, 0));
+        let selections = [Selection::caret(Cursor::new(h1_id, Part::Body, 0))];
         let annotations: &[(Selection, Annotation)] = &[];
         let editing = Editing {
-            selection: Some(selection),
+            selections: &selections,
             caret_on: true,
             layouts: Some(&self.layouts),
             annotations,

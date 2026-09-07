@@ -237,29 +237,86 @@ impl CommentState {
     }
 }
 
+/// Loro expand behaviour for a text-style key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkExpand {
+    After,
+    Before,
+    Both,
+    None,
+}
+
+impl MarkExpand {
+    const fn to_loro(self) -> ExpandType {
+        match self {
+            Self::After => ExpandType::After,
+            Self::Before => ExpandType::Before,
+            Self::Both => ExpandType::Both,
+            Self::None => ExpandType::None,
+        }
+    }
+}
+
+/// One Loro text-style to configure before any mark is written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkStyle {
+    pub key: String,
+    pub expand: MarkExpand,
+}
+
+impl MarkStyle {
+    /// Built-in keys the codec always configures.
+    #[must_use]
+    pub fn defaults() -> Vec<Self> {
+        [
+            ("bold", MarkExpand::After),
+            ("italic", MarkExpand::After),
+            ("strike", MarkExpand::After),
+            ("code", MarkExpand::None),
+            ("link", MarkExpand::None),
+            ("mention", MarkExpand::None),
+            ("comment", MarkExpand::Both),
+            ("image", MarkExpand::None),
+        ]
+        .into_iter()
+        .map(|(key, expand)| Self {
+            key: key.to_string(),
+            expand,
+        })
+        .collect()
+    }
+}
+
 /// Configure Loro text-style expand behaviour before any mark.
 pub fn configure_text_styles(doc: &LoroDoc) {
-    let mut styles = StyleConfigMap::new();
-    for (key, expand) in [
-        ("bold", ExpandType::After),
-        ("italic", ExpandType::After),
-        ("strike", ExpandType::After),
-        ("code", ExpandType::None),
-        ("link", ExpandType::None),
-        ("mention", ExpandType::None),
-        ("comment", ExpandType::Both),
-        ("image", ExpandType::None),
-    ] {
-        styles.insert(key.into(), StyleConfig { expand });
+    configure_text_styles_with(doc, &MarkStyle::defaults());
+}
+
+/// Configure built-in styles plus host-registered keys.
+pub fn configure_text_styles_with(doc: &LoroDoc, styles: &[MarkStyle]) {
+    let mut map = StyleConfigMap::new();
+    for style in styles {
+        map.insert(
+            style.key.as_str().into(),
+            StyleConfig {
+                expand: style.expand.to_loro(),
+            },
+        );
     }
-    doc.config_text_style(styles);
+    doc.config_text_style(map);
 }
 
 /// Fresh document: one empty paragraph and an empty comments map.
 #[must_use]
 pub fn new_empty_doc() -> LoroDoc {
+    new_empty_doc_with(&MarkStyle::defaults())
+}
+
+/// Fresh document configured with extra host marks.
+#[must_use]
+pub fn new_empty_doc_with(styles: &[MarkStyle]) -> LoroDoc {
     let doc = LoroDoc::new();
-    configure_text_styles(&doc);
+    configure_text_styles_with(&doc, styles);
     let _ = doc.get_map("comments");
     let blocks = doc.get_movable_list("blocks");
     let _ = insert_block_map(&blocks, 0, &BlockId::new(), BlockType::Paragraph, 0);
@@ -448,6 +505,13 @@ pub fn write_rich_text(
             }
             RichMark::Image(url) => text.mark_utf8(range.clone(), "image", url.as_str())?,
             RichMark::Comment(id) => text.mark_utf8(range.clone(), "comment", id.as_str())?,
+            RichMark::Unknown { key, value } => match value {
+                MarkValue::Bool(flag) => text.mark_utf8(range.clone(), key.as_str(), *flag)?,
+                MarkValue::Int(number) => text.mark_utf8(range.clone(), key.as_str(), *number)?,
+                MarkValue::Text(text_value) => {
+                    text.mark_utf8(range.clone(), key.as_str(), text_value.as_str())?
+                }
+            },
         }
     }
     Ok(())
@@ -461,9 +525,25 @@ pub enum RichMark {
     Strike(i64),
     Code,
     Link(String),
-    Mention { url: String, form: Form },
+    Mention {
+        url: String,
+        form: Form,
+    },
     Image(String),
     Comment(String),
+    /// Host-registered mark that the built-in codec does not interpret.
+    Unknown {
+        key: String,
+        value: MarkValue,
+    },
+}
+
+/// Scalar stored on an [`RichMark::Unknown`] span.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MarkValue {
+    Bool(bool),
+    Int(i64),
+    Text(String),
 }
 
 /// Read marks from a text delta into ranked spans (outermost-first for emphasis).
@@ -547,7 +627,20 @@ fn rich_mark_from(key: &str, value: &LoroValue) -> Option<RichMark> {
                 form: Form::parse(form).unwrap_or(Form::Auto),
             })
         }
-        _ => None,
+        _ => Some(RichMark::Unknown {
+            key: key.to_string(),
+            value: mark_value_from(value),
+        }),
+    }
+}
+
+fn mark_value_from(value: &LoroValue) -> MarkValue {
+    match value {
+        LoroValue::Bool(flag) => MarkValue::Bool(*flag),
+        LoroValue::I64(number) => MarkValue::Int(*number),
+        LoroValue::Double(number) => MarkValue::Int(*number as i64),
+        LoroValue::String(text) => MarkValue::Text(text.to_string()),
+        other => MarkValue::Text(format!("{other:?}")),
     }
 }
 
