@@ -11,10 +11,10 @@ use gpui::{App, KeyBinding, actions};
 use crate::image;
 
 /// Key context for the block editor surface.
-pub const CONTEXT: &str = "LimenBlockEditor";
+pub const CONTEXT: &str = "BlockEditor";
 
 actions!(
-    limen_block_editor,
+    block_editor,
     [
         Backspace,
         Delete,

@@ -29,7 +29,7 @@
             id: id.clone(),
             start: 0,
             end: 5,
-            mark: "bold",
+            mark: "bold".into(),
         });
         let runs = &doc.snapshots()[0].runs;
         assert!(
@@ -111,7 +111,7 @@
             id: id.clone(),
             start: 5,
             end: 10,
-            mark: "bold",
+            mark: "bold".into(),
         });
         doc.apply(BlockOp::SplitBlock {
             id: id.clone(),
@@ -137,7 +137,7 @@
             id: second_id.clone(),
             start: 0,
             end: 5,
-            mark: "italic",
+            mark: "italic".into(),
         });
         doc.apply(BlockOp::MergeWithPrevious { id: second_id });
         assert_eq!(doc.snapshots().len(), 1);
@@ -172,7 +172,7 @@
             id: id.clone(),
             start,
             end,
-            mark: "bold",
+            mark: "bold".into(),
         });
         let (_, map) = find_block(doc.doc(), &id).unwrap();
         let text = content_text(&map).unwrap();
@@ -349,14 +349,14 @@
             id: id.clone(),
             start: 0,
             end: 4,
-            mark: "code",
+            mark: "code".into(),
         });
         // Bold only first two bytes of the code span.
         doc.apply(BlockOp::ToggleMark {
             id: id.clone(),
             start: 0,
             end: 2,
-            mark: "bold",
+            mark: "bold".into(),
         });
         let runs = &doc.snapshots()[0].runs;
         let bold_text: String = runs

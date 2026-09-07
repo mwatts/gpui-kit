@@ -389,7 +389,8 @@ impl MarkdownExtensions {
         self.bump_revision();
     }
 
-    pub(crate) fn parse_options(&self) -> ParseOptions {
+    /// Parse options for this extension set (GFM, plus MDX when enabled).
+    pub fn parse_options(&self) -> ParseOptions {
         let mut options = ParseOptions::gfm();
         options.constructs.frontmatter = self.enable_frontmatter;
         options.constructs.math_text = true;

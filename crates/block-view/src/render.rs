@@ -65,7 +65,7 @@ struct Overlay<'a> {
     block_ix: usize,
     block_id: &'a block_markdown::BlockId,
     part: Part,
-    selection: Option<&'a Selection>,
+    selections: &'a [Selection],
     caret_on: bool,
     layouts: Option<&'a BlockLayouts>,
     annotations: &'a [(Selection, Annotation)],
@@ -85,14 +85,23 @@ impl<'a> Overlay<'a> {
     }
 
     fn caret(&self) -> Option<usize> {
-        self.selection
-            .map(|s| s.head())
-            .filter(|head| &head.id == self.block_id && head.part == self.part)
-            .map(|head| head.offset)
+        self.carets().into_iter().next()
     }
 
-    fn selected(&self, len: usize) -> Option<Range<usize>> {
-        self.clip(self.selection?, len)
+    fn carets(&self) -> Vec<usize> {
+        self.selections
+            .iter()
+            .map(Selection::head)
+            .filter(|head| &head.id == self.block_id && head.part == self.part)
+            .map(|head| head.offset)
+            .collect()
+    }
+
+    fn selected_ranges(&self, len: usize) -> Vec<Range<usize>> {
+        self.selections
+            .iter()
+            .filter_map(|selection| self.clip(selection, len))
+            .collect()
     }
 
     fn annotated(&self, len: usize, palette: &EditorPalette) -> Vec<(Range<usize>, Hsla)> {
@@ -125,22 +134,24 @@ impl<'a> Overlay<'a> {
     }
 
     fn covers_block(&self) -> bool {
-        let Some(selection) = self.selection.filter(|s| !s.is_collapsed()) else {
-            return false;
-        };
-        let Some((start, end)) = ordered(selection, self.order) else {
-            return false;
-        };
-        let Some(here) = (self.order)(self.block_id) else {
-            return false;
-        };
-        let Some(start_ix) = (self.order)(&start.id) else {
-            return false;
-        };
-        let Some(end_ix) = (self.order)(&end.id) else {
-            return false;
-        };
-        start_ix < here && here < end_ix
+        self.selections.iter().any(|selection| {
+            if selection.is_collapsed() {
+                return false;
+            }
+            let Some((start, end)) = ordered(selection, self.order) else {
+                return false;
+            };
+            let Some(here) = (self.order)(self.block_id) else {
+                return false;
+            };
+            let Some(start_ix) = (self.order)(&start.id) else {
+                return false;
+            };
+            let Some(end_ix) = (self.order)(&end.id) else {
+                return false;
+            };
+            start_ix < here && here < end_ix
+        })
     }
 }
 
@@ -172,7 +183,7 @@ pub fn render_with(
     cx: &mut App,
 ) -> AnyElement {
     let Editing {
-        selection,
+        selections,
         caret_on,
         layouts,
         annotations,
@@ -205,7 +216,7 @@ pub fn render_with(
             block_ix: ix,
             block_id: &block.id,
             part: Part::Body,
-            selection: selection.as_ref(),
+            selections,
             caret_on,
             layouts,
             annotations,
@@ -655,7 +666,7 @@ fn painted_text(
     palette: &EditorPalette,
 ) -> AnyElement {
     let (id, part) = (overlay.block_id.clone(), overlay.part);
-    let (caret, selected) = (overlay.caret_painted(), overlay.selected(len));
+    let (caret, selected) = (overlay.caret_painted(), overlay.selected_ranges(len));
     let span = 0..len;
     let hint = overlay
         .placeholder
@@ -712,7 +723,7 @@ fn painted_text(
                     ));
                 }
             }
-            if let Some(range) = &selected {
+            for range in &selected {
                 for rect in range_rects(&layout, range, 0.0, 0.0) {
                     window.paint_quad(quad(
                         rect,
@@ -883,7 +894,7 @@ fn code_block(
         .collect();
 
     let caret = overlay.caret_painted();
-    let selected = overlay.selected(code.len());
+    let selected = overlay.selected_ranges(code.len());
     let sink = overlay.layouts.cloned();
     let code_size = typography.code.size();
     let annotated = overlay.annotated(code.len(), palette);
@@ -913,7 +924,7 @@ fn code_block(
                         }
                     }
                 }
-                if let Some(range) = &selected {
+                for range in &selected {
                     let (from, to) = (range.start.max(span.start), range.end.min(span.end));
                     if from < to {
                         for rect in

@@ -2,26 +2,18 @@
 //!
 //! Pure data — no window. The Editor entity (Task 4) owns scroll / glass paint.
 
-use block_markdown::BlockType;
+use gpui::App;
 use gpui_component_block_view::Cursor;
 
-/// Every block the menu offers. Bookmark is absent (needs a URL).
+use crate::registry::{SlashAction, SlashCommand, SlashRegistry};
+
+/// Built-in `/` rows as `(label, action)`.
 #[must_use]
-pub fn items() -> Vec<(&'static str, BlockType)> {
-    vec![
-        ("Text", BlockType::Paragraph),
-        ("Heading 1", BlockType::Heading { level: 1 }),
-        ("Heading 2", BlockType::Heading { level: 2 }),
-        ("Heading 3", BlockType::Heading { level: 3 }),
-        ("Bullet", BlockType::Bullet),
-        ("Numbered", BlockType::Ordered),
-        ("Task", BlockType::Task),
-        ("Quote", BlockType::Quote),
-        ("Code", BlockType::Code),
-        ("Table", BlockType::Table),
-        ("Image", BlockType::Image),
-        ("Divider", BlockType::Rule),
-    ]
+pub fn items() -> Vec<(String, SlashAction)> {
+    SlashRegistry::default_commands()
+        .into_iter()
+        .map(|command| (command.label.to_string(), command.action))
+        .collect()
 }
 
 /// Match rank of a label against a query: `0` prefix, `1` substring, `None` no
@@ -142,19 +134,30 @@ pub struct Slash {
     /// The `/` itself. Everything between it and the caret is the query.
     pub at: Cursor,
     pub filter: Filter,
+    commands: Vec<SlashCommand>,
 }
 
 impl Slash {
     #[must_use]
     pub fn open(at: Cursor) -> Self {
+        Self::open_with(at, SlashRegistry::default_commands())
+    }
+
+    #[must_use]
+    pub fn open_in(at: Cursor, cx: &App) -> Self {
+        Self::open_with(at, SlashRegistry::commands_in(cx))
+    }
+
+    #[must_use]
+    pub fn open_with(at: Cursor, commands: Vec<SlashCommand>) -> Self {
+        let labels = commands
+            .iter()
+            .map(|command| command.label.to_string())
+            .collect();
         Self {
             at,
-            filter: Filter::new(
-                items()
-                    .into_iter()
-                    .map(|(label, _)| label.to_string())
-                    .collect(),
-            ),
+            filter: Filter::new(labels),
+            commands,
         }
     }
 
@@ -166,11 +169,16 @@ impl Slash {
         self.filter.step(delta);
     }
 
-    /// The block confirming right now would make.
+    /// The command confirming right now would run.
     #[must_use]
-    pub fn choice(&self) -> Option<BlockType> {
+    pub fn choice(&self) -> Option<SlashAction> {
         let ix = self.filter.active_item()?;
-        items().into_iter().nth(ix).map(|(_, kind)| kind)
+        self.commands.get(ix).map(|command| command.action.clone())
+    }
+
+    #[must_use]
+    pub fn commands(&self) -> &[SlashCommand] {
+        &self.commands
     }
 
     /// Text typed since the `/`, or `None` when the caret has left the run
@@ -209,6 +217,7 @@ mod tests {
                 "Task",
                 "Quote",
                 "Code",
+                "Markdown",
                 "Table",
                 "Image",
                 "Divider",
@@ -246,8 +255,18 @@ mod tests {
             "space closes"
         );
         slash.refilter("hea");
-        assert_eq!(slash.choice(), Some(BlockType::Heading { level: 1 }));
+        assert_eq!(
+            slash.choice(),
+            Some(SlashAction::Insert(block_markdown::BlockType::Heading {
+                level: 1
+            }))
+        );
         slash.step(1);
-        assert_eq!(slash.choice(), Some(BlockType::Heading { level: 2 }));
+        assert_eq!(
+            slash.choice(),
+            Some(SlashAction::Insert(block_markdown::BlockType::Heading {
+                level: 2
+            }))
+        );
     }
 }

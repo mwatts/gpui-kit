@@ -6,13 +6,19 @@ use loro::LoroDoc;
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, LinkType, Options, Parser, Tag, TagEnd};
 
 use crate::schema::{
-    Align, BlockId, BlockType, Form, RichMark, blocks_list, configure_text_styles, ensure_alt,
-    ensure_content, insert_block_map, repair_numbers, write_rich_text,
+    Align, BlockId, BlockType, Form, MarkStyle, RichMark, blocks_list, configure_text_styles_with,
+    ensure_alt, ensure_content, insert_block_map, repair_numbers, write_rich_text,
 };
 
 /// Parse markdown into a fresh Loro document.
 #[must_use]
 pub fn hydrate(source: &str) -> LoroDoc {
+    hydrate_with(source, &MarkStyle::defaults())
+}
+
+/// Parse markdown and configure extra host marks on the document.
+#[must_use]
+pub fn hydrate_with(source: &str, styles: &[MarkStyle]) -> LoroDoc {
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let mut state = ParseState::default();
@@ -22,7 +28,7 @@ pub fn hydrate(source: &str) -> LoroDoc {
     state.renumber();
 
     let doc = LoroDoc::new();
-    configure_text_styles(&doc);
+    configure_text_styles_with(&doc, styles);
     let _ = doc.get_map("comments");
     let list = blocks_list(&doc);
 
@@ -381,7 +387,11 @@ impl ParseState {
             },
             Event::Code(t) => self.builder.wrap(RichMark::Code, &t),
             Event::Html(t) | Event::InlineHtml(t) => self.builder.text.push_str(&t),
-            Event::SoftBreak | Event::HardBreak => match &mut self.code {
+            Event::SoftBreak => match &mut self.code {
+                Some((_, code)) => code.push('\n'),
+                None => self.builder.text.push(' '),
+            },
+            Event::HardBreak => match &mut self.code {
                 Some((_, code)) => code.push('\n'),
                 None => self.builder.text.push('\n'),
             },

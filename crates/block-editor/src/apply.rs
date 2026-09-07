@@ -55,7 +55,7 @@ pub fn perform(doc: &LoroDoc, op: BlockOp) -> LoroResult<ApplyResult> {
             start,
             end,
             mark,
-        } => toggle_mark(doc, &id, start, end, mark),
+        } => toggle_mark(doc, &id, start, end, &mark),
         BlockOp::SetLink {
             id,
             start,
