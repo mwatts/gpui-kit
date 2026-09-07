@@ -921,6 +921,7 @@ name = "block-markdown"
 version = "0.1.0"
 dependencies = [
  "loro",
+ "markdown",
  "pulldown-cmark",
  "uuid",
 ]

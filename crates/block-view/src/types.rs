@@ -173,7 +173,7 @@ pub struct MarkedRange {
 /// What an editor paints over a document.
 #[derive(Clone)]
 pub struct Editing<'a> {
-    pub selection: Option<Selection>,
+    pub selections: &'a [Selection],
     pub caret_on: bool,
     pub layouts: Option<&'a BlockLayouts>,
     pub annotations: &'a [(Selection, Annotation)],
@@ -185,7 +185,7 @@ pub struct Editing<'a> {
 impl Default for Editing<'_> {
     fn default() -> Self {
         Self {
-            selection: None,
+            selections: &[],
             caret_on: true,
             layouts: None,
             annotations: &[],

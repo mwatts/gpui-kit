@@ -277,7 +277,8 @@ impl MarkdownExtensions {
         self.bump_revision();
     }
 
-    pub(crate) fn parse_options(&self) -> ParseOptions {
+    /// Parse options for this extension set (GFM, plus MDX when enabled).
+    pub fn parse_options(&self) -> ParseOptions {
         let mut options = ParseOptions::gfm();
         if self.enable_mdx {
             options.constructs.html_flow = false;

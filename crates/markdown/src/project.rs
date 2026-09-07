@@ -413,7 +413,7 @@ fn open_mark(out: &mut String, mark: &RichMark, italic: char) {
         RichMark::Strike(_) => out.push_str("~~"),
         RichMark::Link(_) | RichMark::Mention { .. } => out.push('['),
         RichMark::Image(_) => out.push_str("!["),
-        RichMark::Code | RichMark::Comment(_) => {}
+        RichMark::Code | RichMark::Comment(_) | RichMark::Unknown { .. } => {}
     }
 }
 
@@ -434,7 +434,7 @@ fn close_mark(out: &mut String, mark: &RichMark, italic: char) {
             out.push_str(form.title().unwrap_or("chip"));
             out.push_str("\")");
         }
-        RichMark::Code | RichMark::Comment(_) => {}
+        RichMark::Code | RichMark::Comment(_) | RichMark::Unknown { .. } => {}
     }
 }
 
