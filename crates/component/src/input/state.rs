@@ -1,6 +1,7 @@
 use gpui::{App, Entity, FocusHandle, Focusable as _, SharedString, Window};
 use gpui_base::OtpState;
 use ropey::Rope;
+use std::ops::Range;
 
 use super::{EditorState, InputState, TextareaState};
 use crate::Root;
@@ -65,6 +66,19 @@ impl TextInputState {
     /// The state holds the only copy; nothing on the render path snapshots it.
     pub(crate) fn text<'a>(&self, cx: &'a App) -> &'a Rope {
         dispatch!(self, |state| state.read(cx).text())
+    }
+
+    pub(crate) fn selected_range(&self, cx: &App) -> Range<usize> {
+        dispatch!(self, |state| state.read(cx).selected_range())
+    }
+
+    pub(crate) fn cursor(&self, cx: &App) -> usize {
+        dispatch!(self, |state| state.read(cx).cursor())
+    }
+
+    pub(crate) fn set_selected_range(&self, range: Range<usize>, cx: &mut App) {
+        dispatch!(self, |state| state
+            .update(cx, |state, cx| state.set_selected_range(range, cx)))
     }
 
     pub(crate) fn focus(&self, window: &mut Window, cx: &mut App) {

@@ -123,6 +123,80 @@ impl<E: gpui::Element> gpui::Element for FocusWithin<E> {
     }
 }
 
+#[derive(Clone, Debug)]
+struct AccessibilityText {
+    text: String,
+    anchor: usize,
+    focus: usize,
+    read_only: bool,
+}
+
+impl AccessibilityText {
+    fn new(
+        text: String,
+        selection: std::ops::Range<usize>,
+        cursor: usize,
+        read_only: bool,
+    ) -> Self {
+        let (anchor, focus) = if !selection.is_empty() && cursor == selection.start {
+            (selection.end, selection.start)
+        } else {
+            (selection.start, selection.end)
+        };
+        Self {
+            text,
+            anchor,
+            focus,
+            read_only,
+        }
+    }
+
+    fn materialize(
+        &self,
+        run_id: gpui::accesskit::NodeId,
+    ) -> (gpui::accesskit::Node, gpui::accesskit::TextSelection) {
+        let mut run = gpui::accesskit::Node::new(Role::TextRun);
+        run.set_value(self.text.clone());
+        run.set_character_lengths(
+            self.text
+                .chars()
+                .map(|character| character.len_utf8() as u8)
+                .collect::<Vec<_>>(),
+        );
+        let position = |byte_offset| gpui::accesskit::TextPosition {
+            node: run_id,
+            character_index: scalar_index_at_byte(&self.text, byte_offset),
+        };
+        let selection = gpui::accesskit::TextSelection {
+            anchor: position(self.anchor),
+            focus: position(self.focus),
+        };
+        (run, selection)
+    }
+
+    fn write(self, builder: &mut gpui::A11ySubtreeBuilder<'_>) {
+        let run_id = builder.synthetic_node_id("text");
+        let (run, selection) = self.materialize(run_id);
+        builder.push_child(run_id, run);
+        builder.parent_node().set_text_selection(selection);
+        if self.read_only {
+            builder.parent_node().set_read_only();
+        }
+    }
+}
+
+fn scalar_index_at_byte(text: &str, byte_offset: usize) -> usize {
+    let mut byte_offset = byte_offset.min(text.len());
+    while !text.is_char_boundary(byte_offset) {
+        byte_offset -= 1;
+    }
+    text[..byte_offset].chars().count()
+}
+
+fn byte_offset_at_scalar(text: &ropey::Rope, scalar_index: usize) -> usize {
+    text.char_to_byte_idx(scalar_index.min(text.len_chars()))
+}
+
 fn accessibility_role(
     is_multi_line: bool,
     content_type: Option<InputContentType>,
@@ -444,6 +518,24 @@ impl Input {
         state.replace_all(value.to_string(), window, cx);
     }
 
+    fn handle_accessibility_set_text_selection(
+        state: &TextInputState,
+        data: Option<&gpui::accesskit::ActionData>,
+        cx: &mut App,
+    ) {
+        let Some(gpui::accesskit::ActionData::SetTextSelection(selection)) = data else {
+            return;
+        };
+        let (anchor, focus) = {
+            let text = state.text(cx);
+            (
+                byte_offset_at_scalar(text, selection.anchor.character_index),
+                byte_offset_at_scalar(text, selection.focus.character_index),
+            )
+        };
+        state.set_selected_range(anchor..focus, cx);
+    }
+
     /// This method must after the refine_style.
     fn render_editor(
         input_state: TextInputState,
@@ -585,9 +677,19 @@ impl RenderOnce for Input {
         let accessibility_state = state.clone();
         // Materializing the whole rope is only observable through the
         // accessibility tree, so skip it when no client is listening.
-        let accessibility_value = (window.is_a11y_active()
+        let accessibility = (window.is_a11y_active()
             && exposes_accessibility_value(presentation.is_masked(), content_type))
-        .then(|| state.text(cx).to_string());
+        .then(|| {
+            AccessibilityText::new(
+                state.text(cx).to_string(),
+                state.selected_range(cx),
+                state.cursor(cx),
+                presentation.is_readonly() || presentation.is_disabled(),
+            )
+        });
+        let accessibility_value = accessibility
+            .as_ref()
+            .map(|accessibility| accessibility.text.clone());
         let input_focus_handle = presentation.focus_handle().clone();
         let input_focused = input_focus_handle.is_focused(window) && !presentation.is_disabled();
         if input_focused {
@@ -658,10 +760,22 @@ impl RenderOnce for Input {
                 this.aria_placeholder(placeholder)
             })
             .when_some(accessibility_value, |this, value| this.aria_value(value))
-            .when(!disabled, |this| {
+            .when_some(accessibility, |this, accessibility| {
+                this.a11y_synthetic_children(move |builder| accessibility.write(builder))
+            })
+            .when(presentation.is_editable(), |this| {
                 this.on_a11y_action(AccessibleAction::SetValue, move |data, window, cx| {
                     Self::handle_accessibility_set_value(&accessibility_state, data, window, cx);
                 })
+            })
+            .when(!disabled, |this| {
+                let state = state.clone();
+                this.on_a11y_action(
+                    AccessibleAction::SetTextSelection,
+                    move |data, _window, cx| {
+                        Self::handle_accessibility_set_text_selection(&state, data, cx);
+                    },
+                )
             })
             .flex()
             .size_full()
@@ -881,13 +995,54 @@ mod tests {
         assert_eq!(RoleOverride::from(None), RoleOverride::Presentational);
     }
 
+    #[test]
+    fn accessibility_text_uses_utf8_lengths_and_scalar_selection() {
+        let run_id = gpui::accesskit::NodeId(77);
+        let accessibility = AccessibilityText::new("a😀b".into(), 1..5, 5, false);
+        let (run, selection) = accessibility.materialize(run_id);
+
+        assert_eq!(run.role(), Role::TextRun);
+        assert_eq!(run.value(), Some("a😀b"));
+        assert_eq!(run.character_lengths(), &[1, 4, 1]);
+        assert_eq!(selection.anchor.node, run_id);
+        assert_eq!(selection.anchor.character_index, 1);
+        assert_eq!(selection.focus.node, run_id);
+        assert_eq!(selection.focus.character_index, 2);
+
+        let accessibility = AccessibilityText::new("a😀b".into(), 1..5, 1, false);
+        let (_, selection) = accessibility.materialize(run_id);
+        assert_eq!(selection.anchor.character_index, 2);
+        assert_eq!(selection.focus.character_index, 1);
+    }
+
+    #[test]
+    fn empty_accessibility_text_still_materializes_a_text_run() {
+        let run_id = gpui::accesskit::NodeId(81);
+        let accessibility = AccessibilityText::new(String::new(), 0..0, 0, false);
+        let (run, selection) = accessibility.materialize(run_id);
+
+        assert_eq!(run.role(), Role::TextRun);
+        assert_eq!(run.value(), Some(""));
+        assert!(run.character_lengths().is_empty());
+        assert_eq!(selection.anchor.node, run_id);
+        assert_eq!(selection.anchor.character_index, 0);
+        assert_eq!(selection.focus, selection.anchor);
+    }
+
     #[gpui::test]
     fn editable_input_exposes_accessibility_metadata_and_actions(cx: &mut gpui::TestAppContext) {
         use crate::ElementExt as _;
         use gpui::{AppContext as _, Element as _, IntoElement as _, Render};
         use std::sync::{Arc, Mutex};
 
-        type EmittedState = Option<(Option<Role>, Option<String>, Option<String>, bool, bool)>;
+        type EmittedState = Option<(
+            Option<Role>,
+            Option<String>,
+            Option<String>,
+            bool,
+            bool,
+            bool,
+        )>;
 
         struct InputA11yProbe {
             state: Entity<InputState>,
@@ -915,6 +1070,7 @@ mod tests {
                         node.value().map(ToOwned::to_owned),
                         node.supports_action(AccessibleAction::Focus),
                         node.supports_action(AccessibleAction::SetValue),
+                        node.supports_action(AccessibleAction::SetTextSelection),
                     ));
                 })
             }
@@ -940,6 +1096,7 @@ mod tests {
                 None,
                 true,
                 true,
+                true,
             ))
         );
 
@@ -955,6 +1112,65 @@ mod tests {
             Input::handle_accessibility_set_value(&base, Some(&action), window, cx);
         });
         assert_eq!(state.read_with(cx, |state, _| state.value()), "updated");
+    }
+
+    #[gpui::test]
+    fn accessibility_selection_action_maps_scalar_indices_to_utf8_offsets(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::{AppContext as _, Render};
+
+        struct InputProbe {
+            state: Entity<InputState>,
+        }
+
+        impl Render for InputProbe {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                Input::new(&self.state)
+            }
+        }
+
+        cx.update(crate::init);
+        let (probe, cx) = cx.add_window_view(|window, cx| InputProbe {
+            state: cx.new(|cx| InputState::new(window, cx).default_value("a😀b")),
+        });
+        let state = probe.read_with(cx, |probe, _| probe.state.clone());
+        let base: TextInputState = state.clone().into();
+        let run_id = gpui::accesskit::NodeId(77);
+
+        let action =
+            gpui::accesskit::ActionData::SetTextSelection(gpui::accesskit::TextSelection {
+                anchor: gpui::accesskit::TextPosition {
+                    node: run_id,
+                    character_index: 1,
+                },
+                focus: gpui::accesskit::TextPosition {
+                    node: run_id,
+                    character_index: 2,
+                },
+            });
+        cx.update(|_, cx| {
+            Input::handle_accessibility_set_text_selection(&base, Some(&action), cx);
+        });
+        assert_eq!(state.read_with(cx, |state, _| state.selected_range()), 1..5);
+        assert_eq!(state.read_with(cx, |state, _| state.cursor()), 5);
+
+        let reversed =
+            gpui::accesskit::ActionData::SetTextSelection(gpui::accesskit::TextSelection {
+                anchor: gpui::accesskit::TextPosition {
+                    node: run_id,
+                    character_index: 2,
+                },
+                focus: gpui::accesskit::TextPosition {
+                    node: run_id,
+                    character_index: 1,
+                },
+            });
+        cx.update(|_, cx| {
+            Input::handle_accessibility_set_text_selection(&base, Some(&reversed), cx);
+        });
+        assert_eq!(state.read_with(cx, |state, _| state.selected_range()), 1..5);
+        assert_eq!(state.read_with(cx, |state, _| state.cursor()), 1);
     }
 
     #[gpui::test]
