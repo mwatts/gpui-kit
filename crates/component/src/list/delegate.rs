@@ -1,4 +1,7 @@
-use gpui::{AnyElement, App, Context, IntoElement, ParentElement as _, Styled as _, Task, Window};
+use gpui::{
+    AnyElement, App, Context, IntoElement, ParentElement as _, SharedString, Styled as _, Task,
+    Window,
+};
 
 use crate::{
     ActiveTheme as _, Icon, IconName, IndexPath, Selectable, h_flex,
@@ -45,6 +48,11 @@ pub trait ListDelegate: Sized + 'static {
         window: &mut Window,
         cx: &mut Context<ListState<Self>>,
     ) -> Option<Self::Item>;
+
+    /// Return the text that names an item's accessible list-item node.
+    fn accessibility_label(&self, _ix: IndexPath, _cx: &App) -> Option<SharedString> {
+        None
+    }
 
     /// Render the section header at the given index, default is None.
     ///

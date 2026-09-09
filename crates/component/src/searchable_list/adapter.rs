@@ -1,4 +1,7 @@
-use gpui::{AnyElement, App, Context, IntoElement, ParentElement as _, Styled as _, Window, div};
+use gpui::{
+    AnyElement, App, Context, IntoElement, ParentElement as _, SharedString, Styled as _, Window,
+    div,
+};
 
 use crate::{
     ActiveTheme, Disableable as _, Icon, IconName, IndexPath, Sizable as _, Size, StyleSized as _,
@@ -141,6 +144,10 @@ impl<D: SearchableListDelegate + 'static> ListDelegate for SearchableListAdapter
                 .with_size(size)
                 .child(content.into_any_element()),
         )
+    }
+
+    fn accessibility_label(&self, ix: IndexPath, _: &App) -> Option<SharedString> {
+        self.delegate.item(ix).map(|item| item.title())
     }
 
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<ListState<Self>>) {
