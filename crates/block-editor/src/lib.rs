@@ -2,6 +2,7 @@
 //!
 //! Ported from Bezel editor chrome and Catena/Mikra Loro patterns. See `NOTICE`.
 
+mod accessibility;
 mod apply;
 mod backspace;
 mod chrome;

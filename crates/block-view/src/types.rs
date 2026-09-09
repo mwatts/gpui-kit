@@ -163,11 +163,121 @@ pub enum Caption {
     Hidden,
 }
 
-/// IME marked range overlay (skip Loro project for this block while composing).
+/// An IME composition projected over an unchanged document range.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MarkedRange {
-    pub id: BlockId,
-    pub range: Range<usize>,
+pub struct Composition {
+    id: BlockId,
+    part: Part,
+    range: Range<usize>,
+    text: String,
+    selection: Range<usize>,
+}
+
+impl Composition {
+    /// Creates an empty composition over a UTF-8 document range.
+    #[must_use]
+    pub fn new(id: BlockId, part: Part, range: Range<usize>) -> Self {
+        Self {
+            id,
+            part,
+            range,
+            text: String::new(),
+            selection: 0..0,
+        }
+    }
+
+    /// Sets the transient preedit text without changing the document.
+    #[must_use]
+    pub fn with_text(mut self, text: impl Into<String>) -> Self {
+        self.text = text.into();
+        self
+    }
+
+    /// Sets the UTF-8 selection relative to the preedit text.
+    #[must_use]
+    pub fn with_selection(mut self, selection: Range<usize>) -> Self {
+        self.selection = selection;
+        self
+    }
+
+    #[must_use]
+    pub fn id(&self) -> &BlockId {
+        &self.id
+    }
+
+    #[must_use]
+    pub const fn part(&self) -> Part {
+        self.part
+    }
+
+    #[must_use]
+    pub fn range(&self) -> Range<usize> {
+        self.range.clone()
+    }
+
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    #[must_use]
+    pub fn selection(&self) -> Range<usize> {
+        self.selection.clone()
+    }
+
+    /// Returns the preedit range in the projected UTF-8 text.
+    #[must_use]
+    pub fn projected_range(&self) -> Range<usize> {
+        self.range.start..self.range.start + self.text.len()
+    }
+
+    /// Returns the preedit selection in projected UTF-8 text coordinates.
+    #[must_use]
+    pub fn projected_selection(&self) -> Selection {
+        Selection::new(
+            Cursor::new(
+                self.id.clone(),
+                self.part,
+                self.range.start + self.selection.start,
+            ),
+            Cursor::new(
+                self.id.clone(),
+                self.part,
+                self.range.start + self.selection.end,
+            ),
+        )
+    }
+
+    /// Replaces the original range in a transient text projection.
+    #[must_use]
+    pub fn project_text(&self, source: &str) -> String {
+        let mut projected = source.to_string();
+        projected.replace_range(self.range.clone(), &self.text);
+        projected
+    }
+
+    /// Maps a range in projected text back to the unchanged document.
+    #[must_use]
+    pub fn document_range_for_projected(&self, projected: Range<usize>) -> Range<usize> {
+        let marked = self.projected_range();
+        let replaced_len = self.range.end.saturating_sub(self.range.start);
+
+        let start = if projected.start <= marked.start {
+            projected.start
+        } else if projected.start < marked.end {
+            self.range.start
+        } else {
+            projected.start - self.text.len() + replaced_len
+        };
+        let end = if projected.end <= marked.start {
+            projected.end
+        } else if projected.end <= marked.end {
+            self.range.end
+        } else {
+            projected.end - self.text.len() + replaced_len
+        };
+        start..end
+    }
 }
 
 /// What an editor paints over a document.
@@ -179,7 +289,7 @@ pub struct Editing<'a> {
     pub annotations: &'a [(Selection, Annotation)],
     pub placeholder: Option<SharedString>,
     pub caption: Caption,
-    pub marked: Option<&'a MarkedRange>,
+    pub composition: Option<&'a Composition>,
 }
 
 impl Default for Editing<'_> {
@@ -191,7 +301,7 @@ impl Default for Editing<'_> {
             annotations: &[],
             placeholder: None,
             caption: Caption::default(),
-            marked: None,
+            composition: None,
         }
     }
 }

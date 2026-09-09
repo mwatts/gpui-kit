@@ -29,7 +29,7 @@ pub use preview::{LinkPreview, Preview, host, set_link_preview};
 pub use render::{Flat, PLAIN_LANGUAGE, flatten, render, render_with};
 pub use types::{
     Align, Annotation, BASE_RADIUS_PX, BULLET_DISC_PX, BlockSnapshot, CARET_WIDTH_PX, Caption,
-    Cursor, Editing, MarkedRange, Part, QUOTE_BAR_PX, Selection, TASK_BOX_PX, TableData,
+    Composition, Cursor, Editing, Part, QUOTE_BAR_PX, Selection, TASK_BOX_PX, TableData,
 };
 pub use typography::{Metrics, Typography, set_typography};
 
