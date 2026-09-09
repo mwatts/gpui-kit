@@ -537,7 +537,11 @@ mod component_callback_value_tests {
         let invalid = crate::ComponentDataCallback::from_runtime(&runtime, invalid);
         let (stale, generation) = callback(&runtime, "()=>[]", None);
         let stale = crate::ComponentDataCallback::from_runtime(&runtime, stale);
-        let (retired, _) = callback(&runtime, "()=>[]", Some(application.clone()));
+        let (retired, _) = callback(
+            &runtime,
+            "()=>{ globalThis.__retiredDelegateRan = true; return []; }",
+            Some(application.clone()),
+        );
         let retired = crate::ComponentElementCallback::from_runtime(&runtime, retired);
         let (notify, _) = callback(&runtime, "(cx)=>{ cx.notify(); return []; }", None);
         let notify = crate::ComponentDataCallback::from_runtime(&runtime, notify);
@@ -583,11 +587,18 @@ mod component_callback_value_tests {
                 .contains("superseded render")
         );
         application.retire();
-        let retired_error = match context.update(|window, cx| retired.build_with(&[], window, cx)) {
-            Ok(_) => panic!("retired element callback must fail"),
-            Err(error) => error,
-        };
-        assert!(retired_error.to_string().contains("retired application"));
+        assert!(
+            context
+                .update(|window, cx| retired.build_with(&[], window, cx))
+                .expect("retired element callbacks are inert")
+                .is_none()
+        );
+        assert!(
+            !runtime
+                .with_js(|ctx| ctx.eval::<bool, _>("globalThis.__retiredDelegateRan === true"))
+                .unwrap(),
+            "a retired delegate must not execute JavaScript"
+        );
         let snapshot =
             crate::ComponentDelegateSnapshot::new(vec![ComponentDataValue::String("row".into())]);
         assert_eq!(snapshot.len(), 1);
@@ -3272,6 +3283,7 @@ impl ShellRuntime {
     /// tests that never paint a frame. This runs the script; to read a
     /// description that has already been built, use
     /// [`RenderSnapshot::debug_tree`] instead — that path never enters the VM.
+    #[cfg(test)]
     pub(crate) fn render_to_spec(
         self: &Rc<Self>,
         object: &ViewObject,

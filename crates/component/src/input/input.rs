@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AccessibleAction, AnyElement, App, DefiniteLength, Edges, Entity, Hsla,
+    AccessibleAction, AnyElement, App, DefiniteLength, Edges, ElementId, Entity, Hsla,
     InteractiveElement as _, IntoElement, ParentElement as _, Rems, RenderOnce, Role, SharedString,
     StatefulInteractiveElement as _, StyleRefinement, Styled, TextAlign, Window, div, px, relative,
 };
@@ -282,6 +282,7 @@ pub(crate) fn input_style(disabled: bool, cx: &App) -> (Hsla, Hsla) {
 /// A text input element bind to an [`InputState`].
 #[derive(IntoElement)]
 pub struct Input {
+    id: Option<ElementId>,
     state: TextInputState,
     style: StyleRefinement,
     size: Size,
@@ -338,6 +339,12 @@ impl crate::FocusableExt for Input {
 }
 
 impl Input {
+    /// Sets the GPUI identity of the input frame. By default it uses the state entity ID.
+    pub fn id(mut self, id: impl Into<ElementId>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
     /// Create a new [`Input`] element bind to the [`InputState`].
     pub fn new(state: &Entity<InputState>) -> Self {
         Self::with_state(state.clone().into())
@@ -353,6 +360,7 @@ impl Input {
 
     fn with_state(state: TextInputState) -> Self {
         Self {
+            id: None,
             state,
             size: Size::default(),
             style: StyleRefinement::default(),
@@ -675,9 +683,8 @@ impl RenderOnce for Input {
         let is_multi_line = presentation.is_multi_line();
         let accessibility_role = accessibility_role(is_multi_line, content_type, self.role);
         let accessibility_state = state.clone();
-        // Materializing the whole rope is only observable through the
-        // accessibility tree, so skip it when no client is listening.
-        let accessibility = (window.is_a11y_active()
+        // Tests inspect the same exported text without a platform client.
+        let accessibility = ((window.is_a11y_active() || cfg!(feature = "test-support"))
             && exposes_accessibility_value(presentation.is_masked(), content_type))
         .then(|| {
             AccessibilityText::new(
@@ -741,7 +748,10 @@ impl RenderOnce for Input {
             None if placeholder_is_mask => None,
             None => placeholder.clone(),
         };
-        let input = BaseInput::new(("input", state.entity_id()))
+        let id = self
+            .id
+            .unwrap_or_else(|| ("input", state.entity_id()).into());
+        let input = BaseInput::new(id)
             .focused(focused)
             .disabled(disabled)
             .track_focus(&input_focus_handle)
@@ -1086,14 +1096,13 @@ mod tests {
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
-        // No assistive technology is attached in tests, so the value stays
-        // unmaterialized while `SetValue` is still advertised.
+        let expected_value = cfg!(feature = "test-support").then(|| "initial".to_owned());
         assert_eq!(
             *captured.lock().unwrap(),
             Some((
                 Some(Role::TextInput),
                 Some("Search commands".into()),
-                None,
+                expected_value,
                 true,
                 true,
                 true,

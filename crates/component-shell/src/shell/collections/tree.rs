@@ -224,8 +224,8 @@ impl ComponentMaterializer for TreeMaterializer {
         let on_select = request
             .methods()
             .filter_map(|method| method.payload().downcast_ref::<TreeOp>())
-            .filter_map(|op| match op {
-                TreeOp::OnSelect(argument) => Some(argument.clone()),
+            .map(|op| match op {
+                TreeOp::OnSelect(argument) => argument.clone(),
             })
             .last();
         let on_select = on_select

@@ -682,33 +682,16 @@ pub fn materialize(
     })
 }
 
-/// Materializes a snapshot and returns the first registered-component failure
-/// instead of painting a placeholder over it.
-///
-/// [`materialize`] keeps the placeholder path for callers that must produce an
-/// element. Root [`crate::ScriptView`] qualification uses this so a first-render
-/// success includes component materialization, not only `build_snapshot`.
+/// Builds the same eager element tree as a view render, preserving registered
+/// component failures for a source check instead of only showing a fallback.
+/// Deferred slots, nested views, and layout callbacks are not driven here.
 pub(crate) fn try_materialize(
     runtime: &Rc<ShellRuntime>,
     snapshot: &RenderSnapshot,
     window: &mut Window,
     cx: &mut App,
 ) -> anyhow::Result<AnyElement> {
-    let ambient = window.text_style().color;
-    let metrics = runtime.metrics();
-    metrics.time_materialize(|| {
-        with_error_frame(|| {
-            materialize_node(
-                runtime,
-                Some(snapshot),
-                snapshot.arena(),
-                snapshot.root(),
-                ambient,
-                window,
-                cx,
-            )
-        })
-    })
+    with_error_frame(|| materialize(runtime, snapshot, window, cx))
 }
 
 /// Materializes one described subtree from an arena that is not a snapshot's.

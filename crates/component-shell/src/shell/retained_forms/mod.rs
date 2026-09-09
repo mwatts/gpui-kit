@@ -27,6 +27,10 @@ use std::sync::Arc;
 mod event_host;
 
 #[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "Read by the retained_forms_host integration test that includes this module directly"
+)]
 pub(crate) mod test_probe {
     use std::cell::RefCell;
     thread_local! {

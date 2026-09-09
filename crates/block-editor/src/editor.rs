@@ -1563,7 +1563,16 @@ impl Editor {
                 if !matches!(event, gpui_component::input::InputEvent::Change) {
                     return;
                 }
-                let text = incoming.read(cx).value().to_string();
+                let input = incoming.read(cx);
+                let text = input.value().to_string();
+                let range = input.selected_range();
+                let cursor = input.cursor();
+                let anchor = if cursor == range.start {
+                    range.end
+                } else {
+                    range.start
+                };
+                let selection = this.selection.clone();
                 let len = this
                     .snapshots()
                     .iter()
@@ -1585,6 +1594,16 @@ impl Editor {
                     ],
                     cx,
                 );
+                // Replacing stored text must keep the active code selection.
+                this.selection =
+                    if selection.head().id == block_id && selection.head().part == Part::Code {
+                        Selection::new(
+                            Cursor::new(block_id.clone(), Part::Code, anchor),
+                            Cursor::new(block_id.clone(), Part::Code, cursor),
+                        )
+                    } else {
+                        selection
+                    };
             }
         })
         .detach();
@@ -1904,6 +1923,140 @@ fn word_right_offset(text: &str, offset: usize) -> usize {
     let rest = &tail[skipped..];
     let word = rest.len() - rest.trim_start_matches(char::is_alphanumeric).len();
     offset + skipped + word
+}
+
+#[cfg(test)]
+mod code_leaf_tests {
+    use super::*;
+    use gpui::{EntityInputHandler as _, TestAppContext, VisualTestContext};
+    use gpui_component::Root;
+
+    #[gpui::test]
+    fn code_leaf_input_round_trips_through_loro(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::init(cx);
+        });
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| Editor::from_markdown("```rust\nx\n```", cx));
+            let id = view.read(cx).snapshots()[0].id.clone();
+            view.update(cx, |this, cx| {
+                this.select(Selection::caret(Cursor::new(id, Part::Code, 1)), cx);
+            });
+            Root::new(view, window, cx)
+        });
+        let editor = root.read_with(cx, |root, _| {
+            root.view().clone().downcast::<Editor>().expect("editor")
+        });
+        VisualTestContext::update(cx, |window, cx| {
+            let _ = window.draw(cx);
+        });
+        cx.run_until_parked();
+        let leaf = editor.read_with(cx, |this, _| {
+            this.code_leaves
+                .get(&this.snapshots()[0].id)
+                .cloned()
+                .expect("render creates the code leaf")
+        });
+        VisualTestContext::update(cx, |window, cx| {
+            leaf.update(cx, |state, cx| {
+                state.set_selected_range(1..1, cx);
+                state.replace_text_in_range(None, "(", window, cx);
+                assert_eq!(state.text().to_string(), "x()");
+                assert_eq!(state.cursor(), 2);
+            });
+        });
+        cx.run_until_parked();
+        editor.read_with(cx, |this, _| {
+            assert_eq!(this.snapshots()[0].plain, "x()");
+            assert_eq!(this.selection.head().part, Part::Code);
+            assert_eq!(this.selection.anchor.offset, 2);
+            assert_eq!(this.selection.focus.offset, 2);
+        });
+        VisualTestContext::update(cx, |window, cx| {
+            leaf.update(cx, |state, cx| state.focus(window, cx));
+            let _ = window.draw(cx);
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("backspace");
+        cx.run_until_parked();
+        editor.read_with(cx, |this, _| {
+            assert_eq!(this.snapshots()[0].plain, "x");
+            assert_eq!(this.selection.head().part, Part::Code);
+            assert_eq!(this.selection.head().offset, 1);
+        });
+        VisualTestContext::update(cx, |window, cx| {
+            leaf.update(cx, |state, cx| {
+                state.replace_text_in_range(None, "(", window, cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        leaf.read_with(cx, |state, _| {
+            assert_eq!(state.text().to_string(), "x(\n  \n)");
+            assert_eq!(state.cursor(), 5);
+        });
+        editor.read_with(cx, |this, _| {
+            assert_eq!(this.selection.head().part, Part::Code);
+            assert_eq!(this.selection.anchor.offset, 5);
+            assert_eq!(this.selection.focus.offset, 5);
+        });
+        VisualTestContext::update(cx, |window, cx| {
+            leaf.update(cx, |state, cx| {
+                state.replace_text_in_range(None, "😀", window, cx);
+            });
+        });
+        cx.run_until_parked();
+        for preedit in ["n", "ni"] {
+            VisualTestContext::update(cx, |window, cx| {
+                leaf.update(cx, |state, cx| {
+                    if preedit == "n" {
+                        state.set_selected_range(5..9, cx);
+                    }
+                    state.replace_and_mark_text_in_range(
+                        None,
+                        preedit,
+                        Some(preedit.len()..preedit.len()),
+                        window,
+                        cx,
+                    );
+                });
+            });
+            cx.run_until_parked();
+            editor.read_with(cx, |this, _| {
+                assert_eq!(this.snapshots()[0].plain, "x(\n  😀\n)");
+            });
+        }
+        VisualTestContext::update(cx, |window, cx| {
+            leaf.update(cx, |state, cx| {
+                state.replace_text_in_range(None, "你", window, cx);
+                assert_eq!(state.text().to_string(), "x(\n  你\n)");
+                assert_eq!(state.cursor(), 8);
+                assert!(state.marked_text_range(window, cx).is_none());
+            });
+        });
+        cx.run_until_parked();
+        let (bytes, markdown) = editor.read_with(cx, |this, _| {
+            assert_eq!(this.snapshots()[0].plain, "x(\n  你\n)");
+            assert_eq!(this.selection.head().part, Part::Code);
+            assert_eq!(this.selection.head().offset, 8);
+            assert_eq!(this.snapshots()[0].language.as_deref(), Some("rust"));
+            (
+                this.export_snapshot().expect("snapshot"),
+                this.project_markdown(),
+            )
+        });
+        assert_eq!(markdown, "```rust\nx(\n  你\n)\n```");
+        let reopened = VisualTestContext::update(cx, |_, cx| {
+            cx.new(|cx| Editor::from_snapshot(&bytes, cx).expect("reopen snapshot"))
+        });
+        reopened.read_with(cx, |this, _| {
+            assert_eq!(this.snapshots()[0].plain, "x(\n  你\n)");
+            assert_eq!(this.snapshots()[0].language.as_deref(), Some("rust"));
+            assert_eq!(this.project_markdown(), markdown);
+        });
+    }
 }
 
 #[cfg(test)]
