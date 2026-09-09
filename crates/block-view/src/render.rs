@@ -18,8 +18,8 @@ use crate::layouts::BlockLayouts;
 use crate::paint::EditorPalette;
 use crate::preview;
 use crate::types::{
-    Align, Annotation, BULLET_DISC_PX, BlockSnapshot, CARET_WIDTH_PX, Caption, Cursor, Editing,
-    Part, QUOTE_BAR_PX, Selection, TASK_BOX_PX, TableData,
+    Align, Annotation, BULLET_DISC_PX, BlockSnapshot, CARET_WIDTH_PX, Caption, Composition, Cursor,
+    Editing, Part, QUOTE_BAR_PX, Selection, TASK_BOX_PX, TableData,
 };
 use crate::typography::Typography;
 
@@ -71,6 +71,7 @@ struct Overlay<'a> {
     annotations: &'a [(Selection, Annotation)],
     placeholder: Option<&'a SharedString>,
     caption: Caption,
+    composition: Option<&'a Composition>,
     /// Document order index lookup for selection clipping.
     order: &'a dyn Fn(&block_markdown::BlockId) -> Option<usize>,
 }
@@ -102,6 +103,15 @@ impl<'a> Overlay<'a> {
             .iter()
             .filter_map(|selection| self.clip(selection, len))
             .collect()
+    }
+
+    fn marked_range(&self, len: usize) -> Option<Range<usize>> {
+        let composition = self.composition?;
+        if composition.id() != self.block_id || composition.part() != self.part {
+            return None;
+        }
+        let range = composition.projected_range();
+        (range.start <= range.end && range.end <= len).then_some(range)
     }
 
     fn annotated(&self, len: usize, palette: &EditorPalette) -> Vec<(Range<usize>, Hsla)> {
@@ -189,7 +199,7 @@ pub fn render_with(
         annotations,
         placeholder,
         caption,
-        marked: _,
+        composition,
     } = editing;
 
     let reset = layouts.map(|layouts| {
@@ -207,6 +217,8 @@ pub fn render_with(
     let mut column = div().flex().flex_col().children(reset);
 
     for (ix, block) in snapshots.iter().enumerate() {
+        let projected = composition.and_then(|composition| project_block(block, composition));
+        let block = projected.as_ref().unwrap_or(block);
         let gap = match snapshots.get(ix.wrapping_sub(1)) {
             None => 0.0,
             Some(previous) if tight(previous, block) => LIST_GAP,
@@ -222,6 +234,7 @@ pub fn render_with(
             annotations,
             placeholder: placeholder.as_ref(),
             caption,
+            composition,
             order: &order,
         };
         let frame = layouts.map(|layouts| {
@@ -255,6 +268,111 @@ pub fn render_with(
     }
 
     column.into_any_element()
+}
+
+fn project_block(block: &BlockSnapshot, composition: &Composition) -> Option<BlockSnapshot> {
+    if composition.id() != &block.id {
+        return None;
+    }
+
+    let mut projected = block.clone();
+    match composition.part() {
+        Part::Cell { row, column } => {
+            let cell = projected
+                .table
+                .as_mut()?
+                .rows
+                .get_mut(row)?
+                .get_mut(column)?;
+            let range = composition.range();
+            if range.end > cell.len()
+                || !cell.is_char_boundary(range.start)
+                || !cell.is_char_boundary(range.end)
+            {
+                return None;
+            }
+            *cell = composition.project_text(cell);
+        }
+        Part::Body | Part::Code | Part::Caption => {
+            let range = composition.range();
+            if range.end > block.plain.len()
+                || !block.plain.is_char_boundary(range.start)
+                || !block.plain.is_char_boundary(range.end)
+            {
+                return None;
+            }
+            projected.plain = composition.project_text(&block.plain);
+            projected.runs = project_runs(&block.runs, &range, composition.text());
+        }
+    }
+    Some(projected)
+}
+
+fn project_runs(delta: &[TextDelta], range: &Range<usize>, replacement: &str) -> Vec<TextDelta> {
+    let mut projected = Vec::with_capacity(delta.len() + 2);
+    {
+        let mut offset = 0usize;
+        let mut inserted = false;
+        let mut last_attributes = None;
+
+        let mut push_insert = |text: &str, attributes| {
+            if text.is_empty() {
+                return;
+            }
+            if let Some(TextDelta::Insert {
+                insert,
+                attributes: previous,
+            }) = projected.last_mut()
+                && previous == &attributes
+            {
+                insert.push_str(text);
+                return;
+            }
+            projected.push(TextDelta::Insert {
+                insert: text.to_string(),
+                attributes,
+            });
+        };
+
+        for item in delta {
+            let TextDelta::Insert { insert, attributes } = item else {
+                continue;
+            };
+            last_attributes = attributes.clone();
+            let item_start = offset;
+            let item_end = item_start + insert.len();
+            offset = item_end;
+
+            if item_end <= range.start {
+                push_insert(insert, attributes.clone());
+                continue;
+            }
+            if item_start >= range.end {
+                if !inserted {
+                    push_insert(replacement, attributes.clone());
+                    inserted = true;
+                }
+                push_insert(insert, attributes.clone());
+                continue;
+            }
+
+            if item_start < range.start {
+                push_insert(&insert[..range.start - item_start], attributes.clone());
+            }
+            if !inserted {
+                push_insert(replacement, attributes.clone());
+                inserted = true;
+            }
+            if item_end > range.end {
+                push_insert(&insert[range.end - item_start..], attributes.clone());
+            }
+        }
+
+        if !inserted {
+            push_insert(replacement, last_attributes);
+        }
+    }
+    projected
 }
 
 fn tight(previous: &BlockSnapshot, next: &BlockSnapshot) -> bool {
@@ -678,7 +796,7 @@ fn text_element(
 }
 
 fn painted_text(
-    flat: Flat,
+    mut flat: Flat,
     len: usize,
     size: f32,
     line_height: f32,
@@ -687,6 +805,9 @@ fn painted_text(
 ) -> AnyElement {
     let (id, part) = (overlay.block_id.clone(), overlay.part);
     let (caret, selected) = (overlay.caret_painted(), overlay.selected_ranges(len));
+    if let Some(marked) = overlay.marked_range(len) {
+        flat.runs = underline_runs(flat.runs, &marked, palette.text);
+    }
     let span = 0..len;
     let hint = overlay
         .placeholder
@@ -806,6 +927,44 @@ fn painted_text(
         .into_any_element()
 }
 
+fn underline_runs(runs: Vec<TextRun>, marked: &Range<usize>, color: Hsla) -> Vec<TextRun> {
+    if marked.is_empty() {
+        return runs;
+    }
+
+    let mut underlined = Vec::with_capacity(runs.len() + 2);
+    let mut offset = 0usize;
+    for run in runs {
+        let start = offset;
+        let end = start + run.len;
+        offset = end;
+
+        let marked_start = marked.start.clamp(start, end);
+        let marked_end = marked.end.clamp(start, end);
+        if start < marked_start {
+            let mut prefix = run.clone();
+            prefix.len = marked_start - start;
+            underlined.push(prefix);
+        }
+        if marked_start < marked_end {
+            let mut preedit = run.clone();
+            preedit.len = marked_end - marked_start;
+            preedit.underline = Some(UnderlineStyle {
+                color: Some(color),
+                thickness: px(1.0),
+                wavy: false,
+            });
+            underlined.push(preedit);
+        }
+        if marked_end < end {
+            let mut suffix = run;
+            suffix.len = end - marked_end;
+            underlined.push(suffix);
+        }
+    }
+    underlined
+}
+
 fn caret_quad(head: Point<Pixels>, size: f32, line_height: Pixels) -> Bounds<Pixels> {
     let inset = (line_height - px(size)) / 2.0;
     Bounds::new(
@@ -906,6 +1065,11 @@ fn code_block(
             }
             if runs.is_empty() {
                 runs.push(run(0, palette.text));
+            }
+            if let Some(marked) = overlay.marked_range(code.len()) {
+                let marked = marked.start.saturating_sub(start).min(line.len())
+                    ..marked.end.saturating_sub(start).min(line.len());
+                runs = underline_runs(runs, &marked, palette.text);
             }
             let styled = StyledText::new(SharedString::from(line.to_string())).with_runs(runs);
             rows.push((start..start + line.len(), styled.layout().clone()));
@@ -1454,4 +1618,71 @@ fn table_block(
         .debug_selector(|| "table-hairlines".into())
         .child(inner)
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use block_markdown::BlockId;
+
+    use super::*;
+
+    #[test]
+    fn composition_projects_over_original_unicode_range_for_paint() {
+        let original = BlockSnapshot {
+            id: BlockId::from("block"),
+            block_type: BlockType::Paragraph,
+            indent: 0,
+            plain: "a😀b".into(),
+            runs: vec![TextDelta::Insert {
+                insert: "a😀b".into(),
+                attributes: None,
+            }],
+            props: HashMap::new(),
+            checked: None,
+            number: None,
+            language: None,
+            url: None,
+            form: None,
+            width: None,
+            table: None,
+        };
+        let composition = Composition::new(original.id.clone(), Part::Body, 1..5)
+            .with_text("ni")
+            .with_selection(2..2);
+
+        let projected = project_block(&original, &composition).unwrap();
+        assert_eq!(projected.plain, "anib");
+        assert_eq!(original.plain, "a😀b");
+        let runs = projected
+            .runs
+            .iter()
+            .filter_map(|run| match run {
+                TextDelta::Insert { insert, .. } => Some(insert.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(runs, projected.plain);
+    }
+
+    #[test]
+    fn marked_preedit_bytes_receive_an_underline_run() {
+        let runs = underline_runs(
+            vec![TextRun {
+                len: 6,
+                ..TextRun::default()
+            }],
+            &(1..5),
+            Hsla::default(),
+        );
+
+        assert_eq!(
+            runs.iter().map(|run| run.len).collect::<Vec<_>>(),
+            [1, 4, 1]
+        );
+        assert!(runs[0].underline.is_none());
+        assert!(runs[1].underline.is_some());
+        assert!(runs[2].underline.is_none());
+    }
 }

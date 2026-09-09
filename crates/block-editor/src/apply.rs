@@ -218,22 +218,19 @@ pub fn perform(doc: &LoroDoc, op: BlockOp) -> LoroResult<ApplyResult> {
         }
         BlockOp::ImeCommit {
             id,
+            part,
             offset,
             replace_len,
             text,
         } => {
             let map = require_block(doc, &id)?;
-            let content = text_for_part(&map, Part::Body)?;
+            let content = text_for_part(&map, part)?;
             if replace_len > 0 {
                 content.delete_utf8(offset, replace_len)?;
             }
             content.insert_utf8(offset, &text)?;
             Ok(ApplyResult {
-                selection: Some(Selection::caret(Cursor::new(
-                    id,
-                    Part::Body,
-                    offset + text.len(),
-                ))),
+                selection: Some(Selection::caret(Cursor::new(id, part, offset + text.len()))),
             })
         }
     }

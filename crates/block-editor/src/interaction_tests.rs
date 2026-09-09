@@ -1,7 +1,10 @@
 //! Interaction tests for the Editor entity (Task 4).
 
 use block_markdown::BlockType;
-use gpui::{AppContext as _, Focusable as _, TestAppContext, VisualTestContext};
+use gpui::{
+    AppContext as _, Element as _, EntityInputHandler, Focusable as _, IntoElement as _, Render,
+    TestAppContext, VisualTestContext,
+};
 use gpui_component::Root;
 use gpui_component_block_view::CHART_LANGUAGE;
 
@@ -273,6 +276,189 @@ fn chart_fence_source_in_caret(cx: &mut TestAppContext) {
             .expect("chart");
         assert!(snap.plain.contains("parse: 12"));
         assert_eq!(editor.selection().head().part, Part::Code);
+    });
+}
+
+#[gpui::test]
+fn composition_projects_selected_unicode_and_commits_once(cx: &mut TestAppContext) {
+    let (editor, cx) = harness(cx);
+    editor.update(cx, |editor, cx| {
+        *editor = Editor::from_markdown("a😀b", cx);
+        let id = editor.snapshots()[0].id.clone();
+        editor.select(
+            Selection::new(
+                Cursor::new(id.clone(), Part::Body, 1),
+                Cursor::new(id, Part::Body, 5),
+            ),
+            cx,
+        );
+    });
+
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.replace_and_mark_text_in_range(None, "n", Some(1..1), window, cx);
+
+            assert_eq!(editor.snapshots()[0].plain, "a😀b");
+            let mut adjusted = None;
+            assert_eq!(
+                editor.text_for_range(0..3, &mut adjusted, window, cx),
+                Some("anb".into())
+            );
+            assert_eq!(adjusted, Some(0..3));
+            assert_eq!(editor.marked_text_range(window, cx), Some(1..2));
+            let selected = editor.selected_text_range(false, window, cx).unwrap();
+            assert_eq!(selected.range, 2..2);
+            assert!(!selected.reversed);
+
+            editor.replace_and_mark_text_in_range(None, "ni", Some(2..2), window, cx);
+            assert_eq!(editor.snapshots()[0].plain, "a😀b");
+            let mut adjusted = None;
+            assert_eq!(
+                editor.text_for_range(0..4, &mut adjusted, window, cx),
+                Some("anib".into())
+            );
+            assert_eq!(editor.marked_text_range(window, cx), Some(1..3));
+            let selected = editor.selected_text_range(false, window, cx).unwrap();
+            assert_eq!(selected.range, 3..3);
+            assert!(!selected.reversed);
+
+            editor.replace_text_in_range(None, "你", window, cx);
+            assert_eq!(editor.snapshots()[0].plain, "a你b");
+            assert_eq!(editor.selection().head().offset, 4);
+            assert_eq!(editor.marked_text_range(window, cx), None);
+            let selected = editor.selected_text_range(false, window, cx).unwrap();
+            assert_eq!(selected.range, 2..2);
+            assert!(!selected.reversed);
+        });
+    });
+}
+
+#[gpui::test]
+fn canceling_composition_restores_selected_unicode(cx: &mut TestAppContext) {
+    let (editor, cx) = harness(cx);
+    editor.update(cx, |editor, cx| {
+        *editor = Editor::from_markdown("a😀b", cx);
+        let id = editor.snapshots()[0].id.clone();
+        editor.select(
+            Selection::new(
+                Cursor::new(id.clone(), Part::Body, 1),
+                Cursor::new(id, Part::Body, 5),
+            ),
+            cx,
+        );
+    });
+
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.replace_and_mark_text_in_range(None, "ni", Some(2..2), window, cx);
+            editor.unmark_text(window, cx);
+
+            assert_eq!(editor.snapshots()[0].plain, "a😀b");
+            assert_eq!(editor.marked_text_range(window, cx), None);
+            let selected = editor.selected_text_range(false, window, cx).unwrap();
+            assert_eq!(selected.range, 1..3);
+            assert!(!selected.reversed);
+            let mut adjusted = None;
+            assert_eq!(
+                editor.text_for_range(0..4, &mut adjusted, window, cx),
+                Some("a😀b".into())
+            );
+
+            editor.replace_and_mark_text_in_range(None, "ni", Some(2..2), window, cx);
+            editor.replace_and_mark_text_in_range(None, "", None, window, cx);
+            assert_eq!(editor.snapshots()[0].plain, "a😀b");
+            assert_eq!(editor.marked_text_range(window, cx), None);
+            assert_eq!(
+                editor.selected_text_range(false, window, cx).unwrap().range,
+                1..3
+            );
+        });
+    });
+}
+
+#[gpui::test]
+fn explicit_platform_ranges_map_through_longer_preedit(cx: &mut TestAppContext) {
+    let (editor, cx) = harness(cx);
+    editor.update(cx, |editor, cx| {
+        *editor = Editor::from_markdown("a😀b", cx);
+    });
+
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.replace_and_mark_text_in_range(Some(1..3), "xyz", Some(3..3), window, cx);
+
+            assert_eq!(editor.snapshots()[0].plain, "a😀b");
+            let mut adjusted = None;
+            assert_eq!(
+                editor.text_for_range(0..5, &mut adjusted, window, cx),
+                Some("axyzb".into())
+            );
+            assert_eq!(editor.marked_text_range(window, cx), Some(1..4));
+
+            editor.replace_text_in_range(Some(1..4), "你", window, cx);
+            assert_eq!(editor.snapshots()[0].plain, "a你b");
+            assert_eq!(editor.selection().head().offset, 4);
+        });
+    });
+}
+
+#[gpui::test]
+fn accessibility_tree_uses_projected_text_and_scalar_selection(cx: &mut TestAppContext) {
+    let (editor, cx) = harness(cx);
+    editor.update(cx, |editor, cx| {
+        *editor = Editor::from_markdown("a😀b", cx).with_accessibility_label("Note body");
+        let id = editor.snapshots()[0].id.clone();
+        editor.select(
+            Selection::new(
+                Cursor::new(id.clone(), Part::Body, 1),
+                Cursor::new(id, Part::Body, 5),
+            ),
+            cx,
+        );
+
+        let tree = crate::accessibility::AccessibilityText::from_editor(editor);
+        let (nodes, selection) = tree.materialize(&[gpui::accesskit::NodeId(7)]);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].1.role(), gpui::Role::TextRun);
+        assert_eq!(nodes[0].1.value(), Some("a😀b"));
+        assert_eq!(nodes[0].1.character_lengths(), &[1, 4, 1]);
+        let selection = selection.unwrap();
+        assert_eq!(selection.anchor.character_index, 1);
+        assert_eq!(selection.focus.character_index, 2);
+    });
+
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.replace_and_mark_text_in_range(None, "ni", Some(2..2), window, cx);
+
+            let tree = crate::accessibility::AccessibilityText::from_editor(editor);
+            let (nodes, selection) = tree.materialize(&[gpui::accesskit::NodeId(7)]);
+            assert_eq!(nodes.len(), 1);
+            assert_eq!(nodes[0].1.value(), Some("anib"));
+            assert_eq!(nodes[0].1.character_lengths(), &[1, 1, 1, 1]);
+            let selection = selection.unwrap();
+            assert_eq!(selection.anchor.character_index, 3);
+            assert_eq!(selection.focus.character_index, 3);
+            assert_eq!(editor.snapshots()[0].plain, "a😀b");
+        });
+    });
+}
+
+#[gpui::test]
+fn rendered_editor_has_multiline_role_and_accessible_name(cx: &mut TestAppContext) {
+    let (editor, cx) = harness(cx);
+    editor.update(cx, |editor, cx| {
+        *editor = Editor::from_markdown("Body", cx).with_accessibility_label("Note body");
+    });
+
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| {
+            let element = editor.render(window, cx).into_element();
+            assert_eq!(element.a11y_role(), Some(gpui::Role::MultilineTextInput));
+            let mut node = gpui::accesskit::Node::new(gpui::Role::Unknown);
+            element.write_a11y_info(&mut node);
+            assert_eq!(node.label(), Some("Note body"));
+        });
     });
 }
 
