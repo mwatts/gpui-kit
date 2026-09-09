@@ -786,7 +786,7 @@ where
         });
 
         div()
-            .id("list")
+            .id(("list", self.state.entity_id()))
             .role(Role::List)
             .size_full()
             .refine_style(&self.style)
@@ -798,7 +798,7 @@ where
 mod measurement_tests {
     use super::*;
     use crate::list::ListItem;
-    use gpui::TestAppContext;
+    use gpui::{Element as _, TestAppContext};
 
     struct Delegate {
         counts: Vec<usize>,
@@ -828,6 +828,30 @@ mod measurement_tests {
             (index.row < *self.counts.get(index.section)?)
                 .then(|| ListItem::new(index.row).h(px(if index.row == 0 { 36. } else { 48. })))
         }
+    }
+
+    #[gpui::test]
+    fn sibling_lists_have_distinct_accessibility_identities(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let window = cx.add_empty_window();
+        window.draw(
+            gpui::point(px(0.), px(0.)),
+            size(px(300.), px(300.)),
+            |window, cx| {
+                let first = cx.new(|cx| ListState::new(Delegate { counts: vec![1] }, window, cx));
+                let second = cx.new(|cx| ListState::new(Delegate { counts: vec![1] }, window, cx));
+                let first = List::new(&first).render(window, cx).into_element();
+                let second = List::new(&second).render(window, cx).into_element();
+
+                assert_eq!(first.a11y_role(), Some(Role::List));
+                assert_eq!(second.a11y_role(), Some(Role::List));
+                // GPUI derives each AccessKit node ID from the element's path.
+                // Role-bearing siblings must contribute distinct path segments.
+                assert_ne!(first.id(), second.id());
+
+                div().id("list-siblings").child(first).child(second)
+            },
+        );
     }
 
     #[gpui::test]
