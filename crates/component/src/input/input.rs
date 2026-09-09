@@ -22,6 +22,107 @@ use super::state::{TextInputState, sync_focused_input_registry};
 use super::{InputContentType, InputState, sync_native_content_type};
 use crate::ThemeStyled as _;
 
+/// Registers a focus-within scope without changing its child's layout or
+/// becoming a pointer focus target. The child keeps ownership of accessible
+/// and keyboard focus.
+struct FocusWithin<E> {
+    focus_handle: gpui::FocusHandle,
+    child: E,
+}
+
+impl<E> FocusWithin<E> {
+    fn new(focus_handle: gpui::FocusHandle, child: E) -> Self {
+        Self {
+            focus_handle,
+            child,
+        }
+    }
+}
+
+impl<E: gpui::Element> IntoElement for FocusWithin<E> {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl<E: gpui::Element> gpui::Element for FocusWithin<E> {
+    type RequestLayoutState = E::RequestLayoutState;
+    type PrepaintState = E::PrepaintState;
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        self.child.id()
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        self.child.source_location()
+    }
+
+    fn a11y_role(&self) -> Option<Role> {
+        self.child.a11y_role()
+    }
+
+    fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
+        self.child.write_a11y_info(node);
+    }
+
+    fn a11y_synthetic_children(
+        &mut self,
+        prepaint: &mut Self::PrepaintState,
+        builder: &mut gpui::A11ySubtreeBuilder<'_>,
+    ) {
+        self.child.a11y_synthetic_children(prepaint, builder);
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&gpui::GlobalElementId>,
+        inspector_id: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (gpui::LayoutId, Self::RequestLayoutState) {
+        self.child.request_layout(id, inspector_id, window, cx)
+    }
+
+    fn prepaint(
+        &mut self,
+        id: Option<&gpui::GlobalElementId>,
+        inspector_id: Option<&gpui::InspectorElementId>,
+        bounds: gpui::Bounds<gpui::Pixels>,
+        request_layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        let prepaint = self
+            .child
+            .prepaint(id, inspector_id, bounds, request_layout, window, cx);
+        window.set_focus_handle(&self.focus_handle, cx);
+        prepaint
+    }
+
+    fn paint(
+        &mut self,
+        id: Option<&gpui::GlobalElementId>,
+        inspector_id: Option<&gpui::InspectorElementId>,
+        bounds: gpui::Bounds<gpui::Pixels>,
+        request_layout: &mut Self::RequestLayoutState,
+        prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.paint(
+            id,
+            inspector_id,
+            bounds,
+            request_layout,
+            prepaint,
+            window,
+            cx,
+        );
+    }
+}
+
 fn accessibility_role(
     is_multi_line: bool,
     content_type: Option<InputContentType>,
@@ -487,8 +588,8 @@ impl RenderOnce for Input {
         let accessibility_value = (window.is_a11y_active()
             && exposes_accessibility_value(presentation.is_masked(), content_type))
         .then(|| state.text(cx).to_string());
-        let input_focused =
-            presentation.focus_handle().is_focused(window) && !presentation.is_disabled();
+        let input_focus_handle = presentation.focus_handle().clone();
+        let input_focused = input_focus_handle.is_focused(window) && !presentation.is_disabled();
         if input_focused {
             sync_native_content_type(window, content_type, presentation.is_editable());
         }
@@ -538,10 +639,10 @@ impl RenderOnce for Input {
             None if placeholder_is_mask => None,
             None => placeholder.clone(),
         };
-        BaseInput::new(("input", state.entity_id()))
+        let input = BaseInput::new(("input", state.entity_id()))
             .focused(focused)
             .disabled(disabled)
-            .track_focus(&frame_focus_handle)
+            .track_focus(&input_focus_handle)
             .styles(|styles| {
                 styles.focused(|style| {
                     style.when(
@@ -629,6 +730,9 @@ impl RenderOnce for Input {
             .relative()
             .children(overlays.floating)
             .render(window, cx)
+            .into_element();
+
+        FocusWithin::new(frame_focus_handle, input)
     }
 }
 
@@ -778,12 +882,12 @@ mod tests {
     }
 
     #[gpui::test]
-    fn editable_input_offers_accessibility_write_action(cx: &mut gpui::TestAppContext) {
+    fn editable_input_exposes_accessibility_metadata_and_actions(cx: &mut gpui::TestAppContext) {
         use crate::ElementExt as _;
         use gpui::{AppContext as _, Element as _, IntoElement as _, Render};
         use std::sync::{Arc, Mutex};
 
-        type EmittedState = Option<(Option<String>, bool)>;
+        type EmittedState = Option<(Option<Role>, Option<String>, Option<String>, bool, bool)>;
 
         struct InputA11yProbe {
             state: Entity<InputState>,
@@ -799,11 +903,17 @@ mod tests {
                 let state = self.state.clone();
                 let emitted = self.emitted.clone();
                 div().on_prepaint(move |_, window, cx| {
-                    let input = Input::new(&state).render(window, cx).into_element();
+                    let input = Input::new(&state)
+                        .aria_label("Search commands")
+                        .render(window, cx)
+                        .into_element();
                     let mut node = gpui::accesskit::Node::new(Role::TextInput);
                     input.write_a11y_info(&mut node);
                     *emitted.lock().unwrap() = Some((
+                        input.a11y_role(),
+                        node.label().map(ToOwned::to_owned),
                         node.value().map(ToOwned::to_owned),
+                        node.supports_action(AccessibleAction::Focus),
                         node.supports_action(AccessibleAction::SetValue),
                     ));
                 })
@@ -822,7 +932,16 @@ mod tests {
         });
         // No assistive technology is attached in tests, so the value stays
         // unmaterialized while `SetValue` is still advertised.
-        assert_eq!(*captured.lock().unwrap(), Some((None, true)));
+        assert_eq!(
+            *captured.lock().unwrap(),
+            Some((
+                Some(Role::TextInput),
+                Some("Search commands".into()),
+                None,
+                true,
+                true,
+            ))
+        );
 
         let state = probe.read_with(cx, |probe, _| probe.state.clone());
         let base: TextInputState = state.clone().into();
@@ -892,6 +1011,42 @@ mod tests {
             *captured.lock().unwrap(),
             vec![None, Some("search.query".into())]
         );
+    }
+
+    #[gpui::test]
+    fn input_frame_focus_targets_the_editing_state(cx: &mut gpui::TestAppContext) {
+        use gpui::{AppContext as _, Focusable as _, Modifiers, Render, point};
+
+        struct InputFocusProbe {
+            state: Entity<InputState>,
+        }
+
+        impl Render for InputFocusProbe {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                div()
+                    .w(px(240.))
+                    .h(px(40.))
+                    .child(Input::new(&self.state).aria_label("Search commands"))
+            }
+        }
+
+        cx.update(crate::init);
+        let (probe, cx) = cx.add_window_view(|window, cx| InputFocusProbe {
+            state: cx.new(|cx| InputState::new(window, cx)),
+        });
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        // The point is inside the input frame's left padding, outside the
+        // editing state's text hitbox. The frame and its accessibility Focus
+        // action must both target the state that owns keyboard and IME input.
+        cx.simulate_click(point(px(2.), px(16.)), Modifiers::default());
+
+        let state = probe.read_with(cx, |probe, _| probe.state.clone());
+        cx.update(|window, cx| {
+            assert!(state.focus_handle(cx).is_focused(window));
+        });
     }
 
     #[test]
