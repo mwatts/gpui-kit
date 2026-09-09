@@ -5,20 +5,76 @@
 use std::ops::Range;
 
 use gpui::{Context, EntityInputHandler, UTF16Selection, Window};
-use gpui_component_block_view::{Cursor, Selection};
+use gpui_component_block_view::{Composition, Cursor, Part, Selection};
 
 use crate::editor::Editor;
 use crate::types::BlockOp;
 
 impl Editor {
-    /// Caret block plain text (UTF-8).
-    pub(crate) fn caret_plain(&self) -> Option<&str> {
-        let head = self.selection.head();
-        self.document
+    /// Plain UTF-8 text for one editable block part.
+    pub(crate) fn plain_for(&self, cursor: &Cursor) -> Option<&str> {
+        let snapshot = self
+            .document
             .snapshots()
             .iter()
-            .find(|s| s.id == head.id)
-            .map(|s| s.plain.as_str())
+            .find(|snapshot| snapshot.id == cursor.id)?;
+        match cursor.part {
+            Part::Cell { row, column } => snapshot
+                .table
+                .as_ref()?
+                .rows
+                .get(row)?
+                .get(column)
+                .map(String::as_str),
+            Part::Body | Part::Code | Part::Caption => Some(snapshot.plain.as_str()),
+        }
+    }
+
+    fn composition_target(&self) -> Cursor {
+        self.composition.as_ref().map_or_else(
+            || self.selection.head().clone(),
+            |composition| {
+                Cursor::new(
+                    composition.id().clone(),
+                    composition.part(),
+                    composition.range().start,
+                )
+            },
+        )
+    }
+
+    pub(crate) fn projected_text_for(&self, cursor: &Cursor) -> Option<String> {
+        let plain = self.plain_for(cursor)?;
+        Some(self.project_plain(cursor, plain))
+    }
+
+    pub(crate) fn project_plain(&self, cursor: &Cursor, plain: &str) -> String {
+        match self.composition.as_ref().filter(|composition| {
+            composition.id() == &cursor.id && composition.part() == cursor.part
+        }) {
+            Some(composition) => composition.project_text(plain),
+            None => plain.to_string(),
+        }
+    }
+
+    pub(crate) fn displayed_selection(&self) -> Selection {
+        self.composition
+            .as_ref()
+            .map(Composition::projected_selection)
+            .unwrap_or_else(|| self.selection.clone())
+    }
+
+    fn selected_document_range(&self, target: &Cursor) -> Range<usize> {
+        let (start, end) = self.selection.ordered();
+        if start.id == target.id
+            && end.id == target.id
+            && start.part == target.part
+            && end.part == target.part
+        {
+            start.offset..end.offset
+        } else {
+            target.offset..target.offset
+        }
     }
 
     fn offset_from_utf16(text: &str, offset_utf16: usize) -> usize {
@@ -33,9 +89,11 @@ impl Editor {
     }
 
     fn offset_to_utf16(text: &str, offset: usize) -> usize {
-        text.get(..offset.min(text.len()))
-            .map(|s| s.chars().map(char::len_utf16).sum())
-            .unwrap_or(0)
+        let mut offset = offset.min(text.len());
+        while !text.is_char_boundary(offset) {
+            offset -= 1;
+        }
+        text[..offset].chars().map(char::len_utf16).sum()
     }
 
     fn range_from_utf16(text: &str, range: &Range<usize>) -> Range<usize> {
@@ -55,7 +113,8 @@ impl EntityInputHandler for Editor {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<String> {
-        let text = self.caret_plain()?.to_string();
+        let target = self.composition_target();
+        let text = self.projected_text_for(&target)?;
         let range = Self::range_from_utf16(&text, &range_utf16);
         let range = range.start.min(text.len())..range.end.min(text.len());
         *adjusted = Some(Self::range_to_utf16(&text, &range));
@@ -68,30 +127,37 @@ impl EntityInputHandler for Editor {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
-        let text = self.caret_plain().unwrap_or("");
-        let (start, end) = self.selection.ordered();
+        let selection = self.displayed_selection();
+        let (start, end) = selection.ordered();
         let spans_one = start.id == end.id && start.part == end.part;
-        let head = self.selection.head();
+        let head = selection.head();
         let range = if spans_one {
             start.offset..end.offset
         } else {
             head.offset..head.offset
         };
+        let text = self.projected_text_for(head)?;
         Some(UTF16Selection {
-            reversed: spans_one && self.selection.head() == &start,
-            range: Self::range_to_utf16(text, &range),
+            reversed: spans_one && !selection.is_collapsed() && selection.head() == &start,
+            range: Self::range_to_utf16(&text, &range),
         })
     }
 
     fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
-        let text = self.caret_plain()?;
-        let marked = self.marked.as_ref()?;
-        Some(Self::range_to_utf16(text, &marked.range))
+        let composition = self.composition.as_ref()?;
+        let target = Cursor::new(
+            composition.id().clone(),
+            composition.part(),
+            composition.range().start,
+        );
+        let text = self.projected_text_for(&target)?;
+        Some(Self::range_to_utf16(&text, &composition.projected_range()))
     }
 
-    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
-        self.marked = None;
-        self.composition.clear();
+    fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        if self.composition.take().is_some() {
+            cx.notify();
+        }
     }
 
     fn replace_text_in_range(
@@ -101,57 +167,63 @@ impl EntityInputHandler for Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if range_utf16.is_none() && self.marked.is_none() && block_markdown::is_url(text.trim()) {
+        if range_utf16.is_none()
+            && self.composition.is_none()
+            && block_markdown::is_url(text.trim())
+        {
             return self.paste_url(text.trim().to_string(), cx);
         }
 
-        let plain = self.caret_plain().unwrap_or("").to_string();
-        let at = self.selection.head().clone();
+        let target = self.composition_target();
+        let Some(plain) = self.plain_for(&target).map(ToOwned::to_owned) else {
+            return;
+        };
 
-        if let Some(range_utf16) = range_utf16.or_else(|| {
-            self.marked
+        let range = if let Some(range_utf16) = range_utf16 {
+            let projected = self.project_plain(&target, &plain);
+            let range = Self::range_from_utf16(&projected, &range_utf16);
+            self.composition
                 .as_ref()
-                .map(|m| Self::range_to_utf16(&plain, &m.range))
-        }) {
-            let range = Self::range_from_utf16(&plain, &range_utf16);
-            self.selection = Selection::new(
-                Cursor {
-                    offset: range.start,
-                    ..at.clone()
-                },
-                Cursor {
-                    offset: range.end,
-                    ..at.clone()
-                },
-            );
-            // Commit composition or platform replace → ImeCommit / insert path.
-            let replace_len = range.end.saturating_sub(range.start);
-            self.marked = None;
-            self.composition.clear();
-            if replace_len > 0 || !text.is_empty() {
-                let result = self.apply(
-                    BlockOp::ImeCommit {
-                        id: at.id.clone(),
-                        offset: range.start,
-                        replace_len,
-                        text: text.to_string(),
-                    },
-                    cx,
-                );
-                if let Some(sel) = result.selection {
-                    self.selection = sel;
-                } else {
-                    self.selection =
-                        Selection::caret(Cursor::new(at.id, at.part, range.start + text.len()));
-                }
-                self.after_edit(text, cx);
-                return;
-            }
+                .filter(|composition| {
+                    composition.id() == &target.id && composition.part() == target.part
+                })
+                .map_or(range.clone(), |composition| {
+                    composition.document_range_for_projected(range)
+                })
+        } else if let Some(composition) = self.composition.as_ref() {
+            composition.range()
+        } else {
+            self.insert_text(text, cx);
+            return;
+        };
+
+        if range.end > plain.len()
+            || !plain.is_char_boundary(range.start)
+            || !plain.is_char_boundary(range.end)
+        {
+            return;
         }
 
-        self.marked = None;
-        self.composition.clear();
-        self.insert_text(text, cx);
+        let replace_len = range.end.saturating_sub(range.start);
+        self.composition = None;
+        let result = self.apply(
+            BlockOp::ImeCommit {
+                id: target.id.clone(),
+                part: target.part,
+                offset: range.start,
+                replace_len,
+                text: text.to_string(),
+            },
+            cx,
+        );
+        self.selection = result.selection.unwrap_or_else(|| {
+            Selection::caret(Cursor::new(
+                target.id,
+                target.part,
+                range.start + text.len(),
+            ))
+        });
+        self.after_edit(text, cx);
     }
 
     fn replace_and_mark_text_in_range(
@@ -162,28 +234,53 @@ impl EntityInputHandler for Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Composition: view-state only — skip Loro project until commit.
-        let plain = self.caret_plain().unwrap_or("").to_string();
-        let at = self.selection.head().clone();
-        let range = range_utf16
-            .as_ref()
-            .map(|r| Self::range_from_utf16(&plain, r))
-            .or_else(|| self.marked.as_ref().map(|m| m.range.clone()))
-            .unwrap_or(at.offset..at.offset);
+        if text.is_empty() {
+            if self.composition.take().is_some() {
+                cx.notify();
+            }
+            return;
+        }
 
-        self.composition = text.to_string();
-        let start = range.start;
-        self.marked = Some(gpui_component_block_view::MarkedRange {
-            id: at.id.clone(),
-            range: start..start + text.len(),
-        });
-        let caret_off = marked_utf16
-            .map(|r| {
-                let local = Self::range_from_utf16(text, &r);
-                start + local.end.min(text.len())
-            })
-            .unwrap_or(start + text.len());
-        self.selection = Selection::caret(Cursor::new(at.id, at.part, caret_off));
+        let target = self.composition_target();
+        let Some(plain) = self.plain_for(&target).map(ToOwned::to_owned) else {
+            return;
+        };
+
+        let range = if let Some(range_utf16) = range_utf16 {
+            let projected = self.project_plain(&target, &plain);
+            let range = Self::range_from_utf16(&projected, &range_utf16);
+            self.composition
+                .as_ref()
+                .filter(|composition| {
+                    composition.id() == &target.id && composition.part() == target.part
+                })
+                .map_or(range.clone(), |composition| {
+                    composition.document_range_for_projected(range)
+                })
+        } else {
+            self.composition
+                .as_ref()
+                .map(Composition::range)
+                .unwrap_or_else(|| self.selected_document_range(&target))
+        };
+
+        if range.end > plain.len()
+            || !plain.is_char_boundary(range.start)
+            || !plain.is_char_boundary(range.end)
+        {
+            return;
+        }
+
+        let selection = marked_utf16
+            .as_ref()
+            .map(|range| Self::range_from_utf16(text, range))
+            .unwrap_or(text.len()..text.len());
+        self.extra_selections.clear();
+        self.composition = Some(
+            Composition::new(target.id, target.part, range)
+                .with_text(text)
+                .with_selection(selection),
+        );
         cx.notify();
     }
 
@@ -194,19 +291,19 @@ impl EntityInputHandler for Editor {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<gpui::Bounds<gpui::Pixels>> {
-        let text = self.caret_plain()?;
-        let range = Self::range_from_utf16(text, &range_utf16);
-        let at = self.selection.head().clone();
+        let target = self.composition_target();
+        let text = self.projected_text_for(&target)?;
+        let range = Self::range_from_utf16(&text, &range_utf16);
         let start = Cursor {
             offset: range.start,
-            ..at.clone()
+            ..target.clone()
         };
         let (origin, line_height) = self.layouts.position(&start)?;
         let end = self
             .layouts
             .position(&Cursor {
                 offset: range.end,
-                ..at
+                ..target
             })
             .map(|(point, _)| point)
             .filter(|point| point.y == origin.y);
@@ -221,8 +318,7 @@ impl EntityInputHandler for Editor {
         _: &mut Context<Self>,
     ) -> Option<usize> {
         let hit = self.layouts.hit(point)?;
-        let at = self.selection.head();
-        let text = self.caret_plain()?;
-        (hit.id == at.id && hit.part == at.part).then(|| Self::offset_to_utf16(text, hit.offset))
+        let text = self.projected_text_for(&hit)?;
+        Some(Self::offset_to_utf16(&text, hit.offset))
     }
 }
