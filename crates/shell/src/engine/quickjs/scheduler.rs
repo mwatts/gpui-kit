@@ -189,9 +189,9 @@ fn drain_runtime_job_batch(
                     .pending_nested
                     .borrow_mut()
                     .truncate(pending_checkpoint);
-                let failure = exception.0.with(|ctx| {
-                    runtime.capture_scheduler_error(&ctx, rquickjs::Error::Exception)
-                });
+                let failure = exception
+                    .0
+                    .with(|ctx| runtime.capture_scheduler_error(&ctx, rquickjs::Error::Exception));
                 runtime.report_script_failure(failure);
             }
         }
@@ -249,9 +249,9 @@ pub(crate) fn drain_jobs_transactionally(
                     .pending_nested
                     .borrow_mut()
                     .truncate(pending_checkpoint);
-                let failure = exception.0.with(|ctx| {
-                    runtime.capture_scheduler_error(&ctx, rquickjs::Error::Exception)
-                });
+                let failure = exception
+                    .0
+                    .with(|ctx| runtime.capture_scheduler_error(&ctx, rquickjs::Error::Exception));
                 runtime.report_script_failure(failure);
             }
         }
@@ -826,10 +826,8 @@ fn resume(
             application.clone(),
         );
         if let Err(error) = runtime.with_js(|ctx| body(ctx, generation)) {
-            runtime.report_scheduler_failure(
-                application.as_ref(),
-                ScriptFailure::from_error(&error),
-            );
+            runtime
+                .report_scheduler_failure(application.as_ref(), ScriptFailure::from_error(&error));
         }
         drain_runtime_jobs(&runtime, window, cx);
         drop(guard);
