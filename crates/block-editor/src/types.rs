@@ -125,6 +125,7 @@ pub enum BlockOp {
     },
     ImeCommit {
         id: BlockId,
+        part: Part,
         offset: usize,
         replace_len: usize,
         text: String,
