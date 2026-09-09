@@ -484,12 +484,14 @@ where
             .map(|s| s.eq_row(ix))
             .unwrap_or(false);
         let id = SharedString::from(format!("list-item-{}", ix));
+        let accessibility_label = self.delegate.accessibility_label(ix, cx);
 
         let total_items = self.rows_cache.items_count();
 
         div()
             .id(id)
             .role(Role::ListItem)
+            .when_some(accessibility_label, |this, label| this.aria_label(label))
             .aria_position_in_set(ix.row + 1)
             .aria_size_of_set(total_items)
             .aria_selected(selected)
@@ -828,6 +830,10 @@ mod measurement_tests {
             (index.row < *self.counts.get(index.section)?)
                 .then(|| ListItem::new(index.row).h(px(if index.row == 0 { 36. } else { 48. })))
         }
+
+        fn accessibility_label(&self, index: IndexPath, _: &App) -> Option<SharedString> {
+            Some(format!("Item {}", index.row).into())
+        }
     }
 
     #[gpui::test]
@@ -852,6 +858,25 @@ mod measurement_tests {
                 div().id("list-siblings").child(first).child(second)
             },
         );
+    }
+
+    #[gpui::test]
+    fn rendered_list_item_uses_delegate_accessibility_label(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let window = cx.add_empty_window();
+        window.update(|window, cx| {
+            let list = cx.new(|cx| ListState::new(Delegate { counts: vec![1] }, window, cx));
+            list.update(cx, |list, cx| {
+                let item = list
+                    .render_list_item(IndexPath::new(0), window, cx)
+                    .into_element();
+                let mut node = gpui::accesskit::Node::new(Role::ListItem);
+                item.write_a11y_info(&mut node);
+
+                assert_eq!(item.a11y_role(), Some(Role::ListItem));
+                assert_eq!(node.label(), Some("Item 0"));
+            });
+        });
     }
 
     #[gpui::test]

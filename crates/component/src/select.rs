@@ -810,6 +810,7 @@ mod tests {
 
     use crate::{
         IndexPath,
+        list::ListDelegate as _,
         searchable_list::{SearchableListDelegate as _, SearchableVec},
         select::{Select, SelectGroup, SelectState},
     };
@@ -840,6 +841,25 @@ mod tests {
                 named.options.placeholder.as_deref(),
                 Some("Choose a language"),
                 "an accessible name must not change what is drawn"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn select_items_use_their_titles_as_accessibility_labels(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let cx = cx.add_empty_window();
+        cx.update(|window, cx| {
+            let items = SearchableVec::new(vec!["todo", "done"]);
+            let state = cx.new(|cx| SelectState::new(items, None, window, cx));
+            let list = state.read(cx).state.list.clone();
+
+            assert_eq!(
+                list.read(cx)
+                    .delegate()
+                    .accessibility_label(IndexPath::new(1), cx)
+                    .as_deref(),
+                Some("done")
             );
         });
     }
