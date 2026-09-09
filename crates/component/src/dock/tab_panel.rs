@@ -715,19 +715,30 @@ impl TabGroupRenderer for TabGroupSkin {
         &self,
         panel: AnyView,
         group: &TabGroupContext,
-        _: &mut Window,
+        window: &mut Window,
         _: &mut App,
     ) -> AnyElement {
         if group.is_collapsed() {
             return Empty.into_any_element();
         }
 
+        // GPUI rebuilds accessibility nodes and action listeners every frame,
+        // while a cached view replays neither. Render the panel normally while
+        // accessibility is active so unrelated dock redraws retain its subtree.
+        let panel = if window.is_a11y_active() {
+            div().absolute().size_full().child(panel).into_any_element()
+        } else {
+            panel
+                .cached(StyleRefinement::default().absolute().size_full())
+                .into_any_element()
+        };
+
         div()
             .id("tab-content")
             .overflow_y_scroll()
             .overflow_x_hidden()
             .flex_1()
-            .child(panel.cached(StyleRefinement::default().absolute().size_full()))
+            .child(panel)
             .into_any_element()
     }
 
