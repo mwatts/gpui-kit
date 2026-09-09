@@ -11,16 +11,17 @@ use std::time::Duration;
 use block_markdown::{BlockId, BlockType, CommentState, content_text, find_block, mark_covers};
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, ElementInputHandler, Entity, EventEmitter,
-    FocusHandle, Focusable, MouseButton, Pixels, Point, Render, ScrollHandle, SharedString, Task,
-    Window, canvas, div, prelude::*, px,
+    FocusHandle, Focusable, MouseButton, Pixels, Point, Render, Role, ScrollHandle, SharedString,
+    Task, Window, canvas, div, prelude::*, px,
 };
 use gpui_component::ActiveTheme;
 use gpui_component::input::{Editor as CodeEditor, EditorState};
 use gpui_component_block_view::{
-    Annotation, BlockLayouts, Caption, Cursor, Editing, MarkedRange, Part, Selection, render_with,
+    Annotation, BlockLayouts, Caption, Composition, Cursor, Editing, Part, Selection, render_with,
 };
 use loro::{LoroDoc, LoroError};
 
+use crate::accessibility::AccessibilityText;
 use crate::backspace::backspace_at_start;
 use crate::document::BlockDocument;
 use crate::image::{self, Prompt};
@@ -64,12 +65,11 @@ pub struct CommentThread {
 pub struct Editor {
     pub(crate) document: BlockDocument,
     pub(crate) selection: Selection,
-    extra_selections: Vec<Selection>,
+    pub(crate) extra_selections: Vec<Selection>,
     code_leaves: HashMap<BlockId, Entity<EditorState>>,
     focus_handle: FocusHandle,
-    pub(crate) marked: Option<MarkedRange>,
-    /// Composition fragment while IME is active (not yet in Loro).
-    pub(crate) composition: String,
+    pub(crate) composition: Option<Composition>,
+    accessibility_label: Option<SharedString>,
     pub(crate) layouts: BlockLayouts,
     caret_on: bool,
     blink: Option<Task<()>>,
@@ -130,8 +130,8 @@ impl Editor {
             extra_selections: Vec::new(),
             code_leaves: HashMap::new(),
             focus_handle: cx.focus_handle(),
-            marked: None,
-            composition: String::new(),
+            composition: None,
+            accessibility_label: None,
             layouts: BlockLayouts::default(),
             caret_on: true,
             blink: None,
@@ -169,6 +169,13 @@ impl Editor {
     #[must_use]
     pub fn with_scroll(mut self, handle: ScrollHandle) -> Self {
         self.scroll = Some(handle);
+        self
+    }
+
+    /// Sets the accessible name announced for the editable surface.
+    #[must_use]
+    pub fn with_accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.accessibility_label = Some(label.into());
         self
     }
 
@@ -230,7 +237,7 @@ impl Editor {
 
     pub fn apply(&mut self, op: BlockOp, cx: &mut Context<Self>) -> ApplyResult {
         // Skip project while composing (IME overlay owns the caret block).
-        if self.marked.is_some() && !matches!(op, BlockOp::ImeCommit { .. }) {
+        if self.composition.is_some() && !matches!(op, BlockOp::ImeCommit { .. }) {
             return ApplyResult::default();
         }
         let result = self.document.apply(op);
@@ -1658,8 +1665,15 @@ impl Render for Editor {
         .size_full();
 
         let handle = self.focus_handle.clone().tab_stop(true);
-        let painted_selections = focused.then(|| self.selections()).unwrap_or_default();
-        let marked = self.marked.clone();
+        let painted_selections = if focused {
+            self.composition
+                .as_ref()
+                .map(|composition| vec![composition.projected_selection()])
+                .unwrap_or_else(|| self.selections())
+        } else {
+            Vec::new()
+        };
+        let composition = self.composition.clone();
         let annotations = self.annotations_cache.clone();
         let placeholder: Option<SharedString> = Some(PLACEHOLDER.into());
         let editing = Editing {
@@ -1669,12 +1683,22 @@ impl Render for Editor {
             annotations: &annotations,
             placeholder,
             caption: Caption::Shown,
-            marked: marked.as_ref(),
+            composition: composition.as_ref(),
         };
         let body = render_with(self.snapshots(), editing, window, cx);
+        let accessibility = window
+            .is_a11y_active()
+            .then(|| AccessibilityText::from_editor(self));
 
         div()
             .id("block-editor")
+            .role(Role::MultilineTextInput)
+            .when_some(self.accessibility_label.clone(), |this, label| {
+                this.aria_label(label)
+            })
+            .when_some(accessibility, |this, accessibility| {
+                this.a11y_synthetic_children(move |builder| accessibility.write(builder))
+            })
             .key_context(keys::CONTEXT)
             .track_focus(&handle)
             .size_full()
