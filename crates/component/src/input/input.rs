@@ -795,7 +795,8 @@ impl RenderOnce for Input {
             })
             .input_h(self.size)
             .input_text_size(self.size)
-            .items_center()
+            .when(is_multi_line, |this| this.items_start())
+            .when(!is_multi_line, |this| this.items_center())
             .when(presentation.is_multi_line(), |this| {
                 this.h_auto()
                     .when_some(self.height, |this, height| this.h(height))
@@ -807,7 +808,8 @@ impl RenderOnce for Input {
                         this.border_1().border_color(cx.theme().input)
                     })
             })
-            .items_center()
+            .when(is_multi_line, |this| this.items_start())
+            .when(!is_multi_line, |this| this.items_center())
             .gap(gap_x)
             .refine_style(&self.style)
             .when(
