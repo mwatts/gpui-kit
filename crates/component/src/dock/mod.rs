@@ -83,6 +83,8 @@ pub(crate) struct SkinShared {
     area: WeakEntity<DockArea>,
     panel_style: Cell<PanelStyle>,
     toggle_button_visible: Cell<bool>,
+    /// When true, the active panel region scrolls vertically (kit default).
+    content_scroll: Cell<bool>,
     tiles_scrollbar_mode: Cell<Option<ScrollbarMode>>,
     /// The dock whose resize handle is being dragged, if any. Only one can be.
     resizing_dock: Cell<Option<DockPlacement>>,
@@ -99,6 +101,10 @@ impl SkinShared {
 
     pub(crate) fn is_toggle_button_visible(&self) -> bool {
         self.toggle_button_visible.get()
+    }
+
+    pub(crate) fn content_scroll(&self) -> bool {
+        self.content_scroll.get()
     }
 
     pub(crate) fn tiles_scrollbar_mode(&self) -> Option<ScrollbarMode> {
@@ -163,6 +169,7 @@ impl DockSkin {
                 area: cx.weak_entity(),
                 panel_style: Cell::new(PanelStyle::default()),
                 toggle_button_visible: Cell::new(true),
+                content_scroll: Cell::new(true),
                 tiles_scrollbar_mode: Cell::new(None),
                 resizing_dock: Cell::new(None),
             }),
@@ -191,6 +198,13 @@ impl DockSkin {
 
     pub fn set_toggle_button_visible(&self, visible: bool, cx: &mut App) {
         self.shared.toggle_button_visible.set(visible);
+        self.shared.notify(cx);
+    }
+
+    /// Whether the active panel region scrolls. Limen turns this off so lenses
+    /// own their own scroll without a nested scrollbar.
+    pub fn set_content_scroll(&self, scroll: bool, cx: &mut App) {
+        self.shared.content_scroll.set(scroll);
         self.shared.notify(cx);
     }
 

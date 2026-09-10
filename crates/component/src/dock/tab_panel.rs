@@ -704,6 +704,7 @@ impl TabGroupRenderer for TabGroupSkin {
 
         match visible.as_slice() {
             [] => Empty.into_any_element(),
+            [_] if self.shared.panel_style() == PanelStyle::Bare => Empty.into_any_element(),
             [ix] if self.shared.panel_style() == PanelStyle::Auto => {
                 self.render_title(group, *ix, window, cx)
             }
@@ -733,9 +734,11 @@ impl TabGroupRenderer for TabGroupSkin {
                 .into_any_element()
         };
 
+        let scroll = self.shared.content_scroll();
         div()
             .id("tab-content")
-            .overflow_y_scroll()
+            .when(scroll, |el| el.overflow_y_scroll())
+            .when(!scroll, |el| el.overflow_hidden())
             .overflow_x_hidden()
             .flex_1()
             .child(panel)
