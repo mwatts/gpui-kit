@@ -34,6 +34,8 @@ pub enum PanelStyle {
     Auto,
     /// Always display the tab bar.
     TabBar,
+    /// No title strip for a single panel; tab bar only when a group has two or more.
+    Bare,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -26,6 +26,8 @@ use std::{cell::Cell, rc::Rc};
 
 use gpui::{App, AppContext as _, Context, Entity, SharedString, WeakEntity, Window, actions};
 
+use crate::scroll::ScrollbarMode;
+
 /// The behavior half of the panel traits, which every panel implements
 /// alongside [`Panel`]. Exported under this name because `Panel` in this
 /// module is the presentation half that extends it.
@@ -80,6 +82,9 @@ pub(crate) struct SkinShared {
     panel_style: Cell<PanelStyle>,
     toggle_button_visible: Cell<bool>,
     close_button_visible: Cell<bool>,
+    /// When true, the active panel region scrolls vertically (kit default).
+    content_scroll: Cell<bool>,
+    tiles_scrollbar_mode: Cell<Option<ScrollbarMode>>,
     /// The dock whose resize handle is being dragged, if any. Only one can be.
     resizing_dock: Cell<Option<DockPlacement>>,
 }
@@ -95,6 +100,14 @@ impl SkinShared {
 
     pub(crate) fn is_toggle_button_visible(&self) -> bool {
         self.toggle_button_visible.get()
+    }
+
+    pub(crate) fn content_scroll(&self) -> bool {
+        self.content_scroll.get()
+    }
+
+    pub(crate) fn tiles_scrollbar_mode(&self) -> Option<ScrollbarMode> {
+        self.tiles_scrollbar_mode.get()
     }
 
     pub(crate) fn resizing_dock(&self) -> &Cell<Option<DockPlacement>> {
@@ -156,6 +169,8 @@ impl DockSkin {
                 panel_style: Cell::new(PanelStyle::default()),
                 toggle_button_visible: Cell::new(true),
                 close_button_visible: Cell::new(false),
+                content_scroll: Cell::new(true),
+                tiles_scrollbar_mode: Cell::new(None),
                 resizing_dock: Cell::new(None),
             }),
         })
@@ -190,6 +205,23 @@ impl DockSkin {
     /// own close constraints still decide whether its button appears.
     pub fn set_close_button_visible(&self, visible: bool, cx: &mut App) {
         self.shared.close_button_visible.set(visible);
+        self.shared.notify(cx);
+    }
+
+    /// Whether the active panel region scrolls. Limen turns this off so lenses
+    /// own their own scroll without a nested scrollbar.
+    pub fn set_content_scroll(&self, scroll: bool, cx: &mut App) {
+        self.shared.content_scroll.set(scroll);
+        self.shared.notify(cx);
+    }
+
+    /// When a tiles canvas shows its scrollbar. `None` follows the theme.
+    pub fn tiles_scrollbar_mode(&self) -> Option<ScrollbarMode> {
+        self.shared.tiles_scrollbar_mode()
+    }
+
+    pub fn set_tiles_scrollbar_mode(&self, mode: Option<ScrollbarMode>, cx: &mut App) {
+        self.shared.tiles_scrollbar_mode.set(mode);
         self.shared.notify(cx);
     }
 }
