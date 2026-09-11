@@ -43,6 +43,7 @@ pub(crate) struct CommandModel {
     pub(crate) on_select: Option<Rc<OnIndex>>,
     pub(crate) on_confirm: Option<Rc<OnIndex>>,
     pub(crate) on_cancel: Option<Rc<OnCancel>>,
+    pub(crate) on_empty_confirm: Option<Rc<OnCancel>>,
 }
 
 impl Default for CommandModel {
@@ -55,6 +56,7 @@ impl Default for CommandModel {
             on_select: None,
             on_confirm: None,
             on_cancel: None,
+            on_empty_confirm: None,
         }
     }
 }
@@ -561,6 +563,12 @@ impl CommandState {
     fn on_action_confirm(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(selected_index) = self.selected_index {
             self.confirm(selected_index, window, cx);
+            return;
+        }
+        // No highlighted row (empty filter / natural-language mode): optional
+        // host callback, deferred like on_confirm so the state lease is released.
+        if let Some(on_empty_confirm) = self.model.on_empty_confirm.clone() {
+            window.defer(cx, move |window, cx| on_empty_confirm(window, cx));
         }
     }
 
