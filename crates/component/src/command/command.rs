@@ -64,6 +64,7 @@ pub struct Command {
     on_select: Option<Rc<OnIndex>>,
     on_confirm: Option<Rc<OnIndex>>,
     on_cancel: Option<Rc<OnCancel>>,
+    on_empty_confirm: Option<Rc<OnCancel>>,
     options: CommandOptions,
 }
 
@@ -79,6 +80,7 @@ impl Command {
             on_select: None,
             on_confirm: None,
             on_cancel: None,
+            on_empty_confirm: None,
             options: CommandOptions::default(),
         }
     }
@@ -173,6 +175,19 @@ impl Command {
         self
     }
 
+    /// Run a callback when Enter is pressed and no item is highlighted.
+    ///
+    /// Used for natural-language palette modes where the query matches no
+    /// command row. The callback runs after the current [`CommandState`] update
+    /// releases its lease.
+    pub fn on_empty_confirm<F>(mut self, callback: F) -> Self
+    where
+        F: Fn(&mut Window, &mut App) + 'static,
+    {
+        self.on_empty_confirm = Some(Rc::new(callback));
+        self
+    }
+
     /// Set the placeholder of the search field.
     pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.options.placeholder = Some(placeholder.into());
@@ -248,6 +263,7 @@ impl RenderOnce for Command {
             on_select: self.on_select,
             on_confirm: self.on_confirm,
             on_cancel: self.on_cancel,
+            on_empty_confirm: self.on_empty_confirm,
         };
         self.state.update(cx, |state, cx| {
             state.options = options;
