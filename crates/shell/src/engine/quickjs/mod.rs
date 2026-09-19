@@ -39,8 +39,8 @@ use smallvec::SmallVec;
 use crate::{
     ArgumentDescriptor, ArgumentSchema, ComponentArgument, ComponentCallbackArgument,
     ComponentCallbackValue, ComponentDataValue, ComponentPayload, FrozenComponentRegistry,
-    capability::is_openable_url,
     HostSource,
+    capability::is_openable_url,
     dependencies::{GitDependencyStore, MaterializedDependency},
     entities::{EntityHandle, EntityStore},
     error::{

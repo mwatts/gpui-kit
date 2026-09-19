@@ -1369,22 +1369,7 @@ impl ComponentElementCallback {
             Err(error) => Err(report_callback_failure(&runtime, error)),
         }
     }
-}
 
-fn report_callback_failure(
-    runtime: &Rc<crate::ShellRuntime>,
-    error: anyhow::Error,
-) -> anyhow::Error {
-    if error.downcast_ref::<crate::InactiveCallback>().is_some() {
-        return error;
-    }
-    let failure = crate::ScriptFailure::from_error(&error);
-    runtime.report_script_failure(failure.clone());
-    if runtime.has_diagnostic_sink() {
-        anyhow::Error::new(crate::error::ReportedScriptFailure::new(failure))
-    } else {
-        error
-    }
     /// Build a frame-owned inline subtree whose child callbacks retire with that frame.
     pub fn build_interactive_data_with(
         &self,
@@ -1409,6 +1394,22 @@ fn report_callback_failure(
             .upgrade()
             .ok_or_else(|| anyhow::anyhow!("component callback runtime has been released"))?;
         runtime.dispatch_inline_element_data(self.callback.id, arguments, true, window, cx)
+    }
+}
+
+fn report_callback_failure(
+    runtime: &Rc<crate::ShellRuntime>,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    if error.downcast_ref::<crate::InactiveCallback>().is_some() {
+        return error;
+    }
+    let failure = crate::ScriptFailure::from_error(&error);
+    runtime.report_script_failure(failure.clone());
+    if runtime.has_diagnostic_sink() {
+        anyhow::Error::new(crate::error::ReportedScriptFailure::new(failure))
+    } else {
+        error
     }
 }
 
