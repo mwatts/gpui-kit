@@ -1,14 +1,11 @@
 //! Honest retained-state adapters for form controls whose state has a
 //! concrete, delegate-free construction API.
 //!
-//! Change callbacks are deliberately not exposed here yet. These controls
-//! emit events from their retained `Entity` state, while the current shell
-//! materializer has no subscription owner (`Context<T>`) whose lifetime can
-//! retain a GPUI subscription. Adding an `on_change` method without that owner
-//! would either drop the subscription immediately or leak it globally.
-//! Delegate-backed Select and Combobox are likewise deferred until scripts
-//! can provide an honest searchable-list delegate rather than fabricated
-//! options.
+//! Change, submit, and complete callbacks subscribe to native state events
+//! through a keyed host (see `event_host`). Constructors stay one-argument
+//! `*State` handles. Input and Textarea also keep inline token bindings, so
+//! their `on_change` stays on that binding and is not registered twice.
+//! TimeField remains a styled leaf without those event callbacks.
 
 use gpui_component::{
     Disableable as _,
@@ -24,11 +21,57 @@ use gpui_shell::{
     ComponentMaterializer, ComponentPayload, ComponentRegistry, ConstructorDescriptor,
     MaterializeRequest, MethodDescriptor, RegistryError, StateDescriptor, anyhow,
     gpui::{
-        self, AppContext as _, Entity, IntoElement as _, ParentElement as _, Refineable as _,
-        Styled as _,
+        self, App, AppContext as _, Entity, IntoElement as _, ParentElement as _, Refineable as _,
+        RenderOnce, Styled as _, Window,
     },
 };
 use std::sync::Arc;
+
+pub(crate) mod event_host;
+
+#[cfg(test)]
+#[allow(dead_code, reason = "Read by the retained text host test")]
+pub(crate) mod test_probe {
+    use std::cell::RefCell;
+    thread_local! {
+        static CHANGES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        static SUBMITS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        static INPUT: RefCell<Option<gpui_shell::gpui::Entity<gpui_component::input::InputState>>> =
+            const { RefCell::new(None) };
+    }
+    pub(crate) fn reset() {
+        take_changes();
+        take_submits();
+        INPUT.with(|slot| *slot.borrow_mut() = None);
+    }
+    pub(super) fn change(value: String) {
+        CHANGES.with(|values| values.borrow_mut().push(value));
+    }
+    pub(super) fn submit(value: String) {
+        SUBMITS.with(|values| values.borrow_mut().push(value));
+    }
+    pub(super) fn watch_input(state: gpui_shell::gpui::Entity<gpui_component::input::InputState>) {
+        INPUT.with(|slot| *slot.borrow_mut() = Some(state));
+    }
+    pub(crate) fn take_changes() -> Vec<String> {
+        CHANGES.with(|values| std::mem::take(&mut *values.borrow_mut()))
+    }
+    pub(crate) fn take_submits() -> Vec<String> {
+        SUBMITS.with(|values| std::mem::take(&mut *values.borrow_mut()))
+    }
+    pub(crate) fn emit_change(
+        window: &mut gpui_shell::gpui::Window,
+        cx: &mut gpui_shell::gpui::App,
+    ) {
+        let Some(state) = INPUT.with(|slot| slot.borrow().clone()) else {
+            return;
+        };
+        state.update(cx, |_, cx| {
+            cx.emit(gpui_component::input::InputEvent::Change);
+        });
+        let _ = window;
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -144,6 +187,7 @@ mod tests {
 
 #[derive(Clone)]
 enum FormOp {
+    Value(String),
     Disabled(bool),
     Placeholder(String),
     AriaLabel(String),
@@ -153,6 +197,9 @@ enum FormOp {
     Label(String),
     AccessibilityLabel(String),
     Months(usize),
+    OnChange(ComponentArgument),
+    OnSubmit(ComponentArgument),
+    OnComplete(ComponentArgument),
 }
 
 fn bool_op(
@@ -233,22 +280,120 @@ where
     Ok(element.into_any_element())
 }
 
-fn finish_unstyled_leaf<E>(
-    request: &mut MaterializeRequest<'_>,
-    element: E,
-) -> anyhow::Result<gpui::AnyElement>
-where
-    E: gpui::IntoElement + 'static,
-{
-    ensure_leaf(request.children_len(), "OtpInput")?;
-    let mut wrapper = gpui::div().child(element);
-    wrapper.style().refine(&request.take_style());
-    Ok(wrapper.into_any_element())
-}
-
 fn ensure_leaf(children_len: usize, component: &str) -> anyhow::Result<()> {
     anyhow::ensure!(children_len == 0, "{component} does not accept children");
     Ok(())
+}
+
+fn event_args(
+    request: &MaterializeRequest<'_>,
+) -> (
+    Option<ComponentArgument>,
+    Option<ComponentArgument>,
+    Option<ComponentArgument>,
+) {
+    let mut change = None;
+    let mut submit = None;
+    let mut complete = None;
+    for op in request
+        .methods()
+        .filter_map(|method| method.payload().downcast_ref::<FormOp>())
+    {
+        match op {
+            FormOp::OnChange(argument) => change = Some(argument.clone()),
+            FormOp::OnSubmit(argument) => submit = Some(argument.clone()),
+            FormOp::OnComplete(argument) => complete = Some(argument.clone()),
+            _ => {}
+        }
+    }
+    (change, submit, complete)
+}
+
+pub(crate) fn resolve_callbacks(
+    request: &MaterializeRequest<'_>,
+) -> anyhow::Result<event_host::FormCallbacks> {
+    let (change, submit, complete) = event_args(request);
+    Ok(event_host::FormCallbacks {
+        on_change: change
+            .map(|argument| request.resolve_callback(&argument))
+            .transpose()?,
+        on_submit: submit
+            .map(|argument| request.resolve_callback(&argument))
+            .transpose()?,
+        on_complete: complete
+            .map(|argument| request.resolve_callback(&argument))
+            .transpose()?,
+    })
+}
+
+pub(crate) fn text_value(request: &MaterializeRequest<'_>) -> Option<String> {
+    request
+        .methods()
+        .filter_map(|method| match method.payload().downcast_ref::<FormOp>() {
+            Some(FormOp::Value(value)) => Some(value.clone()),
+            _ => None,
+        })
+        .last()
+}
+
+pub(crate) fn value_method() -> MethodDescriptor {
+    MethodDescriptor::new("value", vec![ArgumentDescriptor::new("text", ArgumentSchema::String)],
+        |arguments| string_op(arguments, "value", FormOp::Value))
+        .with_documentation("Synchronizes external text when it differs from native text; omitting it leaves native editing uncontrolled.")
+}
+
+fn host_key<T: 'static>(prefix: &str, state: &Entity<T>) -> String {
+    format!("{prefix}:{}", state.entity_id())
+}
+
+fn ops(request: &MaterializeRequest<'_>) -> Vec<FormOp> {
+    request
+        .methods()
+        .filter_map(|method| method.payload().downcast_ref::<FormOp>().cloned())
+        .collect()
+}
+
+fn callback_method(
+    owner: &'static str,
+    name: &'static str,
+    schema: &'static str,
+    documentation: &'static str,
+    make: fn(ComponentArgument) -> FormOp,
+) -> MethodDescriptor {
+    MethodDescriptor::new(
+        name,
+        vec![ArgumentDescriptor::new(
+            name,
+            ArgumentSchema::Callback(schema),
+        )],
+        move |arguments| match arguments {
+            [argument @ ComponentArgument::Callback(_)] => {
+                Ok(ComponentPayload::new(make(argument.clone())))
+            }
+            _ => Err(format!("{owner}.{name} expects one callback")),
+        },
+    )
+    .with_documentation(documentation)
+}
+
+pub(crate) fn on_change_method(owner: &'static str, schema: &'static str) -> MethodDescriptor {
+    callback_method(
+        owner,
+        "on_change",
+        schema,
+        "Reports the new value after a native change event.",
+        FormOp::OnChange,
+    )
+}
+
+pub(crate) fn on_submit_method(owner: &'static str, schema: &'static str) -> MethodDescriptor {
+    callback_method(
+        owner,
+        "on_submit",
+        schema,
+        "Reports the current value after a native submit event.",
+        FormOp::OnSubmit,
+    )
 }
 
 struct InputMaterializer;
@@ -259,6 +404,8 @@ impl ComponentMaterializer for InputMaterializer {
             &request,
             super::input_tokens::State::Input(state.clone()),
         )?;
+        let callbacks = resolve_callbacks(&request)?;
+        let value = text_value(&request);
         let mut input = binding.input(Input::new(&state));
         for op in request
             .methods()
@@ -270,7 +417,57 @@ impl ComponentMaterializer for InputMaterializer {
                 _ => input,
             };
         }
-        Ok(binding.wrap(finish_leaf(&mut request, input)?))
+        let child = finish_leaf(&mut request, input)?;
+        Ok(binding.wrap(
+            event_host::TextHost {
+                state,
+                callbacks,
+                value,
+                owner: "Input",
+                child,
+            }
+            .into_any_element(),
+        ))
+    }
+}
+
+#[derive(gpui::IntoElement)]
+struct BoundNumberInput {
+    state: Entity<InputState>,
+    ops: Vec<FormOp>,
+    callbacks: event_host::FormCallbacks,
+    style: gpui::StyleRefinement,
+}
+
+impl RenderOnce for BoundNumberInput {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl gpui::IntoElement {
+        let value = self
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                FormOp::Value(value) => Some(value.as_str()),
+                _ => None,
+            })
+            .last();
+        event_host::sync_text(&self.state, value, window, cx);
+        let state = event_host::install(
+            host_key("shell-number-input-host", &self.state),
+            self.state,
+            self.callbacks,
+            event_host::subscribe_number_input,
+            window,
+            cx,
+        );
+        let mut input = NumberInput::new(&state);
+        for op in self.ops {
+            input = match op {
+                FormOp::Disabled(value) => input.disabled(value),
+                FormOp::Placeholder(value) => input.placeholder(value),
+                _ => input,
+            };
+        }
+        input.style().refine(&self.style);
+        input
     }
 }
 
@@ -278,18 +475,48 @@ struct NumberInputMaterializer;
 impl ComponentMaterializer for NumberInputMaterializer {
     fn materialize(&self, mut request: MaterializeRequest<'_>) -> anyhow::Result<gpui::AnyElement> {
         let state = state_entity!(request, InputState);
-        let mut input = NumberInput::new(&state);
-        for op in request
-            .methods()
-            .filter_map(|method| method.payload().downcast_ref::<FormOp>())
-        {
+        let callbacks = resolve_callbacks(&request)?;
+        let ops = ops(&request);
+        ensure_leaf(request.children_len(), "NumberInput")?;
+        Ok(BoundNumberInput {
+            state,
+            ops,
+            callbacks,
+            style: request.take_style(),
+        }
+        .into_any_element())
+    }
+}
+
+#[derive(gpui::IntoElement)]
+struct BoundOtpInput {
+    state: Entity<OtpState>,
+    ops: Vec<FormOp>,
+    callbacks: event_host::FormCallbacks,
+    style: gpui::StyleRefinement,
+}
+
+impl RenderOnce for BoundOtpInput {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl gpui::IntoElement {
+        let state = event_host::install(
+            host_key("shell-otp-host", &self.state),
+            self.state,
+            self.callbacks,
+            event_host::subscribe_otp,
+            window,
+            cx,
+        );
+        let mut input = OtpInput::new(&state);
+        for op in self.ops {
             input = match op {
-                FormOp::Disabled(value) => input.disabled(*value),
-                FormOp::Placeholder(value) => input.placeholder(value.clone()),
+                FormOp::Disabled(value) => input.disabled(value),
+                FormOp::Groups(value) => input.groups(value),
                 _ => input,
             };
         }
-        finish_leaf(&mut request, input)
+        let mut wrapper = gpui::div().child(input);
+        wrapper.style().refine(&self.style);
+        wrapper
     }
 }
 
@@ -297,18 +524,48 @@ struct OtpInputMaterializer;
 impl ComponentMaterializer for OtpInputMaterializer {
     fn materialize(&self, mut request: MaterializeRequest<'_>) -> anyhow::Result<gpui::AnyElement> {
         let state = state_entity!(request, OtpState);
-        let mut input = OtpInput::new(&state);
-        for op in request
-            .methods()
-            .filter_map(|method| method.payload().downcast_ref::<FormOp>())
-        {
-            input = match op {
-                FormOp::Disabled(value) => input.disabled(*value),
-                FormOp::Groups(value) => input.groups(*value),
-                _ => input,
+        let callbacks = resolve_callbacks(&request)?;
+        let ops = ops(&request);
+        ensure_leaf(request.children_len(), "OtpInput")?;
+        Ok(BoundOtpInput {
+            state,
+            ops,
+            callbacks,
+            style: request.take_style(),
+        }
+        .into_any_element())
+    }
+}
+
+#[derive(gpui::IntoElement)]
+struct BoundSlider {
+    state: Entity<SliderState>,
+    ops: Vec<FormOp>,
+    callbacks: event_host::FormCallbacks,
+    style: gpui::StyleRefinement,
+}
+
+impl RenderOnce for BoundSlider {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl gpui::IntoElement {
+        let state = event_host::install(
+            host_key("shell-slider-host", &self.state),
+            self.state,
+            self.callbacks,
+            event_host::subscribe_slider,
+            window,
+            cx,
+        );
+        let mut slider = Slider::new(&state);
+        for op in self.ops {
+            slider = match op {
+                FormOp::Disabled(value) => slider.disabled(value),
+                FormOp::Vertical => slider.vertical(),
+                FormOp::Reverse => slider.reverse(),
+                _ => slider,
             };
         }
-        finish_unstyled_leaf(&mut request, input)
+        slider.style().refine(&self.style);
+        slider
     }
 }
 
@@ -316,19 +573,47 @@ struct SliderMaterializer;
 impl ComponentMaterializer for SliderMaterializer {
     fn materialize(&self, mut request: MaterializeRequest<'_>) -> anyhow::Result<gpui::AnyElement> {
         let state = state_entity!(request, SliderState);
-        let mut slider = Slider::new(&state);
-        for op in request
-            .methods()
-            .filter_map(|method| method.payload().downcast_ref::<FormOp>())
-        {
-            slider = match op {
-                FormOp::Disabled(value) => slider.disabled(*value),
-                FormOp::Vertical => slider.vertical(),
-                FormOp::Reverse => slider.reverse(),
-                _ => slider,
+        let callbacks = resolve_callbacks(&request)?;
+        let ops = ops(&request);
+        ensure_leaf(request.children_len(), "Slider")?;
+        Ok(BoundSlider {
+            state,
+            ops,
+            callbacks,
+            style: request.take_style(),
+        }
+        .into_any_element())
+    }
+}
+
+#[derive(gpui::IntoElement)]
+struct BoundColorPicker {
+    state: Entity<ColorPickerState>,
+    ops: Vec<FormOp>,
+    callbacks: event_host::FormCallbacks,
+    style: gpui::StyleRefinement,
+}
+
+impl RenderOnce for BoundColorPicker {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl gpui::IntoElement {
+        let state = event_host::install(
+            host_key("shell-color-picker-host", &self.state),
+            self.state,
+            self.callbacks,
+            event_host::subscribe_color,
+            window,
+            cx,
+        );
+        let mut picker = ColorPicker::new(&state);
+        for op in self.ops {
+            picker = match op {
+                FormOp::Label(value) => picker.label(value),
+                FormOp::AccessibilityLabel(value) => picker.accessibility_label(value),
+                _ => picker,
             };
         }
-        finish_leaf(&mut request, slider)
+        picker.style().refine(&self.style);
+        picker
     }
 }
 
@@ -336,18 +621,47 @@ struct ColorPickerMaterializer;
 impl ComponentMaterializer for ColorPickerMaterializer {
     fn materialize(&self, mut request: MaterializeRequest<'_>) -> anyhow::Result<gpui::AnyElement> {
         let state = state_entity!(request, ColorPickerState);
-        let mut picker = ColorPicker::new(&state);
-        for op in request
-            .methods()
-            .filter_map(|method| method.payload().downcast_ref::<FormOp>())
-        {
+        let callbacks = resolve_callbacks(&request)?;
+        let ops = ops(&request);
+        ensure_leaf(request.children_len(), "ColorPicker")?;
+        Ok(BoundColorPicker {
+            state,
+            ops,
+            callbacks,
+            style: request.take_style(),
+        }
+        .into_any_element())
+    }
+}
+
+#[derive(gpui::IntoElement)]
+struct BoundDatePicker {
+    state: Entity<DatePickerState>,
+    ops: Vec<FormOp>,
+    callbacks: event_host::FormCallbacks,
+    style: gpui::StyleRefinement,
+}
+
+impl RenderOnce for BoundDatePicker {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl gpui::IntoElement {
+        let state = event_host::install(
+            host_key("shell-date-picker-host", &self.state),
+            self.state,
+            self.callbacks,
+            event_host::subscribe_date,
+            window,
+            cx,
+        );
+        let mut picker = DatePicker::new(&state);
+        for op in self.ops {
             picker = match op {
-                FormOp::Label(value) => picker.label(value.clone()),
-                FormOp::AccessibilityLabel(value) => picker.accessibility_label(value.clone()),
+                FormOp::Disabled(value) => picker.disabled(value),
+                FormOp::Placeholder(value) => picker.placeholder(value),
                 _ => picker,
             };
         }
-        finish_leaf(&mut request, picker)
+        picker.style().refine(&self.style);
+        picker
     }
 }
 
@@ -355,18 +669,62 @@ struct DatePickerMaterializer;
 impl ComponentMaterializer for DatePickerMaterializer {
     fn materialize(&self, mut request: MaterializeRequest<'_>) -> anyhow::Result<gpui::AnyElement> {
         let state = state_entity!(request, DatePickerState);
-        let mut picker = DatePicker::new(&state);
-        for op in request
-            .methods()
-            .filter_map(|method| method.payload().downcast_ref::<FormOp>())
-        {
-            picker = match op {
-                FormOp::Disabled(value) => picker.disabled(*value),
-                FormOp::Placeholder(value) => picker.placeholder(value.clone()),
-                _ => picker,
-            };
+        let callbacks = resolve_callbacks(&request)?;
+        let ops = ops(&request);
+        ensure_leaf(request.children_len(), "DatePicker")?;
+        Ok(BoundDatePicker {
+            state,
+            ops,
+            callbacks,
+            style: request.take_style(),
         }
-        finish_leaf(&mut request, picker)
+        .into_any_element())
+    }
+}
+
+#[derive(gpui::IntoElement)]
+struct BoundCalendar {
+    state: Entity<CalendarState>,
+    ops: Vec<FormOp>,
+    callbacks: event_host::FormCallbacks,
+    style: gpui::StyleRefinement,
+}
+
+impl RenderOnce for BoundCalendar {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl gpui::IntoElement {
+        let state = event_host::install(
+            host_key("shell-calendar-host", &self.state),
+            self.state,
+            self.callbacks,
+            event_host::subscribe_calendar,
+            window,
+            cx,
+        );
+        let mut calendar = Calendar::new(&state);
+        for op in self.ops {
+            if let FormOp::Months(value) = op {
+                calendar = calendar.number_of_months(value);
+            }
+        }
+        calendar.style().refine(&self.style);
+        calendar
+    }
+}
+
+struct CalendarMaterializer;
+impl ComponentMaterializer for CalendarMaterializer {
+    fn materialize(&self, mut request: MaterializeRequest<'_>) -> anyhow::Result<gpui::AnyElement> {
+        let state = state_entity!(request, CalendarState);
+        let callbacks = resolve_callbacks(&request)?;
+        let ops = ops(&request);
+        ensure_leaf(request.children_len(), "Calendar")?;
+        Ok(BoundCalendar {
+            state,
+            ops,
+            callbacks,
+            style: request.take_style(),
+        }
+        .into_any_element())
     }
 }
 
@@ -384,23 +742,6 @@ impl ComponentMaterializer for TimeFieldMaterializer {
             }
         }
         finish_leaf(&mut request, field)
-    }
-}
-
-struct CalendarMaterializer;
-impl ComponentMaterializer for CalendarMaterializer {
-    fn materialize(&self, mut request: MaterializeRequest<'_>) -> anyhow::Result<gpui::AnyElement> {
-        let state = state_entity!(request, CalendarState);
-        let mut calendar = Calendar::new(&state);
-        for op in request
-            .methods()
-            .filter_map(|method| method.payload().downcast_ref::<FormOp>())
-        {
-            if let FormOp::Months(value) = op {
-                calendar = calendar.number_of_months(*value);
-            }
-        }
-        finish_leaf(&mut request, calendar)
     }
 }
 
@@ -570,7 +911,12 @@ pub fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
         "Input",
         "InputState",
         [
-            vec![aria_label_method("Input"), disabled_method("Input")],
+            vec![
+                aria_label_method("Input"),
+                disabled_method("Input"),
+                value_method(),
+                on_submit_method("Input", "(value: string, cx: Context) => void"),
+            ],
             super::input_tokens::methods(true),
         ]
         .concat(),
@@ -583,6 +929,9 @@ pub fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
         vec![
             placeholder_method("NumberInput"),
             disabled_method("NumberInput"),
+            value_method(),
+            on_change_method("NumberInput", "(value: string, cx: Context) => void"),
+            on_submit_method("NumberInput", "(value: string, cx: Context) => void"),
         ],
         "A retained numeric text field with increment and decrement controls.",
         NumberInputMaterializer,
@@ -601,6 +950,15 @@ pub fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
             )
             .with_documentation("Splits the fixed-length code into the requested number of visual groups."),
             disabled_method("OtpInput"),
+            on_change_method("OtpInput", "(value: string, cx: Context) => void"),
+            on_submit_method("OtpInput", "(value: string, cx: Context) => void"),
+            callback_method(
+                "OtpInput",
+                "on_complete",
+                "(value: string, cx: Context) => void",
+                "Reports the filled value when every cell is complete.",
+                FormOp::OnComplete,
+            ),
         ],
         "A retained fixed-length one-time-password field. Shell styles apply to its dedicated wrapper because OtpInput itself is not Styled; ordinary children are rejected.",
         OtpInputMaterializer,
@@ -618,6 +976,8 @@ pub fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
             })
             .with_documentation("Reverses the filled side for a single-value slider."),
             disabled_method("Slider"),
+            on_change_method("Slider", "(value: number, cx: Context) => void"),
+            on_submit_method("Slider", "(value: number, cx: Context) => void"),
         ],
         "A retained numeric slider using SliderState defaults.",
         SliderMaterializer,
@@ -644,6 +1004,8 @@ pub fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
                 },
             )
             .with_documentation("Sets the announced name independently of the visible label."),
+            on_change_method("ColorPicker", "(value: string, cx: Context) => void"),
+            on_submit_method("ColorPicker", "(value: string, cx: Context) => void"),
         ],
         "A retained color picker with preview and commit behavior.",
         ColorPickerMaterializer,
@@ -661,6 +1023,8 @@ pub fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
                 },
             )
             .with_documentation("Sets the positive number of adjacent months to display."),
+            on_change_method("Calendar", "(value: string, cx: Context) => void"),
+            on_submit_method("Calendar", "(value: string, cx: Context) => void"),
         ],
         "A retained calendar for date navigation and selection.",
         CalendarMaterializer,
@@ -671,6 +1035,8 @@ pub fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
         vec![
             placeholder_method("DatePicker"),
             disabled_method("DatePicker"),
+            on_change_method("DatePicker", "(value: string, cx: Context) => void"),
+            on_submit_method("DatePicker", "(value: string, cx: Context) => void"),
         ],
         "A retained single-date picker backed by an internal calendar.",
         DatePickerMaterializer,
