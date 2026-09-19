@@ -24,6 +24,7 @@ struct Payload {
 }
 #[derive(Clone)]
 enum Op {
+    SelectedValue(Option<String>),
     Placeholder(String),
     SearchPlaceholder(String),
     Searchable(bool),
@@ -120,6 +121,41 @@ fn snapshot(
         all: items.clone(),
         visible: items,
     })
+}
+
+fn retained_selection(selected: Option<String>, rows: &Delegate) -> Option<String> {
+    selected.filter(|value| rows.all.iter().any(|item| &item.id == value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stable_selection_survives_reordering_but_not_deleted_rows() {
+        let rows = Delegate {
+            all: vec![
+                Item {
+                    id: "beta".into(),
+                    label: "Renamed".into(),
+                    disabled: false,
+                },
+                Item {
+                    id: "alpha".into(),
+                    label: "Alpha".into(),
+                    disabled: false,
+                },
+            ],
+            visible: vec![],
+        };
+        // Resolve against the complete snapshot, even while search hides the selected row.
+        assert_eq!(
+            retained_selection(Some("beta".into()), &rows),
+            Some("beta".into())
+        );
+        assert_eq!(retained_selection(Some("deleted".into()), &rows), None);
+        assert_eq!(retained_selection(None, &rows), None);
+    }
 }
 
 struct Callbacks {
@@ -239,13 +275,23 @@ impl RenderOnce for Bound {
             change: self.change,
             confirm: self.confirm,
         };
-        if rows_changed {
+        let controlled = self
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::SelectedValue(value) => Some(value.clone()),
+                _ => None,
+            })
+            .next_back();
+        let selected = controlled.unwrap_or_else(|| state.read(cx).selected_value());
+        let selected = retained_selection(selected, &next);
+        if rows_changed || state.read(cx).selected_value() != selected {
             state.update(cx, |state, cx| {
-                let selected = state.selected_value();
-                state.set_items(next, window, cx);
-                if let Some(selected) = selected {
-                    state.set_selected_values(&[selected], window, cx);
+                if rows_changed {
+                    state.set_items(next, window, cx);
                 }
+                // The native setter commits without emitting a user change event.
+                state.set_selected_values(&selected.into_iter().collect::<Vec<_>>(), window, cx);
             });
         }
         let mut combobox = Combobox::new(&state);
@@ -253,7 +299,7 @@ impl RenderOnce for Bound {
             combobox = match op {
                 Op::Placeholder(value) => combobox.placeholder(value),
                 Op::SearchPlaceholder(value) => combobox.search_placeholder(value),
-                Op::Searchable(_) => combobox,
+                Op::Searchable(_) | Op::SelectedValue(_) => combobox,
                 Op::Disabled(value) => combobox.disabled(value),
                 Op::MenuWidth(value) => combobox.menu_width(gpui::px(value)),
             };
@@ -323,6 +369,8 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
             _ => Err("Combobox expects id, rows, on_change, and on_confirm callbacks".into()),
         })])
 .with_methods(vec![
+            method("selected_value", "Controls the selected row by stable id without emitting change callbacks. Unknown ids clear the selection.", ArgumentSchema::String, |arg| match arg { ComponentArgument::String(value) => Some(Op::SelectedValue(Some(value.clone()))), _ => None }),
+            MethodDescriptor::new("clear_selection", vec![], |_| Ok(ComponentPayload::new(Op::SelectedValue(None)))).with_documentation("Controls the selection as empty without emitting change callbacks."),
             method("placeholder", "Sets the text shown while nothing is selected.", ArgumentSchema::String, |arg| match arg { ComponentArgument::String(value) => Some(Op::Placeholder(value.clone())), _ => None }),
             method("search_placeholder", "Sets the text shown in the empty search field.", ArgumentSchema::String, |arg| match arg { ComponentArgument::String(value) => Some(Op::SearchPlaceholder(value.clone())), _ => None }),
             method("searchable", "Shows the search field above the item list.", ArgumentSchema::Boolean, |arg| match arg { ComponentArgument::Boolean(value) => Some(Op::Searchable(*value)), _ => None }),

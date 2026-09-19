@@ -63,6 +63,8 @@ enum Op {
     Scrollbar(bool),
     JumpButton(bool),
     JumpButtonLabel(String),
+    ItemCount(usize),
+    ContentRevision(f64),
 }
 
 struct Materializer;
@@ -189,7 +191,47 @@ struct BoundMessageScroller {
 }
 
 impl RenderOnce for BoundMessageScroller {
-    fn render(self, _: &mut Window, _: &mut App) -> impl gpui::IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl gpui::IntoElement {
+        let count = self
+            .operations
+            .iter()
+            .filter_map(|op| match op {
+                Op::ItemCount(value) => Some(*value),
+                _ => None,
+            })
+            .next_back();
+        let revision = self
+            .operations
+            .iter()
+            .filter_map(|op| match op {
+                Op::ContentRevision(value) => Some(*value),
+                _ => None,
+            })
+            .next_back();
+        let previous: Entity<Option<f64>> = window.use_keyed_state(
+            format!(
+                "shell-message-revision:{}:{:?}",
+                self.id,
+                self.state.entity_id()
+            ),
+            cx,
+            |_, _| None,
+        );
+        let changed = *previous.read(cx) != revision;
+        if changed {
+            previous.update(cx, |previous, _| *previous = revision);
+        }
+        let old_count = self.state.read(cx).item_count();
+        if count.is_some_and(|count| count != old_count) || changed {
+            self.state.update(cx, |state, cx| {
+                if let Some(count) = count {
+                    sync_item_count(state, count, cx);
+                }
+                if changed {
+                    state.remeasure_items(0..state.item_count(), cx);
+                }
+            });
+        }
         let renderer = self.renderer;
         let mut scroller =
             MessageScroller::new(self.id, self.state, move |index, window, cx| match renderer
@@ -214,6 +256,19 @@ impl RenderOnce for BoundMessageScroller {
         }
         scroller.style().refine(&self.style);
         scroller.into_any_element()
+    }
+}
+
+fn sync_item_count(
+    state: &mut MessageScrollerState,
+    count: usize,
+    cx: &mut gpui::Context<MessageScrollerState>,
+) {
+    let previous = state.item_count();
+    if count > previous {
+        state.append(count - previous, cx);
+    } else if count < previous {
+        state.splice(count..previous, 0, cx);
     }
 }
 
@@ -501,6 +556,14 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
         ComponentDescriptor::new("MessageScroller", Arc::new(Materializer))
             .with_constructors(vec![ConstructorDescriptor::new("MessageScroller", vec![ArgumentDescriptor::new("id", ArgumentSchema::String), ArgumentDescriptor::new("state", ArgumentSchema::Entity("MessageScrollerState")), ArgumentDescriptor::new("render_item", ArgumentSchema::Callback("(index: number) => Element | null"))], |arguments| match arguments { [ComponentArgument::String(id), state @ ComponentArgument::Entity { .. }, render_item @ ComponentArgument::Callback(_)] if !id.trim().is_empty() => Ok(ComponentPayload::new(Payload { kind: Kind::MessageScroller { id: id.clone(), state: state.clone(), render_item: render_item.clone() } })), _ => Err("MessageScroller expects a non-empty id, MessageScrollerState, and row renderer".into()) })])
             .with_methods(vec![
+                MethodDescriptor::new("item_count", vec![ArgumentDescriptor::new("item_count", ArgumentSchema::Number)], |arguments| match arguments {
+                    [ComponentArgument::Number(value)] if value.is_finite() && value.fract() == 0.0 && *value >= 0.0 && *value < usize::MAX as f64 => Ok(ComponentPayload::new(Op::ItemCount(*value as usize))),
+                    _ => Err("MessageScroller.item_count expects a non-negative integer".into()),
+                }).with_documentation("Synchronizes the current row count by appending or removing tail rows while preserving scroll and tail-following state. Call cx.notify() after changing the View model."),
+                MethodDescriptor::new("content_revision", vec![ArgumentDescriptor::new("content_revision", ArgumentSchema::Number)], |arguments| match arguments {
+                    [ComponentArgument::Number(value)] if value.is_finite() => Ok(ComponentPayload::new(Op::ContentRevision(*value))),
+                    _ => Err("MessageScroller.content_revision expects a finite number".into()),
+                }).with_documentation("Change this revision when existing row content or heights change, including same-count replacements. Remeasures rows while preserving the current item anchor and tail mode."),
                 bool_method("MessageScroller", "scrollbar", "Enables its virtual-list scrollbar.", Op::Scrollbar),
                 bool_method("MessageScroller", "jump_button", "Enables the jump-to-latest button.", Op::JumpButton),
                 MethodDescriptor::new("jump_button_label", vec![ArgumentDescriptor::new("jump_button_label", ArgumentSchema::String)], |arguments| match arguments { [ComponentArgument::String(value)] if !value.trim().is_empty() => Ok(ComponentPayload::new(Op::JumpButtonLabel(value.clone()))), _ => Err("MessageScroller.jump_button_label expects non-empty text".into()) }).with_documentation("Sets the jump-to-latest button label."),
@@ -508,4 +571,33 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
             .with_documentation("A virtualized message transcript with retained scroll and tail-following state."),
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[gpui::test]
+    fn count_sync_preserves_reading_position_and_tail_mode(cx: &mut gpui::TestAppContext) {
+        let state = cx.new(|cx| MessageScrollerState::new(10, cx));
+        state.update(cx, |state, cx| {
+            assert!(state.is_following_tail());
+            sync_item_count(state, 12, cx);
+            assert_eq!(state.item_count(), 12);
+            assert!(state.is_following_tail());
+            state.scroll_to_item(2, cx);
+            assert!(!state.is_following_tail());
+            sync_item_count(state, 15, cx);
+            assert_eq!(state.item_count(), 15);
+            assert!(!state.is_following_tail());
+            sync_item_count(state, 8, cx);
+            assert_eq!(state.item_count(), 8);
+            assert!(!state.is_following_tail());
+            state.scroll_to_end(cx);
+            sync_item_count(state, 9, cx);
+            assert!(state.is_following_tail());
+            sync_item_count(state, 0, cx);
+            assert_eq!(state.item_count(), 0);
+        });
+    }
 }
