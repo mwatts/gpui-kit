@@ -45,11 +45,15 @@ fn combobox_native_click_emits_change_and_confirm_for_stable_value(cx: &mut Test
         root.join("main.js"),
         r#"import { View, div } from "gpui-kit";
 import { Combobox } from "gpui-component";
-export default class App extends View { render() {
-  return div().size_full().child(new Combobox("people", () => [
+export default class App extends View {
+ init() { this.value = "beta"; this.count = 0; }
+ render() {
+  let combo = new Combobox("people", () => [
     {id:"alpha",label:"Alpha"}, {id:"beta",label:"Beta"}
-  ], value => { globalThis.__change = value; }, value => { globalThis.__confirm = value; })
-    .searchable(false).placeholder("Choose"));
+  ], (value, cx) => { this.value = Array.isArray(value) ? null : value; this.count++; cx.notify(); }, value => { globalThis.__confirm = value; })
+    .searchable(false).cleanable(true).placeholder("Choose").w(200);
+  combo = this.value == null ? combo.clear_selection() : combo.selected_value(this.value);
+  return div().size_full().child(combo).child(`model:${this.value} count:${this.count}`);
 } }"#,
     )
     .unwrap();
@@ -74,6 +78,15 @@ export default class App extends View { render() {
     delegate_combobox::test_probe::take_changes();
     delegate_combobox::test_probe::take_confirms();
     context.update(|window, cx| window.draw(cx).clear(cx));
+    context.update(|_, cx| {
+        assert!(
+            view.read(cx)
+                .snapshot()
+                .unwrap()
+                .debug_tree()
+                .contains("model:beta count:0")
+        )
+    });
     context.simulate_click(point(px(20.), px(20.)), Modifiers::default());
     context.run_until_parked();
     context.update(|window, cx| window.draw(cx).clear(cx));
@@ -88,5 +101,18 @@ export default class App extends View { render() {
         [vec!["alpha".to_owned()]]
     );
     context.update(|_, cx| assert_eq!(view.read(cx).build_error(), None));
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    context.simulate_click(point(px(180.), px(20.)), Modifiers::default());
+    context.run_until_parked();
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    let text = context.update(|_, cx| view.read(cx).snapshot().unwrap().debug_tree());
+    assert!(
+        text.contains("model:null count:2"),
+        "native clear must reach the controlled model once: {text}"
+    );
+    assert_eq!(
+        delegate_combobox::test_probe::take_changes(),
+        [Vec::<String>::new()]
+    );
     fs::remove_dir_all(root).unwrap();
 }
