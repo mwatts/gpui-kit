@@ -1595,6 +1595,30 @@ impl ShellRuntime {
         })
     }
 
+    /// Loads and mounts a sealed source under its own host policy.
+    ///
+    /// Module evaluation and every later view callback use the supplied policy;
+    /// the application's default host registrations remain unchanged.
+    pub fn mount_host_source(
+        self: &Rc<Self>,
+        source: &HostSource,
+        policy: Rc<crate::policy::Policy>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Result<Entity<ScriptView>> {
+        let (_scope, _) = scope::enter_with_runtime(
+            self,
+            window,
+            cx,
+            ScopePhase::Event,
+            None,
+            policy.clone(),
+        );
+        let loaded = self.load_host_source(source)?;
+        loaded.mounted.set(true);
+        self.instantiate_view_with_policy(&loaded.view_type, policy, window, cx)
+    }
+
     /// Creates, initializes and mounts a loaded application as a [`ScriptView`].
     ///
     /// The owner consumes the handle before construction. This makes a failed
