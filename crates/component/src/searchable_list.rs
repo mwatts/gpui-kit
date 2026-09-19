@@ -11,3 +11,5 @@ pub use delegate::{SearchableListDelegate, SearchableListItem};
 pub use item::SearchableListItemElement;
 pub use state::SearchableListState;
 pub use vec::{SearchableGroup, SearchableVec};
+mod inline;
+pub use inline::{InlineSearchableList, InlineSearchableListEvent};
