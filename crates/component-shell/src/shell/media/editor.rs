@@ -1,4 +1,5 @@
 use super::bool_method;
+use crate::shell::retained_forms::{self, event_host};
 use std::sync::Arc;
 
 use gpui_component::input::{Editor, EditorState};
@@ -30,6 +31,8 @@ impl ComponentMaterializer for Materializer {
             .downcast_ref::<ComponentArgument>()
             .ok_or_else(|| anyhow::anyhow!("Editor received an incompatible payload"))?;
         let state = request.with_state::<Entity<EditorState>, _>(argument, Clone::clone)?;
+        let callbacks = retained_forms::resolve_callbacks(&request)?;
+        let value = retained_forms::text_value(&request);
         let mut editor = Editor::new(&state).disabled(request.disabled());
         for op in request
             .methods()
@@ -44,7 +47,14 @@ impl ComponentMaterializer for Materializer {
         }
         require_leaf(request.children_len())?;
         editor.style().refine(&request.take_style());
-        Ok(editor.into_any_element())
+        Ok(event_host::TextHost {
+            state,
+            callbacks,
+            value,
+            owner: "Editor",
+            child: editor.into_any_element(),
+        }
+        .into_any_element())
     }
 }
 
@@ -101,6 +111,9 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
             },
         )])
 .with_methods(vec![
+            retained_forms::value_method(),
+            retained_forms::on_change_method("Editor", "(value: string, cx: Context) => void"),
+            retained_forms::on_submit_method("Editor", "(value: string, cx: Context) => void"),
             MethodDescriptor::new("disabled", vec![ArgumentDescriptor::new("disabled", ArgumentSchema::Boolean)], |_| Ok(ComponentPayload::new(()))).with_documentation("Disables the editor."),
             bool_method("Editor", "appearance", "Controls the editor appearance.", Op::Appearance),
             bool_method("Editor", "bordered", "Controls the editor border.", Op::Bordered),

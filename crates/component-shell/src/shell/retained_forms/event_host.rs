@@ -23,7 +23,7 @@ use std::{
 };
 
 #[derive(Clone, Default)]
-pub(super) struct FormCallbacks {
+pub(crate) struct FormCallbacks {
     pub on_change: Option<ComponentCallback>,
     pub on_submit: Option<ComponentCallback>,
     pub on_complete: Option<ComponentCallback>,
@@ -46,11 +46,11 @@ thread_local! {
     static HOSTS: RefCell<HashMap<String, Weak<Interned>>> = RefCell::new(HashMap::new());
 }
 
-pub(super) struct Host {
+pub(crate) struct Host {
     _interned: Rc<Interned>,
 }
 
-pub(super) fn install<T: 'static>(
+pub(crate) fn install<T: 'static>(
     key: String,
     state: Entity<T>,
     callbacks: FormCallbacks,
@@ -89,7 +89,7 @@ pub(super) fn install<T: 'static>(
     state
 }
 
-pub(super) fn invoke(
+pub(crate) fn invoke(
     cell: &Rc<RefCell<FormCallbacks>>,
     pick: impl Fn(&FormCallbacks) -> Option<ComponentCallback>,
     context: &str,
@@ -154,18 +154,14 @@ fn invoke_complete(
     );
 }
 
-pub(super) fn subscribe_input(
+pub(crate) fn subscribe_input<T: TextState>(
     owner: &'static str,
-) -> impl FnOnce(
-    Entity<InputState>,
-    Rc<RefCell<FormCallbacks>>,
-    &mut Window,
-    &mut App,
-) -> Vec<Subscription> {
+) -> impl FnOnce(Entity<T>, Rc<RefCell<FormCallbacks>>, &mut Window, &mut App) -> Vec<Subscription>
+{
     move |state, cell, window, cx| {
         #[cfg(test)]
         if owner == "Input" {
-            super::test_probe::watch_input(state.clone());
+            T::watch(state.clone());
         }
         let watched = state.clone();
         let change_cell = cell.clone();
@@ -175,7 +171,7 @@ pub(super) fn subscribe_input(
             cx,
             move |_, event: &InputEvent, window, cx| match event {
                 InputEvent::Change => {
-                    let value = watched.read(cx).value().to_string();
+                    let value = watched.read(cx).text();
                     #[cfg(test)]
                     if owner == "Input" {
                         super::test_probe::change(value.clone());
@@ -193,7 +189,7 @@ pub(super) fn subscribe_input(
                         return;
                     }
                     enter_armed.set(false);
-                    let value = watched.read(cx).value().to_string();
+                    let value = watched.read(cx).text();
                     #[cfg(test)]
                     if owner == "Input" {
                         super::test_probe::submit(value.clone());
@@ -214,7 +210,7 @@ pub(super) fn subscribe_input(
     }
 }
 
-pub(super) fn subscribe_number_input(
+pub(crate) fn subscribe_number_input(
     state: Entity<InputState>,
     cell: Rc<RefCell<FormCallbacks>>,
     window: &mut Window,
@@ -241,7 +237,7 @@ pub(super) fn subscribe_number_input(
     subscriptions
 }
 
-pub(super) fn subscribe_otp(
+pub(crate) fn subscribe_otp(
     state: Entity<OtpState>,
     cell: Rc<RefCell<FormCallbacks>>,
     window: &mut Window,
@@ -272,7 +268,7 @@ pub(super) fn subscribe_otp(
     ]
 }
 
-pub(super) fn subscribe_slider(
+pub(crate) fn subscribe_slider(
     state: Entity<SliderState>,
     cell: Rc<RefCell<FormCallbacks>>,
     window: &mut Window,
@@ -303,7 +299,7 @@ fn slider_argument(value: SliderValue) -> ComponentCallbackArgument {
     }
 }
 
-pub(super) fn subscribe_color(
+pub(crate) fn subscribe_color(
     state: Entity<ColorPickerState>,
     cell: Rc<RefCell<FormCallbacks>>,
     window: &mut Window,
@@ -344,7 +340,7 @@ fn hex_color(color: gpui::Hsla) -> String {
     }
 }
 
-pub(super) fn subscribe_date(
+pub(crate) fn subscribe_date(
     state: Entity<DatePickerState>,
     cell: Rc<RefCell<FormCallbacks>>,
     window: &mut Window,
@@ -352,11 +348,11 @@ pub(super) fn subscribe_date(
 ) -> Vec<Subscription> {
     vec![
         window.subscribe(&state, cx, move |_, event: &DatePickerEvent, window, cx| {
-            let DatePickerEvent::Change(date) = event;
+            let DatePickerEvent::Change(value) = event;
             invoke_change(
                 &cell,
                 "DatePicker.on_change",
-                date_argument(*date),
+                date_argument(value.date()),
                 window,
                 cx,
             );
@@ -364,7 +360,7 @@ pub(super) fn subscribe_date(
     ]
 }
 
-pub(super) fn subscribe_calendar(
+pub(crate) fn subscribe_calendar(
     state: Entity<CalendarState>,
     cell: Rc<RefCell<FormCallbacks>>,
     window: &mut Window,
@@ -391,5 +387,81 @@ fn date_argument(date: Date) -> ComponentCallbackArgument {
         }
         Date::Single(Some(day)) => ComponentCallbackArgument::String(day.to_string()),
         other => ComponentCallbackArgument::String(other.to_string()),
+    }
+}
+
+pub(crate) trait TextState: gpui::EventEmitter<InputEvent> + Sized + 'static {
+    fn text(&self) -> String;
+    fn set_text(&mut self, value: String, window: &mut Window, cx: &mut gpui::Context<Self>);
+    #[cfg(test)]
+    fn watch(_state: Entity<Self>) {}
+}
+macro_rules! text_state {
+    ($ty:ty) => {
+        impl TextState for $ty {
+            fn text(&self) -> String {
+                self.value().to_string()
+            }
+            fn set_text(
+                &mut self,
+                value: String,
+                window: &mut Window,
+                cx: &mut gpui::Context<Self>,
+            ) {
+                self.set_value(value, window, cx);
+            }
+        }
+    };
+}
+text_state!(gpui_component::input::EditorState);
+text_state!(gpui_component::input::TextareaState);
+impl TextState for InputState {
+    fn text(&self) -> String {
+        self.value().to_string()
+    }
+    fn set_text(&mut self, value: String, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        self.set_value(value, window, cx);
+    }
+    #[cfg(test)]
+    fn watch(state: Entity<Self>) {
+        super::test_probe::watch_input(state);
+    }
+}
+
+pub(crate) fn sync_text<T: TextState>(
+    state: &Entity<T>,
+    value: Option<&str>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    // set_value suppresses native Change events, and resets selection/undo. Never
+    // call it for a model echo or an unrelated render with the same native text.
+    if let Some(value) = value {
+        if state.read(cx).text() != value {
+            state.update(cx, |state, cx| state.set_text(value.to_owned(), window, cx));
+        }
+    }
+}
+
+#[derive(gpui::IntoElement)]
+pub(crate) struct TextHost<T: TextState> {
+    pub state: Entity<T>,
+    pub callbacks: FormCallbacks,
+    pub value: Option<String>,
+    pub owner: &'static str,
+    pub child: gpui::AnyElement,
+}
+impl<T: TextState> gpui::RenderOnce for TextHost<T> {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl gpui::IntoElement {
+        sync_text(&self.state, self.value.as_deref(), window, cx);
+        install(
+            format!("shell-text-host:{}", self.state.entity_id()),
+            self.state,
+            self.callbacks,
+            subscribe_input(self.owner),
+            window,
+            cx,
+        );
+        self.child
     }
 }

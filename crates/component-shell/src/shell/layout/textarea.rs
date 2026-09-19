@@ -1,4 +1,5 @@
 use super::bool_method;
+use crate::shell::retained_forms::{self, event_host};
 use std::sync::Arc;
 
 use gpui_component::input::{Textarea, TextareaState};
@@ -33,6 +34,8 @@ impl ComponentMaterializer for Materializer {
             &request,
             super::super::input_tokens::State::Textarea(state.clone()),
         )?;
+        let callbacks = retained_forms::resolve_callbacks(&request)?;
+        let value = retained_forms::text_value(&request);
         let mut textarea = binding
             .textarea(Textarea::new(&state))
             .disabled(request.disabled());
@@ -49,7 +52,16 @@ impl ComponentMaterializer for Materializer {
         }
         require_leaf(request.children_len())?;
         textarea.style().refine(&request.take_style());
-        Ok(binding.wrap(textarea.into_any_element()))
+        Ok(binding.wrap(
+            event_host::TextHost {
+                state,
+                callbacks,
+                value,
+                owner: "Textarea",
+                child: textarea.into_any_element(),
+            }
+            .into_any_element(),
+        ))
     }
 }
 
@@ -98,6 +110,8 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
             _ => Err("Textarea expects one TextareaState entity".into()),
         })])
 .with_methods([vec![
+            retained_forms::value_method(),
+            retained_forms::on_submit_method("Textarea", "(value: string, cx: Context) => void"),
             MethodDescriptor::new("disabled", vec![ArgumentDescriptor::new("disabled", ArgumentSchema::Boolean)], |_| Ok(ComponentPayload::new(()))).with_documentation("Sets the common disabled state."),
             bool_method("Textarea", "appearance", "Sets the corresponding native textarea presentation or editing policy.", Op::Appearance), bool_method("Textarea", "bordered", "Sets the corresponding native textarea presentation or editing policy.", Op::Bordered), bool_method("Textarea", "readonly", "Sets the corresponding native textarea presentation or editing policy.", Op::Readonly),
             MethodDescriptor::new("aria_label", vec![ArgumentDescriptor::new("label", ArgumentSchema::String)], |args| match args {
