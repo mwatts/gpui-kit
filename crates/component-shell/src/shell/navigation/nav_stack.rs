@@ -5,10 +5,7 @@
 //! `.on_change((path: string[], current: string, cx) => void)` reports changed
 //! paths only (including initial mount); empty current means an empty stack.
 //! Reflecting that path back does not emit again. Domain routing is app-owned.
-use gpui_base::{
-    motion::Transition,
-    NavMotion, NavStack, NavStackState,
-};
+use gpui_base::{NavMotion, NavStack, NavStackState, motion::Transition};
 use gpui_shell::{
     ArgumentDescriptor as Arg, ArgumentSchema as Schema, ComponentArgument as Argument,
     ComponentCallback, ComponentCallbackArgument as Value, ComponentDataCallback,
@@ -43,6 +40,8 @@ struct Page {
 }
 impl Render for Page {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        #[cfg(test)]
+        test_probe::page(self.data.clone());
         match self
             .render
             .build_data_with(&[self.data.clone()], window, cx)
@@ -172,6 +171,16 @@ impl Bound {
             host.pages.retain(|id, _| ids.contains(id));
             (host.native.clone(), changed)
         });
+        #[cfg(test)]
+        host.read(cx)
+            .pages
+            .iter()
+            .for_each(|(id, page)| test_probe::identity(id.clone(), page.entity_id()));
+        #[cfg(test)]
+        test_probe::path(
+            path.clone(),
+            native.read(cx).current().map(|page| page.entity_id()),
+        );
         if changed {
             if let Some(callback) = self.change {
                 callback.invoke_and_report_with(
@@ -302,5 +311,37 @@ mod tests {
                 NavStackEvent::Forwarded
             ]
         );
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_probe {
+    use super::*;
+    use std::cell::RefCell;
+    #[derive(Default, Clone)]
+    pub(crate) struct Snapshot {
+        pub identities: HashMap<String, gpui::EntityId>,
+        pub path: Vec<String>,
+        pub current: Option<gpui::EntityId>,
+        pub rendered: Vec<ComponentDataValue>,
+    }
+    thread_local! { static STATE: RefCell<Snapshot> = RefCell::new(Snapshot::default()); }
+    pub(super) fn identity(id: String, entity: gpui::EntityId) {
+        STATE.with(|s| {
+            s.borrow_mut().identities.insert(id, entity);
+        });
+    }
+    pub(super) fn path(path: Vec<String>, current: Option<gpui::EntityId>) {
+        STATE.with(|s| {
+            let mut s = s.borrow_mut();
+            s.path = path;
+            s.current = current;
+        });
+    }
+    pub(super) fn page(data: ComponentDataValue) {
+        STATE.with(|s| s.borrow_mut().rendered.push(data));
+    }
+    pub(crate) fn take() -> Snapshot {
+        STATE.with(|s| std::mem::take(&mut *s.borrow_mut()))
     }
 }

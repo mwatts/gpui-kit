@@ -15,6 +15,7 @@ enum OptionValue {
     Padding(f32),
     Ratio(f32),
     Label(String),
+    Id(String),
 }
 
 fn object<'a>(
@@ -167,6 +168,8 @@ impl RenderOnce for Host {
                 }
                 chart.into_any_element()
             };
+            #[cfg(test)]
+            test_probe::record(self.kind, value);
             Ok(chart)
         })();
         let chart = match result {
@@ -191,8 +194,15 @@ impl RenderOnce for Host {
                 }
             })
             .unwrap_or_else(|| self.kind.to_owned());
+        let id = self.options.iter().rev().find_map(|option| match option {
+            OptionValue::Id(id) => Some(id.clone()),
+            _ => None,
+        });
+        let Some(id) = id else {
+            return chart;
+        };
         gpui::div()
-            .id(gpui::SharedString::from(format!("{}:{label}", self.kind)))
+            .id(gpui::SharedString::from(id))
             .size_full()
             .role(gpui::Role::Image)
             .aria_label(label)
@@ -211,7 +221,12 @@ impl ComponentMaterializer for Materializer {
         let options = request
             .methods()
             .filter_map(|m| m.payload().downcast_ref::<OptionValue>().cloned())
-            .collect();
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            !options.iter().any(|o| matches!(o, OptionValue::Label(_)))
+                || options.iter().any(|o| matches!(o, OptionValue::Id(_))),
+            "chart.aria_label requires a stable chart.id"
+        );
         wrap(
             request,
             Host {
@@ -276,6 +291,10 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
             ],
         ),
     ] {
+        methods.push(MethodDescriptor::new("id", vec![ArgumentDescriptor::new("id", ArgumentSchema::String)], |args| match args {
+            [ComponentArgument::String(id)] if !id.trim().is_empty() => Ok(ComponentPayload::new(OptionValue::Id(id.clone()))),
+            _ => Err("chart.id expects a non-empty stable id".into()),
+        }).with_documentation("Sets a stable, sibling-unique identity for the accessible chart wrapper. aria_label describes this identified chart; labels are never used as identity."));
         methods.push(
             MethodDescriptor::new(
                 "aria_label",
@@ -287,7 +306,7 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
                     _ => Err("aria_label expects non-empty text".into()),
                 },
             )
-            .with_documentation("Accessible chart description."),
+            .with_documentation("Accessible chart description; requires an explicit stable id."),
         );
         registry.register(ComponentDescriptor::new(name,Arc::new(Materializer(name))).with_constructors(vec![ConstructorDescriptor::new(name,vec![ArgumentDescriptor::new("data",ArgumentSchema::Callback(schema))],|args| match args { [arg @ ComponentArgument::Callback(_)] => Ok(ComponentPayload::new(Payload(arg.clone()))), _ => Err("chart requires an immutable data callback".into()) })]).with_methods(methods).with_documentation("Native chart from one atomic plain-data snapshot; native defaults apply unless overridden."))?;
     }
@@ -356,5 +375,18 @@ mod tests {
         fields.iter_mut().find(|(key, _)| key == "high").unwrap().1 =
             ComponentDataValue::Number(f64::INFINITY);
         assert!(candles(&nonfinite).is_err());
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_probe {
+    use super::*;
+    use std::cell::RefCell;
+    thread_local! { static DATA: RefCell<Vec<(&'static str, ComponentDataValue)>> = const { RefCell::new(Vec::new()) }; }
+    pub(super) fn record(kind: &'static str, value: ComponentDataValue) {
+        DATA.with(|data| data.borrow_mut().push((kind, value)));
+    }
+    pub(crate) fn take() -> Vec<(&'static str, ComponentDataValue)> {
+        DATA.with(|data| std::mem::take(&mut *data.borrow_mut()))
     }
 }

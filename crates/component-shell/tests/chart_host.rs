@@ -143,8 +143,8 @@ import { View, div } from "gpui-kit";
 import { SankeyChart, Candlestick } from "gpui-component";
 export default class App extends View {
   render() { return div()
-    .child(new SankeyChart(() => ({nodes:[{id:"a",label:"Source"},{id:"b",label:"Target"}],links:[{source:"a",target:"b",value:5}]})).node_width(12).aria_label("Flow"))
-    .child(new Candlestick(() => [{label:"Day",open:2,high:4,low:1,close:3}]).body_width_ratio(0.7).aria_label("Prices")); }
+    .child(new SankeyChart(() => ({nodes:[{id:"a",label:"Source"},{id:"b",label:"Target"}],links:[{source:"a",target:"b",value:5}]})).node_width(12).id("flow").aria_label("Flow"))
+    .child(new Candlestick(() => [{label:"Day",open:2,high:4,low:1,close:3}]).body_width_ratio(0.7).id("prices").aria_label("Prices")); }
 }
 "#,
     );
@@ -166,4 +166,71 @@ export default class App extends View {
             "{tree}"
         );
     });
+}
+
+#[gpui::test]
+fn changed_javascript_data_reaches_native_charts_with_distinct_same_label_ids(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component_shell::init);
+    let mut registry = gpui_shell::ComponentRegistry::new(
+        gpui_shell::COMPONENT_REGISTRY_API_VERSION,
+        gpui_shell::DEFAULT_COMPONENT_MODULE,
+    )
+    .unwrap();
+    chart::register(&mut registry).unwrap();
+    let runtime =
+        gpui_shell::ShellRuntime::new_isolated_with_components(registry.freeze().unwrap()).unwrap();
+    let app = TempApp::new(
+        r#"
+import { View, div } from "gpui-kit";
+import { Candlestick, SankeyChart } from "gpui-component";
+export default class App extends View {
+ init() { this.value = 3; }
+ render() { const prices = () => [{label:"Day",open:2,high:8,low:1,close:this.value}];
+ return div().size_full()
+ .child(div().absolute().left(450).top(0).w(100).h(40).child("update").on_click((_e,cx) => { this.value = 7; cx.notify(); }))
+ .child(new Candlestick(prices).id("prices-a").aria_label("Prices").w(200).h(150))
+ .child(new Candlestick(prices).id("prices-b").aria_label("Prices").w(200).h(150))
+ .child(new SankeyChart(() => ({nodes:[{id:"a",label:"A"},{id:"b",label:"B"}],links:[{source:"a",target:"b",value:this.value}]})).id("flow").w(200).h(150)); }
+}
+"#,
+    );
+    let loaded = runtime.load_application(&app.0, "main.js").unwrap();
+    let window = cx.add_window(move |window, cx| {
+        let view = runtime.mount_application(&loaded, window, cx).unwrap();
+        gpui_component::Root::new(view, window, cx)
+    });
+    let mut context = VisualTestContext::from_window(*window.deref(), cx);
+    chart::extended::test_probe::take();
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    let before = chart::extended::test_probe::take();
+    assert!(
+        before
+            .iter()
+            .filter(|(kind, _)| *kind == "Candlestick")
+            .count()
+            >= 2
+    );
+    assert!(
+        before
+            .iter()
+            .all(|(_, data)| format!("{data:?}").contains("Number(3.0)"))
+    );
+    context.simulate_click(
+        gpui::point(gpui::px(470.), gpui::px(16.)),
+        gpui::Modifiers::default(),
+    );
+    context.run_until_parked();
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    let after = chart::extended::test_probe::take();
+    for kind in ["Candlestick", "SankeyChart"] {
+        assert!(
+            after
+                .iter()
+                .any(|(name, data)| *name == kind && format!("{data:?}").contains("Number(7.0)")),
+            "updated {kind} data missing: {after:?}"
+        );
+    }
+    assert_eq!(chart::test_probe::take_error(), None);
 }
