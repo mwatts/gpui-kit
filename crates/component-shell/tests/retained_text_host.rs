@@ -80,7 +80,9 @@ export default class App extends View {{
     );
     let (mut context, view, _app) = mount(cx, &source);
     draw(&mut context);
-    context.simulate_click(point(px(20.), px(16.)), Modifiers::default());
+    // NumberInput places its decrement button at the left edge.
+    let input_x = if control == "NumberInput" { 200. } else { 20. };
+    context.simulate_click(point(px(input_x), px(16.)), Modifiers::default());
     context.simulate_keystrokes("1");
     draw(&mut context);
     context.simulate_keystrokes("2");
@@ -97,7 +99,7 @@ export default class App extends View {{
         text.contains("model:45 count:2"),
         "external updates must not cause callback feedback: {text}"
     );
-    context.simulate_click(point(px(20.), px(16.)), Modifiers::default());
+    context.simulate_click(point(px(input_x), px(16.)), Modifiers::default());
     context.simulate_keystrokes("cmd-right 3");
     draw(&mut context);
     let text = context.update(|_, cx| view.read(cx).snapshot().unwrap().debug_tree());
