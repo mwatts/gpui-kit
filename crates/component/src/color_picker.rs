@@ -57,6 +57,7 @@ pub struct ColorPicker {
     style: StyleRefinement,
     state: Entity<ColorPickerState>,
     featured_colors: Option<Vec<Hsla>>,
+    disabled: bool,
     label: Option<SharedString>,
     /// The announced name, when the visible label is not it.
     accessibility_label: Option<SharedString>,
@@ -76,6 +77,7 @@ impl ColorPicker {
             style: StyleRefinement::default(),
             state: state.clone(),
             featured_colors: None,
+            disabled: false,
             size: Size::Medium,
             label: None,
             accessibility_label: None,
@@ -84,6 +86,12 @@ impl ColorPicker {
             field: false,
             placeholder: None,
         }
+    }
+
+    /// Prevent opening or editing, closing any currently open picker.
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
     }
 
     /// Set the featured colors to be displayed in the color picker.
@@ -468,24 +476,52 @@ impl Styled for ColorPicker {
 
 impl RenderOnce for ColorPicker {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let state = self.state.read(cx);
-        let display_title: SharedString = if let Some(value) = state.value() {
-            value.to_hex()
-        } else {
-            "".to_string()
+        if self.disabled && self.state.read(cx).is_open() {
+            self.state.update(cx, |state, cx| state.set_open(false, cx));
         }
-        .into();
-
+        let state = self.state.read(cx);
+        let display_title = state
+            .value()
+            .map(|value| value.to_hex())
+            .unwrap_or_default();
         let open = state.is_open();
-        let value = state.value();
         let focus_handle = self.state.focus_handle(cx);
         let focused = focus_handle.is_focused(window);
+        let trigger = ColorPickerButton {
+            id: "trigger".into(),
+            size: self.size,
+            label: self.label.clone(),
+            value: state.value(),
+            tooltip: (!display_title.is_empty() && !self.field).then(|| display_title.into()),
+            icon: self.icon.clone(),
+            selected: false,
+            field: self.field,
+            focused,
+            placeholder: self.placeholder.clone(),
+        };
         let open_state = self.state.clone();
         let popover_state = self.state.clone();
-
+        // A disabled picker has no popover trigger or focusable editing subtree.
+        let content = if self.disabled {
+            trigger.into_any_element()
+        } else {
+            Popover::new("popover")
+                .open(open)
+                .w_72()
+                .on_open_change(move |open: &bool, _, cx| {
+                    popover_state.update(cx, |state, cx| state.set_open(*open, cx));
+                })
+                .when(self.field, |this| {
+                    this.trigger_style(StyleRefinement::default().w_full())
+                })
+                .trigger(trigger)
+                .when(open, |this| this.child(self.render_colors(window, cx)))
+                .into_any_element()
+        };
         BaseColorPicker::new(self.id.clone())
             .when(self.field, |this| this.w_full())
             .refine_style(&self.style)
+            .disabled(self.disabled)
             .open(open)
             .track_focus(&focus_handle)
             .when_some(
@@ -497,36 +533,7 @@ impl RenderOnce for ColorPicker {
             .on_open_change(move |open, _, cx| {
                 open_state.update(cx, |state, cx| state.set_open(open, cx));
             })
-            .child(
-                Popover::new("popover")
-                    .open(open)
-                    .w_72()
-                    .on_open_change(move |open: &bool, _, cx| {
-                        popover_state.update(cx, |state, cx| state.set_open(*open, cx));
-                    })
-                    .when(self.field, |this| {
-                        this.trigger_style(StyleRefinement::default().w_full())
-                    })
-                    .trigger(ColorPickerButton {
-                        id: "trigger".into(),
-                        size: self.size,
-                        label: self.label.clone(),
-                        value,
-                        tooltip: if display_title.is_empty() || self.field {
-                            None
-                        } else {
-                            Some(display_title.clone())
-                        },
-                        icon: self.icon.clone(),
-                        selected: false,
-                        field: self.field,
-                        focused,
-                        placeholder: self.placeholder.clone(),
-                    })
-                    // The popover drops its content while closed, so building the
-                    // palette swatches or slider tracks then is wasted work.
-                    .when(open, |this| this.child(self.render_colors(window, cx))),
-            )
+            .child(content)
     }
 }
 
@@ -638,6 +645,33 @@ mod tests {
             window.focus_next(cx);
             assert_eq!(window.focused(cx), focused.first().cloned());
         });
+    }
+
+    #[gpui::test]
+    fn disabling_an_open_picker_closes_it_and_prevents_keyboard_reopening(cx: &mut TestAppContext) {
+        use gpui::{Context, Render};
+        struct DisabledPicker(Entity<ColorPickerState>);
+        impl Render for DisabledPicker {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                ColorPicker::new(&self.0).disabled(true)
+            }
+        }
+        cx.update(crate::init);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            DisabledPicker(cx.new(|cx| {
+                let mut state = ColorPickerState::new(window, cx);
+                state.set_open(true, cx);
+                state
+            }))
+        });
+        cx.update(|window, cx| {
+            let state = &view.read(cx).0;
+            window.focus(&state.focus_handle(cx));
+            window.draw(cx).clear(cx);
+        });
+        assert!(!view.read_with(cx, |view, cx| view.0.read(cx).is_open()));
+        cx.simulate_keystrokes("enter space");
+        assert!(!view.read_with(cx, |view, cx| view.0.read(cx).is_open()));
     }
 
     #[gpui::test]
