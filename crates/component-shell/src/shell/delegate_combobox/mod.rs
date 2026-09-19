@@ -28,6 +28,7 @@ enum Op {
     Placeholder(String),
     SearchPlaceholder(String),
     Searchable(bool),
+    Cleanable(bool),
     Disabled(bool),
     MenuWidth(f32),
 }
@@ -185,14 +186,11 @@ fn report_values(
     window: &mut Window,
     cx: &mut App,
 ) {
-    if let Some(value) = values.first() {
-        callback.invoke_and_report_with(
-            phase,
-            &[ComponentCallbackArgument::String(value.clone())],
-            window,
-            cx,
-        );
-    }
+    let value = values
+        .first()
+        .map(|value| ComponentCallbackArgument::String(value.clone()))
+        .unwrap_or_else(|| ComponentCallbackArgument::Array(Vec::new()));
+    callback.invoke_and_report_with(phase, &[value], window, cx);
 }
 impl RenderOnce for Bound {
     fn render(self, window: &mut Window, cx: &mut App) -> impl gpui::IntoElement {
@@ -301,6 +299,7 @@ impl RenderOnce for Bound {
                 Op::SearchPlaceholder(value) => combobox.search_placeholder(value),
                 Op::Searchable(_) | Op::SelectedValue(_) => combobox,
                 Op::Disabled(value) => combobox.disabled(value),
+                Op::Cleanable(value) => combobox.cleanable(value),
                 Op::MenuWidth(value) => combobox.menu_width(gpui::px(value)),
             };
         }
@@ -327,6 +326,7 @@ impl ComponentMaterializer for ComboboxMaterializer {
         let ops = request
             .methods()
             .filter_map(|method| method.payload().downcast_ref::<Op>().cloned())
+            .chain(std::iter::once(Op::Disabled(request.disabled())))
             .collect();
         Ok(Bound {
             id: payload.id,
@@ -362,13 +362,14 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
 .with_constructors(vec![ConstructorDescriptor::new("Combobox", vec![
             ArgumentDescriptor::new("id", ArgumentSchema::String),
             ArgumentDescriptor::new("rows", ArgumentSchema::Callback("() => readonly { id: string; label: string; disabled?: boolean }[]")),
-            ArgumentDescriptor::new("on_change", ArgumentSchema::Callback("(value: string, cx: Context) => void")),
-            ArgumentDescriptor::new("on_confirm", ArgumentSchema::Callback("(value: string, cx: Context) => void")),
+            ArgumentDescriptor::new("on_change", ArgumentSchema::Callback("(value: string | readonly string[], cx: Context) => void")),
+            ArgumentDescriptor::new("on_confirm", ArgumentSchema::Callback("(value: string | readonly string[], cx: Context) => void")),
         ], |args| match args {
             [ComponentArgument::String(id), rows @ ComponentArgument::Callback(_), change @ ComponentArgument::Callback(_), confirm @ ComponentArgument::Callback(_)] if !id.trim().is_empty() => Ok(ComponentPayload::new(Payload { id:id.clone(), rows:rows.clone(), on_change:change.clone(), on_confirm:confirm.clone() })),
             _ => Err("Combobox expects id, rows, on_change, and on_confirm callbacks".into()),
         })])
 .with_methods(vec![
+            method("cleanable", "Shows the native clear button. Clearing reports an empty array to the change callback.", ArgumentSchema::Boolean, |arg| match arg { ComponentArgument::Boolean(value) => Some(Op::Cleanable(*value)), _ => None }),
             method("selected_value", "Controls the selected row by stable id without emitting change callbacks. Unknown ids clear the selection.", ArgumentSchema::String, |arg| match arg { ComponentArgument::String(value) => Some(Op::SelectedValue(Some(value.clone()))), _ => None }),
             MethodDescriptor::new("clear_selection", vec![], |_| Ok(ComponentPayload::new(Op::SelectedValue(None)))).with_documentation("Controls the selection as empty without emitting change callbacks."),
             method("placeholder", "Sets the text shown while nothing is selected.", ArgumentSchema::String, |arg| match arg { ComponentArgument::String(value) => Some(Op::Placeholder(value.clone())), _ => None }),
