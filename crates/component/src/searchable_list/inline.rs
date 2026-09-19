@@ -3,7 +3,7 @@ use crate::{
     input::InputEvent,
     list::{List, ListEvent},
 };
-use gpui::{AppContext as _, Context, EventEmitter, IntoElement, Render, Subscription, Window};
+use gpui::{Context, EventEmitter, IntoElement, Render, Subscription, Window};
 
 /// Events from the inline search field and native keyboard/pointer list.
 pub enum InlineSearchableListEvent<V> {
