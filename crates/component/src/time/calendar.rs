@@ -41,6 +41,7 @@ pub struct Calendar {
     state: Entity<CalendarState>,
     style: StyleRefinement,
     number_of_months: usize,
+    disabled: bool,
     first_day_of_week: Weekday,
 }
 
@@ -52,8 +53,14 @@ impl Calendar {
             state: state.clone(),
             style: StyleRefinement::default(),
             number_of_months: 1,
+            disabled: false,
             first_day_of_week: Weekday::Sun,
         }
+    }
+    /// Prevent selection and navigation while preserving the retained state.
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
     }
     pub fn number_of_months(mut self, count: usize) -> Self {
         self.number_of_months = count;
@@ -82,6 +89,7 @@ impl RenderOnce for Calendar {
         let size = self.size;
         let month_count = self.number_of_months.max(1) as f32;
         BaseCalendar::new(self.id, &self.state)
+            .disabled(self.disabled)
             .number_of_months(self.number_of_months)
             .first_day_of_week(self.first_day_of_week)
             .label(|kind, value| match kind {

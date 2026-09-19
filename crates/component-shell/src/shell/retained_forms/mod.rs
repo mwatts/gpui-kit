@@ -791,6 +791,7 @@ impl RenderOnce for BoundColorPicker {
         let mut picker = ColorPicker::new(&state);
         for op in self.ops {
             picker = match op {
+                FormOp::Disabled(value) => picker.disabled(value),
                 FormOp::Label(value) => picker.label(value),
                 FormOp::AccessibilityLabel(value) => picker.accessibility_label(value),
                 _ => picker,
@@ -914,9 +915,11 @@ impl RenderOnce for BoundCalendar {
         );
         let mut calendar = Calendar::new(&state);
         for op in self.ops {
-            if let FormOp::Months(value) = op {
-                calendar = calendar.number_of_months(value);
-            }
+            calendar = match op {
+                FormOp::Months(value) => calendar.number_of_months(value),
+                FormOp::Disabled(value) => calendar.disabled(value),
+                _ => calendar,
+            };
         }
         calendar.style().refine(&self.style);
         calendar
@@ -1262,6 +1265,7 @@ pub fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
                 },
             )
             .with_documentation("Sets the announced name independently of the visible label."),
+            disabled_method("ColorPicker"),
             picker_value_method("ColorPicker"),
             on_change_method("ColorPicker", "(value: string, cx: Context) => void"),
             on_submit_method("ColorPicker", "(value: string, cx: Context) => void"),
@@ -1282,6 +1286,7 @@ pub fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
                 },
             )
             .with_documentation("Sets the positive number of adjacent months to display."),
+            disabled_method("Calendar"),
             picker_value_method("Calendar"),
             on_change_method("Calendar", "(value: string, cx: Context) => void"),
             on_submit_method("Calendar", "(value: string, cx: Context) => void"),
