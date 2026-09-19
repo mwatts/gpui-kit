@@ -9,7 +9,7 @@
 //! every chart of that kind a script draws. So the wrapper carries the spec
 //! node's own id, and the element id stack tells the charts under it apart.
 
-mod extended;
+pub(crate) mod extended;
 
 use super::support::bool_method;
 
