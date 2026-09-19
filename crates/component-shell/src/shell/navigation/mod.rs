@@ -5,12 +5,14 @@ pub(super) use super::support::Empty;
 pub(super) use super::typed_child::{Carrier, take};
 
 mod icon;
+mod nav_stack;
 mod sidebar;
 
 use gpui_shell::{ComponentRegistry, RegistryError};
 
 pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
     icon::register(registry)?;
+    nav_stack::register(registry)?;
     sidebar::register(registry)?;
     Ok(())
 }
@@ -36,6 +38,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 "Icon",
+                "NavStack",
                 "SidebarMenuItem",
                 "SidebarMenu",
                 "SidebarHeader",
