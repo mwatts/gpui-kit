@@ -372,7 +372,8 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
     registry.register(
         ComponentDescriptor::new("SearchableList", Arc::new(Materializer))
             .with_constructors(constructors)
-            .with_methods(methods),
+            .with_methods(methods)
+            .with_documentation("Retained native inline searchable list with controlled query, stable row selection, and keyboard confirmation."),
     )?;
     Ok(())
 }
