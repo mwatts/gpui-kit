@@ -133,3 +133,37 @@ export default class App extends View { render() { return new BarChart(() => [{l
             .contains("finite number field `value`")
     );
 }
+
+#[gpui::test]
+fn native_flow_and_ohlc_charts_mount(cx: &mut TestAppContext) {
+    let (mut context, view) = mount(
+        cx,
+        r#"
+import { View, div } from "gpui-kit";
+import { SankeyChart, Candlestick } from "gpui-component";
+export default class App extends View {
+  render() { return div()
+    .child(new SankeyChart(() => ({nodes:[{id:"a",label:"Source"},{id:"b",label:"Target"}],links:[{source:"a",target:"b",value:5}]})).node_width(12).aria_label("Flow"))
+    .child(new Candlestick(() => [{label:"Day",open:2,high:4,low:1,close:3}]).body_width_ratio(0.7).aria_label("Prices")); }
+}
+"#,
+    );
+    chart::test_probe::take_error();
+    context.draw(
+        gpui::Point::default(),
+        gpui::size(gpui::px(800.), gpui::px(600.)),
+        {
+            let view = view.clone();
+            move |_, _| gpui::IntoElement::into_any_element(view)
+        },
+    );
+    assert_eq!(chart::test_probe::take_error(), None);
+    context.update(|_, cx| {
+        assert_eq!(view.read(cx).build_error(), None);
+        let tree = view.read(cx).snapshot().unwrap().debug_tree();
+        assert!(
+            tree.contains("SankeyChart") && tree.contains("Candlestick"),
+            "{tree}"
+        );
+    });
+}
