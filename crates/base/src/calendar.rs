@@ -562,6 +562,7 @@ pub struct Calendar {
     id: ElementId,
     state: Entity<CalendarState>,
     number_of_months: usize,
+    disabled: bool,
     first_day_of_week: Weekday,
     style: StyleRefinement,
     item: ItemRenderer,
@@ -574,6 +575,7 @@ impl Calendar {
             id: id.into(),
             state: state.clone(),
             number_of_months: 1,
+            disabled: false,
             first_day_of_week: Weekday::Sun,
             style: StyleRefinement::default(),
             item: Rc::new(|item, _, _, _| item.into_any_element()),
@@ -584,6 +586,10 @@ impl Calendar {
                 _ => value.to_string().into(),
             }),
         }
+    }
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
     }
     pub fn number_of_months(mut self, count: usize) -> Self {
         self.number_of_months = count.max(1);
@@ -639,7 +645,9 @@ impl RenderOnce for Calendar {
         let view = self.state.read(cx).view();
         let mut header = h_flex().items_center().justify_between().child({
             let st = CalendarItemState::new(CalendarItemKind::Previous).disabled(
-                view.is_month() || (view.is_year() && !self.state.read(cx).has_prev_year_page()),
+                self.disabled
+                    || view.is_month()
+                    || (view.is_year() && !self.state.read(cx).has_prev_year_page()),
             );
             let mut item =
                 CalendarItem::new("calendar-prev", st).with_label((self.label)(st.kind(), 0));
@@ -667,28 +675,32 @@ impl RenderOnce for Calendar {
                 (CalendarItemKind::MonthToggle, month, view.is_month()),
                 (CalendarItemKind::YearToggle, year, view.is_year()),
             ] {
-                let st = CalendarItemState::new(kind).active(active);
+                let st = CalendarItemState::new(kind)
+                    .active(active)
+                    .disabled(self.disabled);
                 let entity = self.state.clone();
                 let mut item = CalendarItem::new(format!("calendar-{kind:?}"), st)
                     .with_label((self.label)(kind, value));
-                item = item.on_click(move |_, _, cx| {
-                    entity.update(cx, |s, cx| {
-                        s.set_view(
-                            if s.view()
-                                == match kind {
-                                    CalendarItemKind::MonthToggle => CalendarView::Month,
-                                    _ => CalendarView::Year,
-                                }
-                            {
-                                CalendarView::Day
-                            } else {
-                                match kind {
-                                    CalendarItemKind::MonthToggle => CalendarView::Month,
-                                    _ => CalendarView::Year,
-                                }
-                            },
-                        );
-                        cx.notify();
+                item = item.when(!self.disabled, |item| {
+                    item.on_click(move |_, _, cx| {
+                        entity.update(cx, |s, cx| {
+                            s.set_view(
+                                if s.view()
+                                    == match kind {
+                                        CalendarItemKind::MonthToggle => CalendarView::Month,
+                                        _ => CalendarView::Year,
+                                    }
+                                {
+                                    CalendarView::Day
+                                } else {
+                                    match kind {
+                                        CalendarItemKind::MonthToggle => CalendarView::Month,
+                                        _ => CalendarView::Year,
+                                    }
+                                },
+                            );
+                            cx.notify();
+                        })
                     })
                 });
                 header = header.child((self.item)(item, st, window, cx));
@@ -708,7 +720,9 @@ impl RenderOnce for Calendar {
         }
         header = header.child({
             let st = CalendarItemState::new(CalendarItemKind::Next).disabled(
-                view.is_month() || (view.is_year() && !self.state.read(cx).has_next_year_page()),
+                self.disabled
+                    || view.is_month()
+                    || (view.is_year() && !self.state.read(cx).has_next_year_page()),
             );
             let mut item =
                 CalendarItem::new("calendar-next", st).with_label((self.label)(st.kind(), 0));
@@ -760,8 +774,8 @@ impl RenderOnce for Calendar {
                         let st = {
                             let s = self.state.read(cx);
                             let (_, m) = s.offset_year_month(offset);
-                            let disabled =
-                                s.disabled_matcher_ref().is_some_and(|x| x.matched(&date));
+                            let disabled = self.disabled
+                                || s.disabled_matcher_ref().is_some_and(|x| x.matched(&date));
                             CalendarItemState::new(CalendarItemKind::Day)
                                 .active(s.date().is_active(&date))
                                 .in_range(s.date().is_in_range(&date))
@@ -790,14 +804,18 @@ impl RenderOnce for Calendar {
         } else if view.is_month() {
             let current = self.state.read(cx).current_month();
             for month in 1..=12u8 {
-                let st = CalendarItemState::new(CalendarItemKind::Month).active(month == current);
+                let st = CalendarItemState::new(CalendarItemKind::Month)
+                    .active(month == current)
+                    .disabled(self.disabled);
                 let entity = self.state.clone();
                 let item = CalendarItem::new(format!("calendar-month-{month}"), st)
                     .with_label((self.label)(st.kind(), month as i32))
-                    .on_click(move |_, _, cx| {
-                        entity.update(cx, |s, cx| {
-                            s.select_month(month);
-                            cx.notify();
+                    .when(!self.disabled, |item| {
+                        item.on_click(move |_, _, cx| {
+                            entity.update(cx, |s, cx| {
+                                s.select_month(month);
+                                cx.notify();
+                            })
                         })
                     });
                 body = body.child((self.item)(item, st, window, cx));
@@ -806,14 +824,18 @@ impl RenderOnce for Calendar {
             let current = self.state.read(cx).current_year();
             let years = self.state.read(cx).years_on_page().to_vec();
             for year in years {
-                let st = CalendarItemState::new(CalendarItemKind::Year).active(year == current);
+                let st = CalendarItemState::new(CalendarItemKind::Year)
+                    .active(year == current)
+                    .disabled(self.disabled);
                 let entity = self.state.clone();
                 let item = CalendarItem::new(format!("calendar-year-{year}"), st)
                     .with_label((self.label)(st.kind(), year))
-                    .on_click(move |_, _, cx| {
-                        entity.update(cx, |s, cx| {
-                            s.select_year(year);
-                            cx.notify();
+                    .when(!self.disabled, |item| {
+                        item.on_click(move |_, _, cx| {
+                            entity.update(cx, |s, cx| {
+                                s.select_year(year);
+                                cx.notify();
+                            })
                         })
                     });
                 body = body.child((self.item)(item, st, window, cx));
@@ -821,7 +843,9 @@ impl RenderOnce for Calendar {
         }
         v_flex()
             .id(self.id)
-            .track_focus(&self.state.read(cx).focus_handle)
+            .when(!self.disabled, |this| {
+                this.track_focus(&self.state.read(cx).focus_handle)
+            })
             .child(header)
             .child(body)
             .refine_style(&self.style)
