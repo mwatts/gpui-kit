@@ -154,7 +154,7 @@ fn check_reports_load_and_render_failures_without_hanging() {
             export default class App extends View {
                 render() { while (true) {} }
             }"#,
-            "interrupted",
+            "script execution exceeded its time budget",
         ),
     ] {
         let (status, stdout, stderr) = CheckApp::new(source).run();
@@ -215,4 +215,45 @@ fn runtime_check_preserves_errors_and_clears_them_before_the_next_check(
         .update(|window, cx| runtime.check(&valid.0, window, cx))
         .expect("the next check must not inherit the previous materialization error");
     assert!(description.contains("checked once"), "{description}");
+}
+
+#[gpui::test]
+fn runtime_check_releases_retained_controls_on_success_and_failure(cx: &mut gpui::TestAppContext) {
+    cx.update(gpui_component_shell::init);
+    let runtime = gpui_component_shell::new_isolated_runtime().unwrap();
+    let window = cx.add_window(|window, cx| {
+        let empty = cx.new(|_| gpui::Empty);
+        gpui_component::Root::new(empty, window, cx)
+    });
+    let mut context = gpui::VisualTestContext::from_window(*window, cx);
+    for invalid in [false, true, false] {
+        let app = CheckApp::new(&format!(
+            r#"
+            import {{ View, div }} from 'gpui-kit';
+            import {{ Input, InputState, HForm }} from 'gpui-component';
+            export default class App extends View {{
+                init() {{ this.input = InputState('Name', 'typed'); }}
+                render() {{ return div().child(new Input(this.input)).child({}); }}
+            }}
+        "#,
+            if invalid {
+                "new HForm().child(div())"
+            } else {
+                "div()"
+            }
+        ));
+        // Native elements are arena allocated. Materialize inside a draw so
+        // GPUI owns and clears that arena before asserting entity teardown.
+        context.draw(
+            gpui::Point::default(),
+            gpui::size(gpui::px(400.), gpui::px(200.)),
+            |window, cx| {
+                let result = runtime.check(&app.0, window, cx);
+                assert_eq!(result.is_err(), invalid, "{result:?}");
+                gpui::div()
+            },
+        );
+        context.run_until_parked();
+    }
+    // GPUI's test context asserts that every native entity has been released.
 }
