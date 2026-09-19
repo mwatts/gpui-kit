@@ -1,3 +1,6 @@
+#[path = "../src/shell/input_tokens.rs"]
+mod input_tokens;
+
 #[path = "../src/shell/retained_forms/mod.rs"]
 mod retained_forms;
 
