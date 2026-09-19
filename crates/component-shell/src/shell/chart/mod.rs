@@ -9,6 +9,8 @@
 //! every chart of that kind a script draws. So the wrapper carries the spec
 //! node's own id, and the element id stack tells the charts under it apart.
 
+mod extended;
+
 use super::support::bool_method;
 
 use gpui_component::chart::{AreaChart, BarChart, LineChart, PieChart, RadarChart};
@@ -350,6 +352,7 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
             flag("dot", Op::Dot),
         ],
     ))?;
+    extended::register(registry)?;
     Ok(())
 }
 
@@ -389,7 +392,9 @@ mod tests {
                 "LineChart",
                 "AreaChart",
                 "PieChart",
-                "RadarChart"
+                "RadarChart",
+                "SankeyChart",
+                "Candlestick"
             ]
         );
     }
