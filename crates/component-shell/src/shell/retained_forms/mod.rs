@@ -9,7 +9,7 @@
 
 use gpui_component::{
     Disableable as _,
-    calendar::{Calendar, CalendarState},
+    calendar::{Calendar, CalendarState, Date},
     color_picker::{ColorPicker, ColorPickerState},
     date_picker::{DatePicker, DatePickerState},
     input::{Input, InputState, NumberInput, OtpInput, OtpState},
@@ -177,6 +177,60 @@ mod tests {
         }
     }
 
+    fn optional_text(value: Option<&str>) -> Vec<ComponentArgument> {
+        vec![ComponentArgument::Optional(value.map(|value| {
+            Box::new(ComponentArgument::String(value.into()))
+        }))]
+    }
+
+    #[test]
+    fn controlled_dates_preserve_clear_and_partial_range_intent() {
+        assert_eq!(
+            date_value(&optional_text(None)).unwrap(),
+            Date::Single(None)
+        );
+        assert!(matches!(
+            date_value(&optional_text(Some("2026-09-18.."))).unwrap(),
+            Date::Range(Some(_), None)
+        ));
+        assert!(matches!(
+            date_value(&optional_text(Some("..2026-09-18"))).unwrap(),
+            Date::Range(None, Some(_))
+        ));
+        for invalid in [
+            "",
+            "2026-02-30",
+            "2026-9-18",
+            "2026-09-20..2026-09-18",
+            "2026-09-18..bad",
+        ] {
+            assert!(
+                date_value(&optional_text(Some(invalid))).is_err(),
+                "accepted {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn controlled_colors_and_slider_reject_invalid_model_values() {
+        assert!(color_value(&optional_text(None)).unwrap().is_none());
+        assert!(
+            color_value(&optional_text(Some("#1234AB80")))
+                .unwrap()
+                .is_some()
+        );
+        for invalid in ["red", "#123", "#123456789", "#12345z"] {
+            assert!(color_value(&optional_text(Some(invalid))).is_err());
+        }
+        for value in [-1., 101., f64::NAN, f64::INFINITY] {
+            assert!(slider_value(&[ComponentArgument::Number(value)]).is_err());
+        }
+        assert_eq!(
+            slider_value(&[ComponentArgument::Number(25.5)]).unwrap(),
+            25.5
+        );
+    }
+
     #[test]
     fn otp_leaf_contract_rejects_ordinary_children() {
         let error = ensure_leaf(1, "OtpInput").unwrap_err();
@@ -188,6 +242,9 @@ mod tests {
 #[derive(Clone)]
 enum FormOp {
     Value(String),
+    DateValue(Date),
+    ColorValue(Option<gpui::Hsla>),
+    SliderValue(f32),
     Disabled(bool),
     Placeholder(String),
     AriaLabel(String),
@@ -340,6 +397,89 @@ pub(crate) fn value_method() -> MethodDescriptor {
     MethodDescriptor::new("value", vec![ArgumentDescriptor::new("text", ArgumentSchema::String)],
         |arguments| string_op(arguments, "value", FormOp::Value))
         .with_documentation("Synchronizes external text when it differs from native text; omitting it leaves native editing uncontrolled.")
+}
+
+fn nullable_text(arguments: &[ComponentArgument]) -> Result<Option<&str>, String> {
+    match arguments {
+        [ComponentArgument::Optional(None)] => Ok(None),
+        [ComponentArgument::Optional(Some(value))] => match value.as_ref() {
+            ComponentArgument::String(value) => Ok(Some(value)),
+            _ => Err("expected text or null".into()),
+        },
+        _ => Err("expected text or null".into()),
+    }
+}
+
+fn date_value(arguments: &[ComponentArgument]) -> Result<Date, String> {
+    let Some(value) = nullable_text(arguments)? else {
+        return Ok(Date::Single(None));
+    };
+    let day = |text: &str| {
+        if text.is_empty() {
+            return Ok(None);
+        }
+        if text.len() != 10 || text.as_bytes()[4] != b'-' || text.as_bytes()[7] != b'-' {
+            return Err("date expects YYYY-MM-DD".to_string());
+        }
+        text.parse()
+            .map(Some)
+            .map_err(|_| "date expects a valid YYYY-MM-DD".to_string())
+    };
+    if let Some((start, end)) = value.split_once("..") {
+        let (start, end) = (day(start)?, day(end)?);
+        if start.zip(end).is_some_and(|(start, end)| start > end) {
+            return Err("date range start must not follow end".into());
+        }
+        Ok(Date::Range(start, end))
+    } else {
+        let day = day(value)?.ok_or("use null to clear a date")?;
+        Ok(Date::Single(Some(day)))
+    }
+}
+
+fn color_value(arguments: &[ComponentArgument]) -> Result<Option<gpui::Hsla>, String> {
+    let Some(value) = nullable_text(arguments)? else {
+        return Ok(None);
+    };
+    let hex = value
+        .strip_prefix('#')
+        .ok_or("color expects #RRGGBB or #RRGGBBAA")?;
+    if !matches!(hex.len(), 6 | 8) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("color expects #RRGGBB or #RRGGBBAA".into());
+    }
+    let bits = u32::from_str_radix(hex, 16).map_err(|_| "invalid hexadecimal color")?;
+    Ok(Some(if hex.len() == 6 {
+        gpui::rgb(bits).into()
+    } else {
+        gpui::rgba(bits).into()
+    }))
+}
+
+fn slider_value(arguments: &[ComponentArgument]) -> Result<f32, String> {
+    match arguments {
+        [ComponentArgument::Number(value)]
+            if value.is_finite() && (0.0..=100.0).contains(value) =>
+        {
+            Ok(*value as f32)
+        }
+        _ => Err("slider expects a finite number from 0 through 100".into()),
+    }
+}
+
+fn picker_value_method(owner: &'static str) -> MethodDescriptor {
+    let schema = if owner == "Slider" {
+        ArgumentSchema::Number
+    } else {
+        ArgumentSchema::Optional(Box::new(ArgumentSchema::String))
+    };
+    MethodDescriptor::new("value", vec![ArgumentDescriptor::new("value", schema)], move |arguments| {
+        let op = match owner {
+            "Slider" => FormOp::SliderValue(slider_value(arguments)?),
+            "ColorPicker" => FormOp::ColorValue(color_value(arguments)?),
+            _ => FormOp::DateValue(date_value(arguments)?),
+        };
+        Ok(ComponentPayload::new(op))
+    }).with_documentation("Synchronizes retained native state without emitting change; omit for uncontrolled editing. Dates use YYYY-MM-DD or start..end, colors use #RRGGBB[AA]; null clears dates and colors. Sliders accept 0 through 100.")
 }
 
 fn host_key<T: 'static>(prefix: &str, state: &Entity<T>) -> String {
@@ -498,6 +638,20 @@ struct BoundOtpInput {
 
 impl RenderOnce for BoundOtpInput {
     fn render(self, window: &mut Window, cx: &mut App) -> impl gpui::IntoElement {
+        if let Some(value) = self
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                FormOp::Value(value) => Some(value),
+                _ => None,
+            })
+            .last()
+        {
+            if self.state.read(cx).value().to_string() != *value {
+                self.state
+                    .update(cx, |state, cx| state.set_value(value.clone(), window, cx));
+            }
+        }
         let state = event_host::install(
             host_key("shell-otp-host", &self.state),
             self.state,
@@ -547,6 +701,20 @@ struct BoundSlider {
 
 impl RenderOnce for BoundSlider {
     fn render(self, window: &mut Window, cx: &mut App) -> impl gpui::IntoElement {
+        if let Some(value) = self
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                FormOp::SliderValue(value) => Some(value),
+                _ => None,
+            })
+            .last()
+        {
+            if self.state.read(cx).value() != gpui_component::slider::SliderValue::Single(*value) {
+                self.state
+                    .update(cx, |state, cx| state.set_value(*value, window, cx));
+            }
+        }
         let state = event_host::install(
             host_key("shell-slider-host", &self.state),
             self.state,
@@ -596,6 +764,22 @@ struct BoundColorPicker {
 
 impl RenderOnce for BoundColorPicker {
     fn render(self, window: &mut Window, cx: &mut App) -> impl gpui::IntoElement {
+        if let Some(value) = self
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                FormOp::ColorValue(value) => Some(*value),
+                _ => None,
+            })
+            .last()
+        {
+            if self.state.read(cx).value() != value {
+                self.state.update(cx, |state, cx| match value {
+                    Some(value) => state.set_value(value, window, cx),
+                    None => state.clear_value(window, cx),
+                });
+            }
+        }
         let state = event_host::install(
             host_key("shell-color-picker-host", &self.state),
             self.state,
@@ -644,6 +828,20 @@ struct BoundDatePicker {
 
 impl RenderOnce for BoundDatePicker {
     fn render(self, window: &mut Window, cx: &mut App) -> impl gpui::IntoElement {
+        if let Some(value) = self
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                FormOp::DateValue(value) => Some(value),
+                _ => None,
+            })
+            .last()
+        {
+            if self.state.read(cx).date() != *value {
+                self.state
+                    .update(cx, |state, cx| state.set_date(*value, window, cx));
+            }
+        }
         let state = event_host::install(
             host_key("shell-date-picker-host", &self.state),
             self.state,
@@ -692,6 +890,20 @@ struct BoundCalendar {
 
 impl RenderOnce for BoundCalendar {
     fn render(self, window: &mut Window, cx: &mut App) -> impl gpui::IntoElement {
+        if let Some(value) = self
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                FormOp::DateValue(value) => Some(value),
+                _ => None,
+            })
+            .last()
+        {
+            if self.state.read(cx).date() != *value {
+                self.state
+                    .update(cx, |state, cx| state.set_date(*value, window, cx));
+            }
+        }
         let state = event_host::install(
             host_key("shell-calendar-host", &self.state),
             self.state,
@@ -834,19 +1046,41 @@ pub fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
         ),
     )?;
     registry.register_state(
-        StateDescriptor::new("CalendarState", "CalendarState", vec![], |_, window, cx| {
-            Ok(Box::new(cx.new(|cx| CalendarState::new(window, cx))))
-        })
+        StateDescriptor::new(
+            "CalendarState",
+            "CalendarState",
+            vec![ArgumentDescriptor::new(
+                "initial_value",
+                ArgumentSchema::Optional(Box::new(ArgumentSchema::String)),
+            )],
+            |arguments, window, cx| {
+                let value = date_value(arguments)?;
+                Ok(Box::new(cx.new(|cx| {
+                    let mut state = CalendarState::new(window, cx);
+                    state.set_date(value, window, cx);
+                    state
+                })))
+            },
+        )
         .with_documentation("Retained calendar navigation and selection state."),
     )?;
     registry.register_state(
         StateDescriptor::new(
             "OtpState",
             "OtpState",
-            vec![ArgumentDescriptor::new("length", ArgumentSchema::Number)],
+            vec![
+                ArgumentDescriptor::new("length", ArgumentSchema::Number),
+                ArgumentDescriptor::new(
+                    "initial_value",
+                    ArgumentSchema::Optional(Box::new(ArgumentSchema::String)),
+                ),
+            ],
             |arguments, window, cx| {
-                let length = positive_usize(arguments, "OtpState")?;
-                Ok(Box::new(cx.new(|cx| OtpState::new(length, window, cx))))
+                let length = positive_usize(&arguments[..1], "OtpState")?;
+                let value = nullable_text(&arguments[1..])?.unwrap_or("").to_owned();
+                Ok(Box::new(cx.new(|cx| {
+                    OtpState::new(length, window, cx).default_value(value)
+                })))
             },
         )
         .with_documentation("Retained fixed-length one-time-password editing state."),
@@ -883,8 +1117,20 @@ pub fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
         StateDescriptor::new(
             "ColorPickerState",
             "ColorPickerState",
-            vec![],
-            |_, window, cx| Ok(Box::new(cx.new(|cx| ColorPickerState::new(window, cx)))),
+            vec![ArgumentDescriptor::new(
+                "initial_value",
+                ArgumentSchema::Optional(Box::new(ArgumentSchema::String)),
+            )],
+            |arguments, window, cx| {
+                let value = color_value(arguments)?;
+                Ok(Box::new(cx.new(|cx| {
+                    let mut state = ColorPickerState::new(window, cx);
+                    if let Some(value) = value {
+                        state.set_value(value, window, cx);
+                    }
+                    state
+                })))
+            },
         )
         .with_documentation("Retained color selection and preview state."),
     )?;
@@ -892,8 +1138,18 @@ pub fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
         StateDescriptor::new(
             "DatePickerState",
             "DatePickerState",
-            vec![],
-            |_, window, cx| Ok(Box::new(cx.new(|cx| DatePickerState::new(window, cx)))),
+            vec![ArgumentDescriptor::new(
+                "initial_value",
+                ArgumentSchema::Optional(Box::new(ArgumentSchema::String)),
+            )],
+            |arguments, window, cx| {
+                let value = date_value(arguments)?;
+                Ok(Box::new(cx.new(|cx| {
+                    let mut state = DatePickerState::new(window, cx);
+                    state.set_date(value, window, cx);
+                    state
+                })))
+            },
         )
         .with_documentation("Retained single-date picker and calendar state."),
     )?;
@@ -950,6 +1206,7 @@ pub fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
             )
             .with_documentation("Splits the fixed-length code into the requested number of visual groups."),
             disabled_method("OtpInput"),
+            value_method(),
             on_change_method("OtpInput", "(value: string, cx: Context) => void"),
             on_submit_method("OtpInput", "(value: string, cx: Context) => void"),
             callback_method(
@@ -976,6 +1233,7 @@ pub fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
             })
             .with_documentation("Reverses the filled side for a single-value slider."),
             disabled_method("Slider"),
+            picker_value_method("Slider"),
             on_change_method("Slider", "(value: number, cx: Context) => void"),
             on_submit_method("Slider", "(value: number, cx: Context) => void"),
         ],
@@ -1004,6 +1262,7 @@ pub fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
                 },
             )
             .with_documentation("Sets the announced name independently of the visible label."),
+            picker_value_method("ColorPicker"),
             on_change_method("ColorPicker", "(value: string, cx: Context) => void"),
             on_submit_method("ColorPicker", "(value: string, cx: Context) => void"),
         ],
@@ -1023,6 +1282,7 @@ pub fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
                 },
             )
             .with_documentation("Sets the positive number of adjacent months to display."),
+            picker_value_method("Calendar"),
             on_change_method("Calendar", "(value: string, cx: Context) => void"),
             on_submit_method("Calendar", "(value: string, cx: Context) => void"),
         ],
@@ -1035,6 +1295,7 @@ pub fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
         vec![
             placeholder_method("DatePicker"),
             disabled_method("DatePicker"),
+            picker_value_method("DatePicker"),
             on_change_method("DatePicker", "(value: string, cx: Context) => void"),
             on_submit_method("DatePicker", "(value: string, cx: Context) => void"),
         ],

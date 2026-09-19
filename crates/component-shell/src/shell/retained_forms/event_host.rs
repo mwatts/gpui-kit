@@ -386,7 +386,11 @@ fn date_argument(date: Date) -> ComponentCallbackArgument {
             ComponentCallbackArgument::Array(Vec::new())
         }
         Date::Single(Some(day)) => ComponentCallbackArgument::String(day.to_string()),
-        other => ComponentCallbackArgument::String(other.to_string()),
+        Date::Range(start, end) => ComponentCallbackArgument::String(format!(
+            "{}..{}",
+            start.map(|day| day.to_string()).unwrap_or_default(),
+            end.map(|day| day.to_string()).unwrap_or_default(),
+        )),
     }
 }
 
