@@ -10,8 +10,9 @@ use gpui_shell::{
     ConstructorDescriptor, MaterializeRequest, MethodDescriptor, RegistryError, StateDescriptor,
     anyhow,
     gpui::{
-        self, AppContext as _, Entity, IntoElement as _, ParentElement as _, Refineable as _,
-        RenderOnce, StyleRefinement, Styled as _, Subscription, Window,
+        self, AppContext as _, Entity, InteractiveElement as _, IntoElement as _,
+        ParentElement as _, Refineable as _, RenderOnce, StyleRefinement, Styled as _,
+        Subscription, Window,
     },
 };
 use std::{
@@ -27,6 +28,8 @@ struct Delegate {
     render_cell: Option<ComponentElementCallback>,
     ids: Vec<String>,
     on_sort: Option<ComponentCallback>,
+    header_bg: Option<gpui::Hsla>,
+    header_fg: Option<gpui::Hsla>,
 }
 
 impl Delegate {
@@ -40,6 +43,8 @@ impl Delegate {
             render_cell: None,
             ids: Vec::new(),
             on_sort: None,
+            header_bg: None,
+            header_fg: None,
         }
     }
 
@@ -76,6 +81,37 @@ impl TableDelegate for Delegate {
     }
     fn column(&self, col_ix: usize, _: &gpui::App) -> Column {
         self.columns[col_ix].clone()
+    }
+    fn render_header(
+        &mut self,
+        _: &mut Window,
+        _: &mut gpui::Context<TableState<Self>>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let mut header = gpui::div().id("header");
+        if let Some(color) = self.header_bg {
+            header = header.bg(color);
+        }
+        if let Some(color) = self.header_fg {
+            header = header.text_color(color);
+        }
+        header
+    }
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _: &mut Window,
+        _: &mut gpui::Context<TableState<Self>>,
+    ) -> impl gpui::IntoElement {
+        let mut cell = gpui::div()
+            .size_full()
+            .child(self.columns[col_ix].name.clone());
+        if let Some(color) = self.header_fg {
+            cell = cell.text_color(color);
+        }
+        if let Some(color) = self.header_bg {
+            cell = cell.bg(color);
+        }
+        cell
     }
     fn render_td(
         &mut self,
@@ -178,6 +214,9 @@ struct Payload {
 }
 #[derive(Clone)]
 enum Op {
+    HeaderBg(gpui::Hsla),
+    HeaderFg(gpui::Hsla),
+    ColumnWidths(Vec<f32>),
     Stripe(bool),
     Bordered(bool),
     Scrollbars(bool, bool),
@@ -479,8 +518,17 @@ impl RenderOnce for DataTableHost {
                 self.sortable_columns.as_deref(),
                 self.sorted.as_ref(),
             );
+            state.delegate_mut().header_bg = None;
+            state.delegate_mut().header_fg = None;
             for op in &self.ops {
                 match op {
+                    Op::HeaderBg(color) => state.delegate_mut().header_bg = Some(*color),
+                    Op::HeaderFg(color) => state.delegate_mut().header_fg = Some(*color),
+                    Op::ColumnWidths(widths) => {
+                        for (column, width) in state.delegate_mut().columns.iter_mut().zip(widths) {
+                            column.width = gpui::px(*width);
+                        }
+                    }
                     Op::RowSelectable(value) => state.row_selectable = *value,
                     Op::ColSelectable(value) => state.col_selectable = *value,
                     Op::CellSelectable(value) => state.cell_selectable = *value,
@@ -589,6 +637,12 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
 .with_methods(vec![
             bool_method("DataTable", "stripe", "Sets native DataTable behavior.", Op::Stripe), bool_method("DataTable", "bordered", "Sets native DataTable behavior.", Op::Bordered),
             MethodDescriptor::new("scrollbar_visible", vec![ArgumentDescriptor::new("vertical", ArgumentSchema::Boolean), ArgumentDescriptor::new("horizontal", ArgumentSchema::Boolean)], |args| match args { [ComponentArgument::Boolean(value), ComponentArgument::Boolean(h)] => Ok(ComponentPayload::new(Op::Scrollbars(*value, *h))), _ => Err("DataTable.scrollbar_visible expects two booleans".into()) }).with_documentation("Chooses when the table shows its scrollbars."),
+            MethodDescriptor::new("header_bg",vec![ArgumentDescriptor::new("color",ArgumentSchema::String)],|args|match args{[ComponentArgument::String(color)]=>gpui_component::try_parse_color(color).map(|c|ComponentPayload::new(Op::HeaderBg(c))).map_err(|e|e.to_string()),_=>Err("header_bg requires a color".into())}).with_documentation("Sets the header background color."),
+            MethodDescriptor::new("header_fg",vec![ArgumentDescriptor::new("color",ArgumentSchema::String)],|args|match args{[ComponentArgument::String(color)]=>gpui_component::try_parse_color(color).map(|c|ComponentPayload::new(Op::HeaderFg(c))).map_err(|e|e.to_string()),_=>Err("header_fg requires a color".into())}).with_documentation("Sets the header foreground color."),
+            MethodDescriptor::new("column_widths",vec![ArgumentDescriptor::new("widths",ArgumentSchema::Array(Box::new(ArgumentSchema::Number)))],|args|match args{[ComponentArgument::Array(widths)]=>{
+                let widths=widths.iter().map(|v|match v{ComponentArgument::Number(n) if n.is_finite() && *n>0. && *n<100_000.=>Ok(*n as f32),_=>Err("column widths must be finite positive pixels".to_string())}).collect::<Result<Vec<_>,_>>()?;
+                Ok(ComponentPayload::new(Op::ColumnWidths(widths)))
+            },_=>Err("column_widths requires numbers".into())}).with_documentation("Sets initial column widths in pixels, in column order."),
             bool_method("DataTable", "row_selectable", "Sets native DataTable behavior.", Op::RowSelectable), bool_method("DataTable", "column_selectable", "Sets native DataTable behavior.", Op::ColSelectable), bool_method("DataTable", "cell_selectable", "Sets native DataTable behavior.", Op::CellSelectable), bool_method("DataTable", "row_header", "Sets native DataTable behavior.", Op::RowHeader), bool_method("DataTable", "sortable", "Sets native DataTable behavior.", Op::Sortable), bool_method("DataTable", "column_resizable", "Sets native DataTable behavior.", Op::ColResizable), bool_method("DataTable", "column_movable", "Sets native DataTable behavior.", Op::ColMovable),
             MethodDescriptor::new("on_sort", vec![ArgumentDescriptor::new("on_sort", ArgumentSchema::Callback("(key: string, direction: string, cx: Context) => void"))], |args| match args { [argument @ ComponentArgument::Callback(_)] => Ok(ComponentPayload::new(Op::OnSort(argument.clone()))), _ => Err("DataTable.on_sort expects one callback".into()) }).with_documentation("Reports a sort request; the delegate does not reorder rows."),
             MethodDescriptor::new("sortable_columns", vec![ArgumentDescriptor::new("keys", ArgumentSchema::Array(Box::new(ArgumentSchema::String)))], |args| match args { [ComponentArgument::Array(keys)] => {
