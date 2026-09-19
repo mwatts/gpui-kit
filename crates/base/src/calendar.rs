@@ -1100,3 +1100,4 @@ mod tests {
         );
     }
 }
+use gpui::prelude::FluentBuilder as _;
