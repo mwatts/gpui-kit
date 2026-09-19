@@ -246,10 +246,10 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
         MethodDescriptor::new("path", vec![Arg::new("ids", Schema::Array(Box::new(Schema::String)))], |args| match args {
             [Argument::Array(ids)] => ids.iter().map(|id| match id { Argument::String(id) => Ok(id.clone()), _ => Err("NavStack.path expects strings".into()) }).collect::<Result<Vec<_>, String>>().map(|ids| ComponentPayload::new(Op::Path(ids))),
             _ => Err("NavStack.path expects an array".into()),
-        }),
+        }).with_documentation("Controls the root-first page path using stable page ids; reuses retained history when possible."),
         MethodDescriptor::new("on_change", vec![Arg::new("callback", Schema::Callback("(path: string[], current: string, cx: Context) => void"))], |args| match args {
             [a @ Argument::Callback(_)] => Ok(ComponentPayload::new(Op::Change(a.clone()))), _ => Err("NavStack.on_change expects a callback".into()),
-        }),
+        }).with_documentation("Reports the changed page path and current page id followed by the script context."),
     ]).with_documentation("Retained native navigation stack. Immutable pages require unique ids; path controls push/back/forward with retained page entities. on_change reports changed path/current only."))?;
     Ok(())
 }
