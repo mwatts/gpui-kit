@@ -236,3 +236,59 @@ fn dropping_loaded_application_releases_generation_and_reload_sees_new_bytes(
         "imported change must be visible after drop: {tree}"
     );
 }
+
+#[gpui::test]
+fn explicit_host_policies_isolate_module_evaluation_and_later_renders(cx: &mut TestAppContext) {
+    use gpui::ParentElement as _;
+    use gpui_shell::{HostModule, HostValue, policy::Policy};
+    cx.update(gpui_shell::init);
+    let runtime = ShellRuntime::new_isolated().unwrap();
+    let source = HostSource::new(
+        "main.js",
+        [(
+            "main.js",
+            r#"
+import {View,div} from 'gpui-kit';
+import {label} from 'scoped_host';
+const initial = label();
+export default class Panel extends View {
+ render() { return div().child(initial + ':' + label()); }
+}
+"#,
+        )],
+    )
+    .unwrap();
+    let module = |label: &'static str| {
+        HostModule::new("scoped_host").function("label", move |_| Ok(HostValue::Str(label.into())))
+    };
+    gpui_shell::export_module(module("global")).unwrap();
+    let window = cx.add_window(|_, _| Empty);
+    let mut context = VisualTestContext::from_window(*window.deref(), cx);
+    let mut views = Vec::new();
+    for label in ["first", "second"] {
+        let policy = Rc::new(Policy::new().with_host_module(module(label)).unwrap());
+        views.push(context.update(|window, cx| {
+            runtime
+                .mount_host_source(&source, policy, window, cx)
+                .unwrap()
+        }));
+    }
+    let loaded = runtime.load_host_source(&source).unwrap();
+    views
+        .push(context.update(|window, cx| runtime.mount_application(&loaded, window, cx).unwrap()));
+    let drawn = views.clone();
+    context.draw(
+        gpui::Point::default(),
+        size(px(400.), px(300.)),
+        move |_, _| gpui::div().children(drawn),
+    );
+    context.update(|window, cx| window.simulate_next_frame(cx));
+    for (view, label) in views.iter().zip(["first", "second", "global"]) {
+        let tree = context.update(|_, cx| view.read(cx).snapshot().unwrap().debug_tree());
+        assert!(
+            tree.contains(&format!("{label}:{label}")),
+            "policy crossed views: {tree}"
+        );
+    }
+    gpui_shell::clear_exported_modules();
+}
