@@ -7,7 +7,7 @@
 //! Reflecting that path back does not emit again. Domain routing is app-owned.
 use gpui_base::{
     motion::Transition,
-    nav_stack::{NavMotion, NavStack, NavStackState},
+    NavMotion, NavStack, NavStackState,
 };
 use gpui_shell::{
     ArgumentDescriptor as Arg, ArgumentSchema as Schema, ComponentArgument as Argument,
@@ -257,7 +257,7 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui_base::nav_stack::NavStackEvent;
+    use gpui_base::NavStackEvent;
     use std::{cell::RefCell, rc::Rc};
     struct Counter(usize);
     impl Render for Counter {

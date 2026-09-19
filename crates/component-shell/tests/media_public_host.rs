@@ -4,6 +4,12 @@ mod support;
 #[path = "../src/shell/media/mod.rs"]
 mod media;
 
+#[path = "../src/shell/retained_forms/mod.rs"]
+pub(crate) mod retained_forms;
+mod shell {
+    pub(crate) use crate::retained_forms;
+}
+
 use gpui::{Entity, IntoElement as _, TestAppContext, VisualTestContext};
 use std::{
     borrow::Cow,

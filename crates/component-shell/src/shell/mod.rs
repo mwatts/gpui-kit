@@ -29,6 +29,7 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
     settings::register(registry)?;
     structured::register(registry)?;
     navigation::register(registry)?;
+    searchable_list::register(registry)?;
     basic::register(registry)?;
     chart::register(registry)?;
     carousel::register(registry)?;
@@ -62,6 +63,7 @@ mod navigation;
 mod overlays;
 mod questionnaire;
 mod retained_forms;
+mod searchable_list;
 mod scroll;
 mod separator;
 mod settings;

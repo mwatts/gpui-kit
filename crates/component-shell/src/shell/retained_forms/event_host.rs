@@ -223,7 +223,7 @@ pub(crate) fn subscribe_number_input(
         cx,
         move |_, event: &NumberInputEvent, window, cx| {
             if matches!(event, NumberInputEvent::Step(_)) {
-                let value = watched.read(cx).value().to_string();
+                let value = watched.read(cx).text().to_string();
                 invoke_change(
                     &cell,
                     "NumberInput.on_change",
