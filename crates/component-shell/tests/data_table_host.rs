@@ -74,7 +74,8 @@ export default class App extends View { render() { return new DataTable(
   DataTableState(["name", "status"]),
   () => [{name: "Ada", status: "Ready"}, {name: "Lin", status: "Busy"}],
   (row, column) => div().child(row[column])
-).stripe(true).bordered(false).row_selectable(true).cell_selectable(true); } }
+).stripe(true).bordered(false).row_selectable(true).cell_selectable(true)
+ .header_bg('#123456').header_fg('#ffffff').column_widths([160, 120]); } }
 "#;
     let (mut context, view, _app) = mount(cx, source);
     draw(&mut context);
