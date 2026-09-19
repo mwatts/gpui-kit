@@ -490,6 +490,7 @@ fn ops(request: &MaterializeRequest<'_>) -> Vec<FormOp> {
     request
         .methods()
         .filter_map(|method| method.payload().downcast_ref::<FormOp>().cloned())
+        .chain(std::iter::once(FormOp::Disabled(request.disabled())))
         .collect()
 }
 
