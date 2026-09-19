@@ -84,6 +84,45 @@ export default class App extends View { render() { return new DataTable(
 }
 
 #[gpui::test]
+fn custom_header_fill_covers_cell_padding_and_unused_columns(cx: &mut TestAppContext) {
+    let (mut context, view, _app) = mount(
+        cx,
+        r#"
+import { View, div } from "gpui-kit";
+import { DataTableState, DataTable } from "gpui-component";
+export default class App extends View { render() { return new DataTable(
+  DataTableState(["name", "status"]), () => [{name: "Ada", status: "Ready"}],
+  (row, column) => div().child(row[column])
+).header_bg('#123456').column_widths([160, 120]).w(600).h(200); } }
+"#,
+    );
+    draw(&mut context);
+    context.update(|window, cx| {
+        assert_eq!(view.read(cx).build_error(), None);
+        let quads = window.painted_quads();
+        // Sample padding, the second column, and the unused right-hand header area.
+        // Labels alone must not be the only rectangles receiving the requested fill.
+        for x in [4., 164., 500.] {
+            let point = gpui::point(gpui::ScaledPixels(x), gpui::ScaledPixels(4.));
+            let painted = quads
+                .iter()
+                .rev()
+                .find(|quad| {
+                    quad.bounds.contains(&point)
+                        && quad.content_mask.bounds.contains(&point)
+                        && quad.background.as_solid().is_some_and(|color| color.a > 0.)
+                })
+                .expect("header must paint a background");
+            assert_eq!(
+                painted.background.as_solid(),
+                Some(gpui::rgb(0x123456).into()),
+                "header x={x}"
+            );
+        }
+    });
+}
+
+#[gpui::test]
 fn data_table_rejects_non_array_snapshot_without_panicking(cx: &mut TestAppContext) {
     data_table::test_probe::reset();
     let (mut context, view, _app) = mount(

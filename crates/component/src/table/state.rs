@@ -1576,7 +1576,7 @@ where
             .h_full()
             .border_r_1()
             .border_color(cx.theme().table_row_border)
-            .bg(cx.theme().tokens.table_head)
+            .when(!is_head, |this| this.bg(cx.theme().tokens.table_head))
             .flex_shrink_0()
             .table_cell_size(self.options.size)
             .when(!is_head, |this| {
@@ -1811,12 +1811,17 @@ where
         let mut header = self.delegate_mut().render_header(window, cx);
         let style = header.style().clone();
         let layout = self.header_layout.clone();
+        // Opaque scrolling/fixed panes must share the delegate's header fill.
+        let header_background = style
+            .background
+            .clone()
+            .unwrap_or_else(|| cx.theme().tokens.table_head.into());
 
         header
             .h_flex()
             .w_full()
             .flex_shrink_0()
-            .bg(cx.theme().tokens.table_head)
+            .bg(header_background.clone())
             .text_color(cx.theme().table_head_foreground)
             .refine_style(&style)
             .on_drag_move(cx.listener(|table, e: &DragMoveEvent<DragColumn>, _, cx| {
@@ -1857,7 +1862,7 @@ where
                     h_flex()
                         .relative()
                         .h_full()
-                        .bg(cx.theme().tokens.table_head)
+                        .bg(header_background.clone())
                         .child(v_flex().min_w_full().flex_shrink_0().children(
                             layout.iter().enumerate().map(|(_row_ix, row_cells)| {
                                 h_flex()
@@ -1917,7 +1922,7 @@ where
                     .overflow_scroll()
                     .relative()
                     .track_scroll(&horizontal_scroll_handle)
-                    .bg(cx.theme().tokens.table_head)
+                    .bg(header_background.clone())
                     .child(v_flex().min_w_full().flex_shrink_0().children(
                         layout.iter().enumerate().map(|(row_ix, row_cells)| {
                             let is_leaf_row = row_ix + 1 == layout_len;

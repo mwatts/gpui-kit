@@ -108,9 +108,6 @@ impl TableDelegate for Delegate {
         if let Some(color) = self.header_fg {
             cell = cell.text_color(color);
         }
-        if let Some(color) = self.header_bg {
-            cell = cell.bg(color);
-        }
         cell
     }
     fn render_td(
