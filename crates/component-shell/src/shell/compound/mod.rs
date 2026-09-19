@@ -5,6 +5,7 @@ mod collapsible;
 mod common;
 mod pagination;
 mod progress;
+mod progress_circle;
 mod radio;
 
 use gpui_shell::{ComponentRegistry, RegistryError};
@@ -14,6 +15,7 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
     collapsible::register(registry)?;
     pagination::register(registry)?;
     progress::register(registry)?;
+    progress_circle::register(registry)?;
     radio::register(registry)?;
     Ok(())
 }
@@ -39,7 +41,14 @@ mod tests {
                 .descriptors()
                 .map(|descriptor| descriptor.name())
                 .collect::<Vec<_>>(),
-            ["Avatar", "Collapsible", "Pagination", "Progress", "Radio"]
+            [
+                "Avatar",
+                "Collapsible",
+                "Pagination",
+                "Progress",
+                "ProgressCircle",
+                "Radio"
+            ]
         );
         assert!(
             frozen

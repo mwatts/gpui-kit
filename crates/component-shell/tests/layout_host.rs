@@ -11,6 +11,12 @@ mod typed_child;
 #[path = "../src/shell/layout/mod.rs"]
 mod layout;
 
+#[path = "../src/shell/retained_forms/mod.rs"]
+pub(crate) mod retained_forms;
+mod shell {
+    pub(crate) use crate::retained_forms;
+}
+
 use gpui::{Entity, IntoElement as _, TestAppContext, VisualTestContext};
 use std::{
     fs,
