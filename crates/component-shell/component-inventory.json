@@ -77,6 +77,15 @@
         "descriptor": "Breadcrumb",
         "exports": [
           "Breadcrumb"
+        ],
+        "related": [
+          {
+            "descriptor": "NavStack",
+            "exports": [
+              "NavStack"
+            ],
+            "role": "native-navigation-history"
+          }
         ]
       }
     },
@@ -192,6 +201,20 @@
             "descriptor": "RadarChart",
             "exports": [
               "RadarChart"
+            ],
+            "role": "concrete-chart-variant"
+          },
+          {
+            "descriptor": "SankeyChart",
+            "exports": [
+              "SankeyChart"
+            ],
+            "role": "concrete-chart-variant"
+          },
+          {
+            "descriptor": "Candlestick",
+            "exports": [
+              "Candlestick"
             ],
             "role": "concrete-chart-variant"
           }
@@ -680,6 +703,15 @@
         "descriptor": "Progress",
         "exports": [
           "Progress"
+        ],
+        "related": [
+          {
+            "descriptor": "ProgressCircle",
+            "exports": [
+              "ProgressCircle"
+            ],
+            "role": "circular-progress"
+          }
         ]
       }
     },
@@ -795,8 +827,14 @@
     {
       "source": "ui",
       "name": "searchable_list",
-      "classification": "infrastructure",
-      "explanation": "SearchableListState and its delegate are retained selection/search infrastructure consumed by Select and Combobox; there is no standalone Render surface."
+      "classification": "component",
+      "registration": {
+        "status": "registered",
+        "descriptor": "SearchableList",
+        "exports": [
+          "SearchableList"
+        ]
+      }
     },
     {
       "source": "ui",
@@ -2544,73 +2582,159 @@
       "source": "ui",
       "name": "attachment",
       "classification": "component",
-      "registration": { "status": "registered", "descriptor": "Attachment", "exports": ["Attachment"] }
+      "registration": {
+        "status": "registered",
+        "descriptor": "Attachment",
+        "exports": [
+          "Attachment"
+        ]
+      }
     },
     {
       "source": "ui",
       "name": "bubble",
       "classification": "component",
-      "registration": { "status": "registered", "descriptor": "Bubble", "exports": ["Bubble"] }
+      "registration": {
+        "status": "registered",
+        "descriptor": "Bubble",
+        "exports": [
+          "Bubble"
+        ]
+      }
     },
     {
       "source": "ui",
       "name": "marker",
       "classification": "component",
-      "registration": { "status": "registered", "descriptor": "Marker", "exports": ["Marker"] }
+      "registration": {
+        "status": "registered",
+        "descriptor": "Marker",
+        "exports": [
+          "Marker"
+        ]
+      }
     },
     {
       "source": "ui",
       "name": "message",
       "classification": "component",
-      "registration": { "status": "registered", "descriptor": "Message", "exports": ["Message"] }
+      "registration": {
+        "status": "registered",
+        "descriptor": "Message",
+        "exports": [
+          "Message"
+        ]
+      }
     },
     {
       "source": "ui",
       "name": "message_scroller",
       "classification": "component",
-      "registration": { "status": "registered", "descriptor": "MessageScroller", "exports": ["MessageScroller"], "states": [{ "export": "MessageScrollerState", "kind": "MessageScrollerState", "role": "retained-scroll-state" }] }
+      "registration": {
+        "status": "registered",
+        "descriptor": "MessageScroller",
+        "exports": [
+          "MessageScroller"
+        ],
+        "states": [
+          {
+            "export": "MessageScrollerState",
+            "kind": "MessageScrollerState",
+            "role": "retained-scroll-state"
+          }
+        ]
+      }
     },
     {
       "source": "ui",
       "name": "shimmer",
       "classification": "component",
-      "registration": { "status": "registered", "descriptor": "ShimmerText", "exports": ["ShimmerText"] }
+      "registration": {
+        "status": "registered",
+        "descriptor": "ShimmerText",
+        "exports": [
+          "ShimmerText"
+        ]
+      }
     },
     {
       "source": "story",
       "name": "attachment",
       "classification": "component",
-      "registration": { "status": "registered", "descriptor": "Attachment", "exports": ["Attachment"] }
+      "registration": {
+        "status": "registered",
+        "descriptor": "Attachment",
+        "exports": [
+          "Attachment"
+        ]
+      }
     },
     {
       "source": "story",
       "name": "bubble",
       "classification": "component",
-      "registration": { "status": "registered", "descriptor": "Bubble", "exports": ["Bubble"] }
+      "registration": {
+        "status": "registered",
+        "descriptor": "Bubble",
+        "exports": [
+          "Bubble"
+        ]
+      }
     },
     {
       "source": "story",
       "name": "marker",
       "classification": "component",
-      "registration": { "status": "registered", "descriptor": "Marker", "exports": ["Marker"] }
+      "registration": {
+        "status": "registered",
+        "descriptor": "Marker",
+        "exports": [
+          "Marker"
+        ]
+      }
     },
     {
       "source": "story",
       "name": "message",
       "classification": "component",
-      "registration": { "status": "registered", "descriptor": "Message", "exports": ["Message"] }
+      "registration": {
+        "status": "registered",
+        "descriptor": "Message",
+        "exports": [
+          "Message"
+        ]
+      }
     },
     {
       "source": "story",
       "name": "message_scroller",
       "classification": "component",
-      "registration": { "status": "registered", "descriptor": "MessageScroller", "exports": ["MessageScroller"], "states": [{ "export": "MessageScrollerState", "kind": "MessageScrollerState", "role": "retained-scroll-state" }] }
+      "registration": {
+        "status": "registered",
+        "descriptor": "MessageScroller",
+        "exports": [
+          "MessageScroller"
+        ],
+        "states": [
+          {
+            "export": "MessageScrollerState",
+            "kind": "MessageScrollerState",
+            "role": "retained-scroll-state"
+          }
+        ]
+      }
     },
     {
       "source": "story",
       "name": "shimmer",
       "classification": "component",
-      "registration": { "status": "registered", "descriptor": "ShimmerText", "exports": ["ShimmerText"] }
+      "registration": {
+        "status": "registered",
+        "descriptor": "ShimmerText",
+        "exports": [
+          "ShimmerText"
+        ]
+      }
     }
   ]
 }
