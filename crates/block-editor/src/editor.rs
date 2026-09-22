@@ -1675,7 +1675,7 @@ impl Editor {
             return None;
         }
         let state = self.code_leaves.get(&head.id)?.clone();
-        let bounds = self.layouts.block_bounds(&head.id)?;
+        let bounds = self.layouts.block_bounds(head.paint_id())?;
         Some(
             gpui::deferred(
                 gpui::anchored()
