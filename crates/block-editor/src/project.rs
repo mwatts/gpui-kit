@@ -40,6 +40,7 @@ pub fn project(doc: &LoroDoc) -> Vec<BlockSnapshot> {
         }
         out.push(BlockSnapshot {
             id,
+            occurrence_id: None,
             block_type,
             indent,
             plain,
@@ -52,6 +53,7 @@ pub fn project(doc: &LoroDoc) -> Vec<BlockSnapshot> {
             form: map_string(&map, "form").as_deref().and_then(Form::parse),
             width: map_i64(&map, "width"),
             table: None,
+            read_only: false,
         });
     }
     out
