@@ -150,6 +150,34 @@ impl BlockOp {
                 | Self::DeleteComment { .. }
         )
     }
+
+    /// Content or occurrence id named by this op, when it targets a block.
+    #[must_use]
+    pub fn target_id(&self) -> Option<&BlockId> {
+        match self {
+            Self::InsertText { id, .. }
+            | Self::DeleteRange { id, .. }
+            | Self::SplitBlock { id, .. }
+            | Self::MergeWithPrevious { id, .. }
+            | Self::DeleteBlock { id, .. }
+            | Self::SetType { id, .. }
+            | Self::ToggleMark { id, .. }
+            | Self::SetLink { id, .. }
+            | Self::RemoveLink { id, .. }
+            | Self::Indent { id, .. }
+            | Self::Outdent { id, .. }
+            | Self::Move { id, .. }
+            | Self::ToggleCheck { id, .. }
+            | Self::SetProp { id, .. }
+            | Self::UnwrapToParagraph { id, .. }
+            | Self::ImeCommit { id, .. } => Some(id),
+            Self::DeleteCrossBlock { focus, .. } => Some(&focus.id),
+            Self::AddComment { .. }
+            | Self::SetCommentBody { .. }
+            | Self::SetCommentState { .. }
+            | Self::DeleteComment { .. } => None,
+        }
+    }
 }
 
 /// Result of apply: optional caret hint.

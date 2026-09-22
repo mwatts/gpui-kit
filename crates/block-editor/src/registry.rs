@@ -88,6 +88,26 @@ impl SlashRegistry {
         ]
     }
 
+    #[must_use]
+    pub fn notes_commands() -> Vec<SlashCommand> {
+        vec![
+            SlashCommand::insert("paragraph", "Text", BlockType::Paragraph),
+            SlashCommand::insert("h1", "Heading 1", BlockType::Heading { level: 1 }),
+            SlashCommand::insert("h2", "Heading 2", BlockType::Heading { level: 2 }),
+            SlashCommand::insert("h3", "Heading 3", BlockType::Heading { level: 3 }),
+        ]
+    }
+
+    /// Replace the catalog (hosts install the G-NOTES subset after [`crate::init`]).
+    pub fn set_commands(cx: &mut App, commands: Vec<SlashCommand>) {
+        Self::global_mut(cx).commands = commands;
+    }
+
+    /// Restrict slash actions to paragraph and heading transformations.
+    pub fn install_notes(cx: &mut App) {
+        Self::set_commands(cx, Self::notes_commands());
+    }
+
     pub fn init(cx: &mut App) {
         if !cx.has_global::<Self>() {
             cx.set_global(Self {
@@ -249,6 +269,16 @@ mod tests {
     fn insert_command_keeps_block_type() {
         let command = SlashCommand::insert("task", "Task", BlockType::Task);
         assert_eq!(command.action, SlashAction::Insert(BlockType::Task));
+    }
+
+    #[test]
+    fn notes_slash_catalog_is_paragraph_and_heading_only() {
+        let ids: Vec<_> = SlashRegistry::notes_commands()
+            .into_iter()
+            .map(|command| command.id.to_string())
+            .collect();
+        assert_eq!(ids, ["paragraph", "h1", "h2", "h3"]);
+        assert!(SlashRegistry::default_commands().len() > ids.len());
     }
 
     #[test]
