@@ -94,6 +94,12 @@ impl BlockDocument {
         }
     }
 
+    /// Commit a direct Loro mutation so per-object undo still tracks it.
+    pub(crate) fn finish_direct(&mut self, structure: bool) {
+        self.commit(structure);
+        self.snapshots = project::project(&self.doc);
+    }
+
     pub fn undo(&mut self) -> bool {
         match self.undo.undo() {
             Ok(did) => {
