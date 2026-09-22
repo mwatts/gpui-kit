@@ -18,6 +18,7 @@ fn snap(id: &str, block_type: BlockType, plain: &str, language: Option<&str>) ->
     let table = matches!(block_type, BlockType::Table).then_some(Default::default());
     BlockSnapshot {
         id: BlockId(id.into()),
+        occurrence_id: None,
         block_type,
         indent: 0,
         plain: plain.into(),
@@ -37,6 +38,7 @@ fn snap(id: &str, block_type: BlockType, plain: &str, language: Option<&str>) ->
         form: None,
         width: None,
         table,
+        read_only: false,
     }
 }
 

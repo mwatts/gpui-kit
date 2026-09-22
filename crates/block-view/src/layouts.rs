@@ -25,9 +25,35 @@ struct Frames {
 
 struct Painted {
     id: BlockId,
+    occurrence: Option<BlockId>,
     part: Part,
     range: Range<usize>,
     layout: TextLayout,
+}
+
+impl Painted {
+    fn cursor(&self, offset: usize) -> Cursor {
+        let mut cursor = Cursor::new(
+            self.id.clone(),
+            self.part,
+            self.range.start + offset.min(self.range.len()),
+        );
+        if let Some(occurrence) = &self.occurrence {
+            cursor = cursor.with_occurrence(occurrence.clone());
+        }
+        cursor
+    }
+
+    fn paint_id(&self) -> &BlockId {
+        self.occurrence.as_ref().unwrap_or(&self.id)
+    }
+
+    fn matches_cursor(&self, at: &Cursor) -> bool {
+        self.paint_id() == at.paint_id()
+            && self.part == at.part
+            && self.range.start <= at.offset
+            && at.offset <= self.range.end
+    }
 }
 
 impl BlockLayouts {
@@ -36,11 +62,7 @@ impl BlockLayouts {
         let entries = &self.0.borrow().texts;
         let cursor = |painted: &Painted| {
             let (Ok(offset) | Err(offset)) = painted.layout.index_for_position(point);
-            Cursor::new(
-                painted.id.clone(),
-                painted.part,
-                painted.range.start + offset.min(painted.range.len()),
-            )
+            painted.cursor(offset)
         };
         if let Some(painted) = entries
             .iter()
@@ -62,12 +84,7 @@ impl BlockLayouts {
     /// Where a position painted last frame, and how tall its line is.
     pub fn position(&self, at: &Cursor) -> Option<(Point<Pixels>, Pixels)> {
         let entries = &self.0.borrow().texts;
-        let painted = entries.iter().find(|painted| {
-            painted.id == at.id
-                && painted.part == at.part
-                && painted.range.start <= at.offset
-                && at.offset <= painted.range.end
-        })?;
+        let painted = entries.iter().find(|painted| painted.matches_cursor(at))?;
         let point = painted
             .layout
             .position_for_index(at.offset - painted.range.start)?;
@@ -82,24 +99,14 @@ impl BlockLayouts {
         down: bool,
     ) -> Option<(Cursor, Pixels)> {
         let entries = &self.0.borrow().texts;
-        let ix = entries.iter().position(|painted| {
-            painted.id == at.id
-                && painted.part == at.part
-                && painted.range.start <= at.offset
-                && at.offset <= painted.range.end
-        })?;
+        let ix = entries
+            .iter()
+            .position(|painted| painted.matches_cursor(at))?;
         let here = &entries[ix];
         let line = here.layout.line_height();
         let index_at = |painted: &Painted, y: Pixels| {
             let (Ok(offset) | Err(offset)) = painted.layout.index_for_position(point(from.x, y));
-            (
-                Cursor::new(
-                    painted.id.clone(),
-                    painted.part,
-                    painted.range.start + offset.min(painted.range.len()),
-                ),
-                y,
-            )
+            (painted.cursor(offset), y)
         };
 
         let bounds = here.layout.bounds();
@@ -148,7 +155,7 @@ impl BlockLayouts {
     /// Where a block's first painted row sits, and how tall that row is.
     pub fn first_row(&self, id: &BlockId) -> Option<(Pixels, Pixels)> {
         let texts = &self.0.borrow().texts;
-        let painted = texts.iter().find(|painted| &painted.id == id)?;
+        let painted = texts.iter().find(|painted| painted.paint_id() == id)?;
         Some((
             painted.layout.bounds().origin.y,
             painted.layout.line_height(),
@@ -185,9 +192,17 @@ impl BlockLayouts {
             .map(|(_, bounds)| *bounds)
     }
 
-    pub(crate) fn record(&self, id: BlockId, part: Part, range: Range<usize>, layout: TextLayout) {
+    pub(crate) fn record(
+        &self,
+        id: BlockId,
+        occurrence: Option<BlockId>,
+        part: Part,
+        range: Range<usize>,
+        layout: TextLayout,
+    ) {
         self.0.borrow_mut().texts.push(Painted {
             id,
+            occurrence,
             part,
             range,
             layout,

@@ -64,6 +64,8 @@ const PANEL_RADIUS: f32 = 8.0;
 struct Overlay<'a> {
     block_ix: usize,
     block_id: &'a block_markdown::BlockId,
+    paint_id: &'a block_markdown::BlockId,
+    occurrence_id: Option<&'a block_markdown::BlockId>,
     part: Part,
     selections: &'a [Selection],
     caret_on: bool,
@@ -72,7 +74,7 @@ struct Overlay<'a> {
     placeholder: Option<&'a SharedString>,
     caption: Caption,
     composition: Option<&'a Composition>,
-    /// Document order index lookup for selection clipping.
+    /// Document order index lookup for selection clipping (paint ids).
     order: &'a dyn Fn(&block_markdown::BlockId) -> Option<usize>,
 }
 
@@ -93,7 +95,7 @@ impl<'a> Overlay<'a> {
         self.selections
             .iter()
             .map(Selection::head)
-            .filter(|head| &head.id == self.block_id && head.part == self.part)
+            .filter(|head| head.part == self.part && head.paint_id() == self.paint_id)
             .map(|head| head.offset)
             .collect()
     }
@@ -128,9 +130,9 @@ impl<'a> Overlay<'a> {
             return None;
         }
         let (start, end) = ordered(selection, self.order)?;
-        let here_ix = (self.order)(self.block_id)?;
-        let start_ix = (self.order)(&start.id)?;
-        let end_ix = (self.order)(&end.id)?;
+        let here_ix = (self.order)(self.paint_id)?;
+        let start_ix = (self.order)(start.paint_id())?;
+        let end_ix = (self.order)(end.paint_id())?;
 
         let here_key = (here_ix, self.part);
         let first = (start_ix, start.part);
@@ -151,13 +153,13 @@ impl<'a> Overlay<'a> {
             let Some((start, end)) = ordered(selection, self.order) else {
                 return false;
             };
-            let Some(here) = (self.order)(self.block_id) else {
+            let Some(here) = (self.order)(self.paint_id) else {
                 return false;
             };
-            let Some(start_ix) = (self.order)(&start.id) else {
+            let Some(start_ix) = (self.order)(start.paint_id()) else {
                 return false;
             };
-            let Some(end_ix) = (self.order)(&end.id) else {
+            let Some(end_ix) = (self.order)(end.paint_id()) else {
                 return false;
             };
             start_ix < here && here < end_ix
@@ -169,8 +171,8 @@ fn ordered<'a>(
     selection: &'a Selection,
     order: &dyn Fn(&block_markdown::BlockId) -> Option<usize>,
 ) -> Option<(&'a Cursor, &'a Cursor)> {
-    let a = (order)(&selection.anchor.id)?;
-    let b = (order)(&selection.focus.id)?;
+    let a = (order)(selection.anchor.paint_id())?;
+    let b = (order)(selection.focus.paint_id())?;
     let ak = (a, selection.anchor.part, selection.anchor.offset);
     let bk = (b, selection.focus.part, selection.focus.offset);
     if ak <= bk {
@@ -211,7 +213,7 @@ pub fn render_with(
 
     let palette = EditorPalette::from_app(cx);
     let typography = Typography::of(cx);
-    let order_map: Vec<_> = snapshots.iter().map(|s| s.id.clone()).collect();
+    let order_map: Vec<_> = snapshots.iter().map(|s| s.paint_id().clone()).collect();
     let order = move |id: &block_markdown::BlockId| order_map.iter().position(|x| x == id);
 
     let mut column = div().flex().flex_col().children(reset);
@@ -227,6 +229,8 @@ pub fn render_with(
         let overlay = Overlay {
             block_ix: ix,
             block_id: &block.id,
+            paint_id: block.paint_id(),
+            occurrence_id: block.occurrence_id.as_ref(),
             part: Part::Body,
             selections,
             caret_on,
@@ -239,7 +243,7 @@ pub fn render_with(
         };
         let frame = layouts.map(|layouts| {
             let layouts = layouts.clone();
-            let id = block.id.clone();
+            let id = block.paint_id().clone();
             canvas(
                 move |bounds, _, _| layouts.record_block(id, bounds),
                 |_, _, _, _| (),
@@ -804,6 +808,7 @@ fn painted_text(
     palette: &EditorPalette,
 ) -> AnyElement {
     let (id, part) = (overlay.block_id.clone(), overlay.part);
+    let occurrence = overlay.occurrence_id.cloned();
     let (caret, selected) = (overlay.caret_painted(), overlay.selected_ranges(len));
     if let Some(marked) = overlay.marked_range(len) {
         flat.runs = underline_runs(flat.runs, &marked, palette.text);
@@ -850,7 +855,13 @@ fn painted_text(
         |_, _, _| (),
         move |_, _, window, _| {
             if let Some(layouts) = &layouts {
-                layouts.record(id.clone(), part, span.clone(), layout.clone());
+                layouts.record(
+                    id.clone(),
+                    occurrence.clone(),
+                    part,
+                    span.clone(),
+                    layout.clone(),
+                );
             }
             for (range, wash) in &annotated {
                 for rect in range_rects(&layout, range, 0.0, 0.0) {
@@ -1084,12 +1095,19 @@ fn code_block(
     let annotated = overlay.annotated(code.len(), palette);
     let (caret_color, selection_color) = (palette.caret, palette.selection);
     let record_id = id.clone();
+    let record_occurrence = overlay.occurrence_id.cloned();
     let underlay = canvas(
         |_, _, _| (),
         move |_, _, window, _| {
             for (span, layout) in &rows {
                 if let Some(sink) = &sink {
-                    sink.record(record_id.clone(), Part::Code, span.clone(), layout.clone());
+                    sink.record(
+                        record_id.clone(),
+                        record_occurrence.clone(),
+                        Part::Code,
+                        span.clone(),
+                        layout.clone(),
+                    );
                 }
                 for (range, wash) in &annotated {
                     let (from, to) = (range.start.max(span.start), range.end.min(span.end));
@@ -1632,6 +1650,7 @@ mod tests {
     fn composition_projects_over_original_unicode_range_for_paint() {
         let original = BlockSnapshot {
             id: BlockId::from("block"),
+            occurrence_id: None,
             block_type: BlockType::Paragraph,
             indent: 0,
             plain: "a😀b".into(),
@@ -1647,6 +1666,7 @@ mod tests {
             form: None,
             width: None,
             table: None,
+            read_only: false,
         };
         let composition = Composition::new(original.id.clone(), Part::Body, 1..5)
             .with_text("ni")

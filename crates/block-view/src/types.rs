@@ -39,17 +39,40 @@ pub enum Part {
 }
 
 /// Caret position keyed by stable block id.
+///
+/// `id` is the content identity ([`BlockId`] as an ObjectId). When the caret
+/// sits on a composed Child occurrence, `occurrence` is that relation id so
+/// two placements of the same content remain distinct for paint and structure.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Cursor {
     pub id: BlockId,
     pub part: Part,
     pub offset: usize,
+    pub occurrence: Option<BlockId>,
 }
 
 impl Cursor {
     #[must_use]
     pub fn new(id: BlockId, part: Part, offset: usize) -> Self {
-        Self { id, part, offset }
+        Self {
+            id,
+            part,
+            offset,
+            occurrence: None,
+        }
+    }
+
+    /// Bind this caret to a Child occurrence identity.
+    #[must_use]
+    pub fn with_occurrence(mut self, occurrence: impl Into<BlockId>) -> Self {
+        self.occurrence = Some(occurrence.into());
+        self
+    }
+
+    /// Row identity used for paint and hit-testing: occurrence, else content.
+    #[must_use]
+    pub fn paint_id(&self) -> &BlockId {
+        self.occurrence.as_ref().unwrap_or(&self.id)
     }
 }
 
@@ -105,16 +128,20 @@ impl Selection {
     }
 
     fn cursor_le(a: &Cursor, b: &Cursor) -> bool {
-        // Without document order, compare id then part then offset.
+        // Without document order, compare paint id then part then offset.
         // Callers that need true document order should clamp against snapshots.
-        (&a.id.0, a.part, a.offset) <= (&b.id.0, b.part, b.offset)
+        (a.paint_id().0.as_str(), a.part, a.offset) <= (b.paint_id().0.as_str(), b.part, b.offset)
     }
 }
 
 /// Immutable projection of one block for paint / tests.
 #[derive(Debug, Clone)]
 pub struct BlockSnapshot {
+    /// Content identity (`BlockId` as the object's ObjectId).
     pub id: BlockId,
+    /// Child occurrence identity when this row is a composed placement.
+    /// Repeated placements share [`Self::id`] and keep distinct occurrence ids.
+    pub occurrence_id: Option<BlockId>,
     pub block_type: BlockType,
     pub indent: i64,
     pub plain: String,
@@ -128,6 +155,16 @@ pub struct BlockSnapshot {
     pub width: Option<i64>,
     /// Table cells as plain strings `[row][column]`; row 0 is the header when present.
     pub table: Option<TableData>,
+    /// Unsupported or gated kinds paint without accepting input.
+    pub read_only: bool,
+}
+
+impl BlockSnapshot {
+    /// Row identity used for paint and hit-testing: occurrence, else content.
+    #[must_use]
+    pub fn paint_id(&self) -> &BlockId {
+        self.occurrence_id.as_ref().unwrap_or(&self.id)
+    }
 }
 
 /// Frameless table projection.
@@ -303,5 +340,45 @@ impl Default for Editing<'_> {
             caption: Caption::default(),
             composition: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use block_markdown::BlockId;
+
+    #[test]
+    fn paint_id_prefers_occurrence_identity() {
+        let content = BlockId::from("ashlar/block/opaque/n00blk0000000000000000000a");
+        let occ_a = BlockId::from("ashlar/child/opaque/n00child0000000000000000a1");
+        let occ_b = BlockId::from("ashlar/child/opaque/n00child0000000000000000a2");
+        let snap_a = BlockSnapshot {
+            id: content.clone(),
+            occurrence_id: Some(occ_a.clone()),
+            block_type: BlockType::Paragraph,
+            indent: 0,
+            plain: "hello".into(),
+            runs: Vec::new(),
+            props: HashMap::new(),
+            checked: None,
+            number: None,
+            language: None,
+            url: None,
+            form: None,
+            width: None,
+            table: None,
+            read_only: false,
+        };
+        let mut snap_b = snap_a.clone();
+        snap_b.occurrence_id = Some(occ_b.clone());
+        assert_eq!(snap_a.id, snap_b.id);
+        assert_eq!(snap_a.paint_id(), &occ_a);
+        assert_eq!(snap_b.paint_id(), &occ_b);
+        assert_ne!(snap_a.paint_id(), snap_b.paint_id());
+
+        let caret = Cursor::new(content, Part::Body, 0).with_occurrence(occ_a);
+        assert_eq!(caret.paint_id(), snap_a.paint_id());
+        assert_ne!(caret.paint_id(), snap_b.paint_id());
     }
 }
