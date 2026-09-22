@@ -94,6 +94,7 @@ mod tests {
     fn snap(id: &str, kind: BlockType, indent: i64, plain: &str) -> BlockSnapshot {
         BlockSnapshot {
             id: BlockId::from(id),
+            occurrence_id: None,
             block_type: kind,
             indent,
             plain: plain.into(),
@@ -113,6 +114,7 @@ mod tests {
             width: None,
             number: None,
             table: None,
+            read_only: false,
         }
     }
 
