@@ -401,7 +401,7 @@ impl Editor {
             .as_ref()
             .map(|(from, _)| from.clone())
             .or_else(|| self.hovered.clone())
-            .or_else(|| focused.then(|| self.selection.head().id.clone()))?;
+            .or_else(|| focused.then(|| self.selection.head().paint_id().clone()))?;
         let bounds = self.layouts.block_bounds(&id)?;
         let top = match self.layouts.first_row(&id) {
             Some((row, line)) => row + (line - px(HANDLE_SIZE)) / 2.0,
