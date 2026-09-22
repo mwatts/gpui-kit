@@ -5,6 +5,7 @@
 //!
 //! Copyright (c) Bezel contributors. MIT. See crate `NOTICE`.
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -23,6 +24,7 @@ use loro::{LoroDoc, LoroError};
 
 use crate::accessibility::AccessibilityText;
 use crate::backspace::backspace_at_start;
+use crate::composition::{CompositionDraft, CompositionSession, ObjectVersion};
 use crate::document::BlockDocument;
 use crate::image::{self, Prompt};
 use crate::keys::{
@@ -64,6 +66,7 @@ pub struct CommentThread {
 /// GPUI entity wrapping [`BlockDocument`] + view state.
 pub struct Editor {
     pub(crate) document: BlockDocument,
+    pub(crate) bridge: Option<CompositionSession>,
     pub(crate) selection: Selection,
     pub(crate) extra_selections: Vec<Selection>,
     code_leaves: HashMap<BlockId, Entity<EditorState>>,
@@ -126,6 +129,7 @@ impl Editor {
             .unwrap_or_else(|| BlockId(uuid::Uuid::new_v4().to_string()));
         let mut editor = Self {
             document,
+            bridge: None,
             selection: Selection::caret(Cursor::new(id, Part::Body, 0)),
             extra_selections: Vec::new(),
             code_leaves: HashMap::new(),
@@ -160,6 +164,21 @@ impl Editor {
         editor
     }
 
+    /// Assemble a composition of per-object documents.
+    pub fn from_composition(session: CompositionSession, cx: &mut Context<Self>) -> Self {
+        let first = session.snapshots().first().cloned();
+        let mut editor = Self::from_document(BlockDocument::new(), cx);
+        editor.bridge = Some(session);
+        if let Some(snap) = first {
+            let mut cursor = Cursor::new(snap.id.clone(), Part::Body, 0);
+            if let Some(occurrence) = snap.occurrence_id {
+                cursor = cursor.with_occurrence(occurrence);
+            }
+            editor.selection = Selection::caret(cursor);
+        }
+        editor
+    }
+
     #[must_use]
     pub fn with_undo_limit(mut self, limit: usize) -> Self {
         self.document.set_undo_limit(limit);
@@ -186,7 +205,27 @@ impl Editor {
 
     #[must_use]
     pub fn snapshots(&self) -> &[BlockSnapshot] {
-        self.document.snapshots()
+        match &self.bridge {
+            Some(session) => session.snapshots(),
+            None => self.document.snapshots(),
+        }
+    }
+
+    #[must_use]
+    pub fn composition_session(&self) -> Option<&CompositionSession> {
+        self.bridge.as_ref()
+    }
+
+    #[must_use]
+    pub fn composition_draft(&self) -> Option<CompositionDraft> {
+        self.bridge.as_ref().map(CompositionSession::draft)
+    }
+
+    /// Flush a completed save without clearing per-object undo.
+    pub fn acknowledge_save(&mut self, versions: BTreeMap<String, ObjectVersion>) {
+        if let Some(session) = &mut self.bridge {
+            session.acknowledge_save(versions);
+        }
     }
 
     #[must_use]
@@ -240,7 +279,15 @@ impl Editor {
         if self.composition.is_some() && !matches!(op, BlockOp::ImeCommit { .. }) {
             return ApplyResult::default();
         }
-        let result = self.document.apply(op);
+        let result = if let Some(session) = &mut self.bridge {
+            if !session.allows(&op) {
+                return ApplyResult::default();
+            }
+            let occurrence = self.selection.head().occurrence.clone();
+            session.apply(op, occurrence.as_ref())
+        } else {
+            self.document.apply(op)
+        };
         if let Some(sel) = &result.selection {
             self.selection = sel.clone();
         }
@@ -253,6 +300,13 @@ impl Editor {
     fn apply_many(&mut self, ops: &[BlockOp], cx: &mut Context<Self>) -> ApplyResult {
         if ops.is_empty() {
             return ApplyResult::default();
+        }
+        if self.bridge.is_some() {
+            let mut last = ApplyResult::default();
+            for op in ops {
+                last = self.apply(op.clone(), cx);
+            }
+            return last;
         }
         let result = self.document.apply_many(ops);
         if let Some(sel) = &result.selection {
@@ -336,7 +390,11 @@ impl Editor {
     }
 
     pub fn move_block(&mut self, id: BlockId, delta: isize, cx: &mut Context<Self>) {
-        let Some((ix, _)) = find_block(self.document.doc(), &id) else {
+        let Some(ix) = self
+            .snapshots()
+            .iter()
+            .position(|snap| snap.paint_id() == &id || snap.id == id)
+        else {
             return;
         };
         let to = (ix as isize + delta).max(0) as usize;
@@ -344,6 +402,9 @@ impl Editor {
     }
 
     pub fn duplicate_block(&mut self, id: BlockId, cx: &mut Context<Self>) {
+        if self.bridge.is_some() {
+            return;
+        }
         // Duplicate = export one block's markdown and insert after — simplified.
         let Some(snap) = self.snapshots().iter().find(|s| s.id == id).cloned() else {
             return;
@@ -647,13 +708,18 @@ impl Editor {
             let snap = self
                 .snapshots()
                 .iter()
-                .find(|s| s.id == c.id)
+                .find(|s| s.paint_id() == c.paint_id())
+                .or_else(|| self.snapshots().iter().find(|s| s.id == c.id))
                 .or_else(|| self.snapshots().first());
             let Some(snap) = snap else {
                 return c;
             };
             let max = snap.plain.len();
-            Cursor::new(snap.id.clone(), c.part, c.offset.min(max))
+            let mut cursor = Cursor::new(snap.id.clone(), c.part, c.offset.min(max));
+            if let Some(occurrence) = &snap.occurrence_id {
+                cursor = cursor.with_occurrence(occurrence.clone());
+            }
+            cursor
         };
         Selection::new(clamp(selection.anchor), clamp(selection.focus))
     }
@@ -1282,7 +1348,12 @@ impl Editor {
     }
 
     fn on_undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
-        if self.document.undo() {
+        let did = if let Some(session) = &mut self.bridge {
+            session.undo()
+        } else {
+            self.document.undo()
+        };
+        if did {
             self.refresh_annotations();
             cx.emit(EditorEvent::Changed);
             cx.notify();
@@ -1290,7 +1361,12 @@ impl Editor {
     }
 
     fn on_redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
-        if self.document.redo() {
+        let did = if let Some(session) = &mut self.bridge {
+            session.redo()
+        } else {
+            self.document.redo()
+        };
+        if did {
             self.refresh_annotations();
             cx.emit(EditorEvent::Changed);
             cx.notify();

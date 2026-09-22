@@ -6,6 +6,7 @@ mod accessibility;
 mod apply;
 mod backspace;
 mod chrome;
+mod composition;
 mod document;
 mod editor;
 mod icons;
@@ -22,6 +23,11 @@ mod slash;
 mod types;
 
 pub use backspace::backspace_at_start;
+pub use composition::{
+    CHILD_TYPE, ChildOccurrence, CompositionDraft, CompositionObject, CompositionRead,
+    CompositionSession, EditorGate, IdSource, MutationReadSet, ObjectVersion, PlaceIntent,
+    RelationMutation, encode_block,
+};
 pub use document::BlockDocument;
 pub use editor::{CommentThread, Editor, EditorEvent};
 pub use image::{ImageStore, Source, set_image_store};
