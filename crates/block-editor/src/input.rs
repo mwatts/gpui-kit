@@ -13,8 +13,10 @@ use crate::types::BlockOp;
 impl Editor {
     /// Plain UTF-8 text for one editable block part.
     pub(crate) fn plain_for(&self, cursor: &Cursor) -> Option<&str> {
+        // Composition editors keep bytes on the bridge. The stand-in
+        // `BlockDocument` does not contain those block ids, so platform text
+        // input must read [`Editor::snapshots`].
         let snapshot = self
-            .document
             .snapshots()
             .iter()
             .find(|snapshot| snapshot.id == cursor.id)?;
