@@ -5,7 +5,7 @@
 //! assembles those objects for paint and decomposes [`BlockOp`] edits into
 //! draft-shaped change sets. The assembled view is not an authority document.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use block_markdown::{
     BlockId, BlockType, blocks_list, configure_text_styles, ensure_content, find_block,
@@ -33,6 +33,9 @@ pub enum EditorGate {
     /// Paragraph and heading only. Other kinds keep their bytes and stay read-only.
     #[default]
     Notes,
+    /// Built-in text kinds, marks, language, and nested Child placement.
+    /// Image, unknown custom, mentions, and media stay read-only.
+    Editor,
 }
 
 impl EditorGate {
@@ -40,6 +43,7 @@ impl EditorGate {
     pub fn content_writable(self, kind: &BlockType) -> bool {
         match self {
             Self::Notes => matches!(kind, BlockType::Paragraph | BlockType::Heading { .. }),
+            Self::Editor => editor_kind_writable(kind),
         }
     }
 
@@ -58,7 +62,47 @@ impl EditorGate {
                     | BlockOp::SetType { .. }
                     | BlockOp::UnwrapToParagraph { .. }
             ),
+            Self::Editor => match op {
+                BlockOp::InsertText { .. }
+                | BlockOp::DeleteRange { .. }
+                | BlockOp::ImeCommit { .. }
+                | BlockOp::SplitBlock { .. }
+                | BlockOp::MergeWithPrevious { .. }
+                | BlockOp::DeleteBlock { .. }
+                | BlockOp::Move { .. }
+                | BlockOp::SetType { .. }
+                | BlockOp::UnwrapToParagraph { .. }
+                | BlockOp::ToggleMark { .. }
+                | BlockOp::Indent { .. }
+                | BlockOp::Outdent { .. }
+                | BlockOp::SetProp { .. }
+                | BlockOp::ToggleCheck { .. } => true,
+                BlockOp::SetLink { .. }
+                | BlockOp::RemoveLink { .. }
+                | BlockOp::AddComment { .. }
+                | BlockOp::SetCommentBody { .. }
+                | BlockOp::SetCommentState { .. }
+                | BlockOp::DeleteComment { .. }
+                | BlockOp::DeleteCrossBlock { .. } => false,
+            },
         }
+    }
+}
+
+fn editor_kind_writable(kind: &BlockType) -> bool {
+    match kind {
+        BlockType::Image => false,
+        BlockType::Custom(name) => matches!(name.as_str(), "toggle" | "callout"),
+        BlockType::Paragraph
+        | BlockType::Heading { .. }
+        | BlockType::Bullet
+        | BlockType::Ordered
+        | BlockType::Task
+        | BlockType::Quote
+        | BlockType::Code
+        | BlockType::Bookmark
+        | BlockType::Table
+        | BlockType::Rule => true,
     }
 }
 
@@ -274,6 +318,13 @@ enum StructureUndo {
         occurrence: ChildOccurrence,
         index: usize,
     },
+    Reparent {
+        old: ChildOccurrence,
+        new: ChildOccurrence,
+        old_index: usize,
+        new_index: usize,
+        subtree_len: usize,
+    },
 }
 
 struct Resolved {
@@ -422,7 +473,10 @@ impl CompositionSession {
             }
             BlockOp::InsertText { .. }
             | BlockOp::DeleteRange { .. }
-            | BlockOp::ImeCommit { .. } => {
+            | BlockOp::ImeCommit { .. }
+            | BlockOp::ToggleMark { .. }
+            | BlockOp::SetProp { .. }
+            | BlockOp::ToggleCheck { .. } => {
                 let Some(id) = op.target_id().cloned() else {
                     return ApplyResult::default();
                 };
@@ -431,11 +485,23 @@ impl CompositionSession {
                 };
                 self.apply_text(resolved, op)
             }
+            BlockOp::Indent { id } => {
+                let Some(resolved) = self.resolve(id, occurrence, true) else {
+                    return ApplyResult::default();
+                };
+                self.indent(resolved)
+            }
+            BlockOp::Outdent { id } => {
+                let Some(resolved) = self.resolve(id, occurrence, true) else {
+                    return ApplyResult::default();
+                };
+                self.outdent(resolved)
+            }
             _ => ApplyResult::default(),
         }
     }
 
-    /// Allocate a paragraph or heading and a Child occurrence.
+    /// Allocate a writable block and a Child occurrence.
     pub fn create(&mut self, kind: BlockType, after: Option<&str>) -> ApplyResult {
         if !self.gate.content_writable(&kind) {
             return ApplyResult::default();
@@ -457,26 +523,29 @@ impl CompositionSession {
                 created: true,
             },
         );
-        let index = match after {
+        let (parent, slot, index) = match after {
             Some(rel) => self
                 .occurrences
                 .iter()
                 .position(|occ| occ.relation_id == rel)
-                .map(|ix| ix + 1)
-                .unwrap_or(self.occurrences.len()),
-            None => self.occurrences.len(),
+                .map(|ix| {
+                    let occ = &self.occurrences[ix];
+                    (occ.parent.clone(), occ.slot.clone(), ix + 1)
+                })
+                .unwrap_or_else(|| (self.root.clone(), self.slot.clone(), self.occurrences.len())),
+            None => (self.root.clone(), self.slot.clone(), self.occurrences.len()),
         };
         let occurrence = ChildOccurrence {
             relation_id: relation_id.clone(),
-            parent: self.root.clone(),
+            parent,
             child: content_id.clone(),
-            slot: self.slot.clone(),
+            slot,
             position: String::new(),
             child_missing: false,
             cycle_unresolved: false,
         };
-        let place = self.place_for_index(index, &relation_id);
         self.occurrences.insert(index, occurrence.clone());
+        let place = self.place_for_inserted(&occurrence, index);
         self.pending_relations
             .push(child_relation(&occurrence, false));
         self.pending_placements.push((relation_id.clone(), place));
@@ -575,16 +644,12 @@ impl CompositionSession {
         }
         let mut collections = BTreeMap::new();
         if !self.pending_relations.is_empty() || !self.pending_placements.is_empty() {
-            if let Some(version) = self
-                .collection_versions
-                .get(&(self.root.clone(), self.slot.clone()))
-            {
-                collections.insert((self.root.clone(), self.slot.clone()), version.clone());
-            } else {
-                collections.insert(
-                    (self.root.clone(), self.slot.clone()),
-                    ObjectVersion(self.version_tip.clone()),
-                );
+            for key in self.touched_collections() {
+                if let Some(version) = self.collection_versions.get(&key) {
+                    collections.insert(key, version.clone());
+                } else {
+                    collections.insert(key, ObjectVersion(self.version_tip.clone()));
+                }
             }
         }
         CompositionDraft {
@@ -921,6 +986,97 @@ impl CompositionSession {
         ApplyResult { selection }
     }
 
+    fn indent(&mut self, resolved: Resolved) -> ApplyResult {
+        let from = resolved.occurrence_index;
+        let Some(prev_ix) = self.previous_sibling_index(from) else {
+            return ApplyResult::default();
+        };
+        let old = self.occurrences[from].clone();
+        let prev = self.occurrences[prev_ix].clone();
+        if prev.child == old.child || self.would_cycle(&prev.child, &old.child) {
+            return ApplyResult::default();
+        }
+        let subtree_len = self.subtree_len(from);
+        let new_rel = self.ids.alloc_child();
+        let new = ChildOccurrence {
+            relation_id: new_rel,
+            parent: prev.child.clone(),
+            child: old.child.clone(),
+            slot: "body".into(),
+            position: String::new(),
+            child_missing: false,
+            cycle_unresolved: false,
+        };
+        let insert_at = prev_ix + self.subtree_len(prev_ix);
+        self.reparent_subtree(from, subtree_len, insert_at, new.clone(), &old)
+    }
+
+    fn outdent(&mut self, resolved: Resolved) -> ApplyResult {
+        let from = resolved.occurrence_index;
+        let old = self.occurrences[from].clone();
+        if old.parent == self.root {
+            return ApplyResult::default();
+        }
+        let Some(parent_ix) = self.nearest_parent_index(from) else {
+            return ApplyResult::default();
+        };
+        let parent_occ = self.occurrences[parent_ix].clone();
+        let subtree_len = self.subtree_len(from);
+        let new_rel = self.ids.alloc_child();
+        let new = ChildOccurrence {
+            relation_id: new_rel,
+            parent: parent_occ.parent.clone(),
+            child: old.child.clone(),
+            slot: parent_occ.slot.clone(),
+            position: String::new(),
+            child_missing: false,
+            cycle_unresolved: false,
+        };
+        let insert_at = parent_ix + self.subtree_len(parent_ix);
+        self.reparent_subtree(from, subtree_len, insert_at, new, &old)
+    }
+
+    fn reparent_subtree(
+        &mut self,
+        from: usize,
+        subtree_len: usize,
+        mut insert_at: usize,
+        new: ChildOccurrence,
+        old: &ChildOccurrence,
+    ) -> ApplyResult {
+        let mut subtree: Vec<ChildOccurrence> =
+            self.occurrences.drain(from..from + subtree_len).collect();
+        subtree[0] = new.clone();
+        if insert_at > from {
+            insert_at -= subtree_len;
+        }
+        insert_at = insert_at.min(self.occurrences.len());
+        for (offset, occ) in subtree.iter().enumerate() {
+            self.occurrences.insert(insert_at + offset, occ.clone());
+        }
+        self.pending_relations.push(child_relation(old, true));
+        self.pending_relations.push(child_relation(&new, false));
+        let place = self.place_for_inserted(&new, insert_at);
+        self.pending_placements
+            .retain(|(id, _)| id != &old.relation_id && id != &new.relation_id);
+        self.pending_placements
+            .push((new.relation_id.clone(), place));
+        self.push_undo(UndoEntry::Structure(StructureUndo::Reparent {
+            old: old.clone(),
+            new: new.clone(),
+            old_index: from,
+            new_index: insert_at,
+            subtree_len,
+        }));
+        self.reproject();
+        ApplyResult {
+            selection: Some(Selection::caret(
+                Cursor::new(BlockId(new.child.clone()), Part::Body, 0)
+                    .with_occurrence(BlockId(new.relation_id)),
+            )),
+        }
+    }
+
     fn reorder(&mut self, resolved: Resolved, to: usize) -> ApplyResult {
         let from = resolved.occurrence_index;
         if from >= self.occurrences.len() {
@@ -930,27 +1086,16 @@ impl CompositionSession {
         if from == to {
             return ApplyResult::default();
         }
+        let occurrence = self.occurrences[from].clone();
+        if self.occurrences[to].parent != occurrence.parent
+            || self.occurrences[to].slot != occurrence.slot
+        {
+            return ApplyResult::default();
+        }
         let occurrence = self.occurrences.remove(from);
         let insert_at = to.min(self.occurrences.len());
-        let place = if self.occurrences.is_empty() {
-            PlaceIntent::Append {
-                parent: self.root.clone(),
-                slot: self.slot.clone(),
-            }
-        } else if insert_at == 0 {
-            PlaceIntent::PlaceBefore {
-                parent: self.root.clone(),
-                slot: self.slot.clone(),
-                before: self.occurrences[0].relation_id.clone(),
-            }
-        } else {
-            PlaceIntent::PlaceAfter {
-                parent: self.root.clone(),
-                slot: self.slot.clone(),
-                after: self.occurrences[insert_at - 1].relation_id.clone(),
-            }
-        };
         self.occurrences.insert(insert_at, occurrence.clone());
+        let place = self.place_for_inserted(&occurrence, insert_at);
         self.pending_placements
             .retain(|(id, _)| id != &occurrence.relation_id);
         self.pending_placements
@@ -1051,7 +1196,7 @@ impl CompositionSession {
                     let occurrence = self.occurrences.remove(src);
                     let dest = dest.min(self.occurrences.len());
                     self.occurrences.insert(dest, occurrence.clone());
-                    let place = self.place_for_index(dest, &occurrence.relation_id);
+                    let place = self.place_for_inserted(&occurrence, dest);
                     self.pending_placements
                         .retain(|(id, _)| id != &occurrence.relation_id);
                     self.pending_placements
@@ -1090,27 +1235,174 @@ impl CompositionSession {
                         .push(child_relation(occurrence, false));
                 }
             }
+            StructureUndo::Reparent {
+                old,
+                new,
+                old_index,
+                new_index,
+                subtree_len,
+            } => {
+                if redo {
+                    self.restore_reparent(old, new, *old_index, *new_index, *subtree_len);
+                } else {
+                    self.restore_reparent(new, old, *new_index, *old_index, *subtree_len);
+                }
+            }
         }
     }
 
-    fn place_for_index(&self, index: usize, _relation_id: &str) -> PlaceIntent {
-        let parent = self.root.clone();
-        let slot = self.slot.clone();
-        if self.occurrences.is_empty() || index >= self.occurrences.len() {
-            PlaceIntent::Append { parent, slot }
-        } else if index == 0 {
-            PlaceIntent::PlaceBefore {
+    fn restore_reparent(
+        &mut self,
+        remove: &ChildOccurrence,
+        insert: &ChildOccurrence,
+        from: usize,
+        mut insert_at: usize,
+        subtree_len: usize,
+    ) {
+        if from >= self.occurrences.len() {
+            return;
+        }
+        let end = (from + subtree_len).min(self.occurrences.len());
+        let mut subtree: Vec<ChildOccurrence> = self.occurrences.drain(from..end).collect();
+        if subtree.is_empty() {
+            return;
+        }
+        subtree[0] = insert.clone();
+        if insert_at > from {
+            insert_at -= subtree.len();
+        }
+        insert_at = insert_at.min(self.occurrences.len());
+        for (offset, occ) in subtree.iter().enumerate() {
+            self.occurrences.insert(insert_at + offset, occ.clone());
+        }
+        self.pending_relations.push(child_relation(remove, true));
+        self.pending_relations.push(child_relation(insert, false));
+        let place = self.place_for_inserted(insert, insert_at);
+        self.pending_placements
+            .retain(|(id, _)| id != &remove.relation_id && id != &insert.relation_id);
+        self.pending_placements
+            .push((insert.relation_id.clone(), place));
+    }
+
+    fn place_for_inserted(&self, occurrence: &ChildOccurrence, index: usize) -> PlaceIntent {
+        let parent = occurrence.parent.clone();
+        let slot = occurrence.slot.clone();
+        let sibs: Vec<usize> = self
+            .occurrences
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.parent == parent && row.slot == slot)
+            .map(|(ix, _)| ix)
+            .collect();
+        match sibs.iter().position(|&ix| ix == index) {
+            Some(0) if sibs.len() == 1 => PlaceIntent::Append { parent, slot },
+            Some(0) => PlaceIntent::PlaceBefore {
                 parent,
                 slot,
-                before: self.occurrences[0].relation_id.clone(),
+                before: self.occurrences[sibs[1]].relation_id.clone(),
+            },
+            Some(pos) => PlaceIntent::PlaceAfter {
+                parent,
+                slot,
+                after: self.occurrences[sibs[pos - 1]].relation_id.clone(),
+            },
+            None => PlaceIntent::Append { parent, slot },
+        }
+    }
+
+    fn previous_sibling_index(&self, index: usize) -> Option<usize> {
+        let occ = self.occurrences.get(index)?;
+        self.occurrences[..index]
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, row)| row.parent == occ.parent && row.slot == occ.slot)
+            .map(|(ix, _)| ix)
+    }
+
+    fn nearest_parent_index(&self, index: usize) -> Option<usize> {
+        let parent = &self.occurrences.get(index)?.parent;
+        self.occurrences[..index]
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, row)| row.child == *parent)
+            .map(|(ix, _)| ix)
+    }
+
+    fn subtree_len(&self, index: usize) -> usize {
+        let depth = self.occurrence_depth(index);
+        let mut end = index + 1;
+        while end < self.occurrences.len() && self.occurrence_depth(end) > depth {
+            end += 1;
+        }
+        end - index
+    }
+
+    fn occurrence_depth(&self, index: usize) -> i64 {
+        let mut depth = 0i64;
+        let mut parent = self.occurrences[index].parent.clone();
+        for _ in 0..self.occurrences.len() {
+            if parent == self.root {
+                break;
             }
-        } else {
-            PlaceIntent::PlaceAfter {
-                parent,
-                slot,
-                after: self.occurrences[index - 1].relation_id.clone(),
+            match self
+                .occurrences
+                .iter()
+                .find(|row| row.child == parent)
+                .map(|row| row.parent.clone())
+            {
+                Some(next) => {
+                    depth += 1;
+                    parent = next;
+                }
+                None => break,
             }
         }
+        depth
+    }
+
+    fn would_cycle(&self, new_parent: &str, moving: &str) -> bool {
+        if new_parent == moving {
+            return true;
+        }
+        let mut current = new_parent.to_string();
+        for _ in 0..self.occurrences.len() {
+            if current == self.root {
+                return false;
+            }
+            let Some(row) = self.occurrences.iter().find(|occ| occ.child == current) else {
+                return false;
+            };
+            if row.parent == moving {
+                return true;
+            }
+            current = row.parent.clone();
+        }
+        false
+    }
+
+    fn touched_collections(&self) -> BTreeSet<(ObjectId, String)> {
+        let mut keys = BTreeSet::new();
+        keys.insert((self.root.clone(), self.slot.clone()));
+        for occ in &self.occurrences {
+            keys.insert((occ.parent.clone(), occ.slot.clone()));
+        }
+        for rel in &self.pending_relations {
+            if let (Some(parent), Some(slot)) = (rel.fields.get("parent"), rel.fields.get("slot")) {
+                keys.insert((parent.clone(), slot.clone()));
+            }
+        }
+        for (_, place) in &self.pending_placements {
+            match place {
+                PlaceIntent::Append { parent, slot }
+                | PlaceIntent::PlaceBefore { parent, slot, .. }
+                | PlaceIntent::PlaceAfter { parent, slot, .. } => {
+                    keys.insert((parent.clone(), slot.clone()));
+                }
+            }
+        }
+        keys
     }
 
     fn push_undo(&mut self, entry: UndoEntry) {
@@ -1122,7 +1414,8 @@ impl CompositionSession {
         self.snapshots = self
             .occurrences
             .iter()
-            .map(|occurrence| {
+            .enumerate()
+            .map(|(ix, occurrence)| {
                 let mut snap = self
                     .objects
                     .get(&occurrence.child)
@@ -1130,6 +1423,7 @@ impl CompositionSession {
                     .unwrap_or_else(|| missing_snapshot(&occurrence.child));
                 snap.id = BlockId(occurrence.child.clone());
                 snap.occurrence_id = Some(BlockId(occurrence.relation_id.clone()));
+                snap.indent = self.occurrence_depth(ix);
                 if occurrence.child_missing || occurrence.cycle_unresolved {
                     snap.read_only = true;
                 }
@@ -1287,6 +1581,22 @@ fn remap_op(op: BlockOp, internal: &BlockId) -> BlockOp {
         BlockOp::SetType { kind, .. } => BlockOp::SetType {
             id: internal.clone(),
             kind,
+        },
+        BlockOp::ToggleMark {
+            start, end, mark, ..
+        } => BlockOp::ToggleMark {
+            id: internal.clone(),
+            start,
+            end,
+            mark,
+        },
+        BlockOp::SetProp { key, value, .. } => BlockOp::SetProp {
+            id: internal.clone(),
+            key,
+            value,
+        },
+        BlockOp::ToggleCheck { .. } => BlockOp::ToggleCheck {
+            id: internal.clone(),
         },
         other => other,
     }
