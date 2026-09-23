@@ -658,12 +658,10 @@ fn editor_indent_reparents_child_and_undo_restores_occurrence() {
             }
         )]
     );
-    assert!(
-        draft
-            .read_set
-            .collections
-            .contains_key(&(BLOCK_A.into(), "body".into()))
-    );
+    assert!(!draft
+        .read_set
+        .collections
+        .contains_key(&(BLOCK_A.into(), "body".into())));
 
     session.undo();
     assert_eq!(
@@ -677,6 +675,80 @@ fn editor_indent_reparents_child_and_undo_restores_occurrence() {
     assert_eq!(session.snapshots()[1].indent, 0);
     assert_eq!(session.occurrences()[1].parent, NOTE);
     assert_eq!(session.occurrences()[1].child, BLOCK_B);
+}
+
+#[test]
+fn indent_before_flush_reanchors_following_new_child() {
+    let mut session = CompositionSession::open(
+        fixture(),
+        EditorGate::Editor,
+        ids(&[NEW_BLOCK], &[NEW_CHILD, NEST_CHILD]),
+    );
+    session.create(BlockType::Paragraph, Some(CHILD_B1));
+    assert_eq!(
+        session
+            .draft()
+            .placements
+            .iter()
+            .find(|(id, _)| id == NEW_CHILD)
+            .map(|(_, place)| place),
+        Some(&PlaceIntent::PlaceAfter {
+            parent: NOTE.into(),
+            slot: "body".into(),
+            after: CHILD_B1.into(),
+        })
+    );
+
+    session.apply(
+        BlockOp::Indent {
+            id: BlockId(BLOCK_B.into()),
+        },
+        Some(&occ(CHILD_B1)),
+    );
+    let draft = session.draft();
+    assert_eq!(
+        draft
+            .placements
+            .iter()
+            .find(|(id, _)| id == NEW_CHILD)
+            .map(|(_, place)| place),
+        Some(&PlaceIntent::PlaceAfter {
+            parent: NOTE.into(),
+            slot: "body".into(),
+            after: CHILD_A1.into(),
+        })
+    );
+    assert!(draft.placements.iter().all(|(_, place)| {
+        !matches!(
+            place,
+            PlaceIntent::PlaceAfter { after, .. } if after == CHILD_B1
+        )
+    }));
+}
+
+#[test]
+fn indent_new_child_before_flush_emits_only_live_relation() {
+    const PARENT: &str = "ashlar/block/opaque/n00blk00000000000000000pa";
+    const CHILD: &str = "ashlar/block/opaque/n00blk00000000000000000ch";
+    const ORIGINAL: &str = "ashlar/child/opaque/n00child00000000000000or";
+    let mut session = CompositionSession::open(
+        fixture(),
+        EditorGate::Editor,
+        ids(&[PARENT, CHILD], &[NEW_CHILD, ORIGINAL, NEST_CHILD]),
+    );
+    session.create(BlockType::Bullet, Some(CHILD_A2));
+    session.create(BlockType::Bullet, Some(NEW_CHILD));
+    session.apply(
+        BlockOp::Indent { id: BlockId(CHILD.into()) },
+        Some(&occ(ORIGINAL)),
+    );
+
+    let draft = session.draft();
+    assert!(draft.relations.iter().all(|relation| relation.id != ORIGINAL));
+    assert!(draft.relations.iter().any(|relation| {
+        relation.id == NEST_CHILD && !relation.tombstone
+    }));
+    assert!(!draft.read_set.collections.contains_key(&(PARENT.into(), "body".into())));
 }
 
 #[test]
