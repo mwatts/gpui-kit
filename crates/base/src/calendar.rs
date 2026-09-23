@@ -5,7 +5,7 @@ use crate::{h_flex, styled::StyledExt as _, v_flex};
 use chrono::{Datelike, Local, NaiveDate, Weekday};
 use gpui::{
     AnyElement, App, Context, ElementId, Empty, Entity, EventEmitter, FocusHandle,
-    InteractiveElement, IntoElement, ParentElement, Render, RenderOnce, SharedString,
+    InteractiveElement, IntoElement, ParentElement, Render, RenderOnce, Role, SharedString,
     StatefulInteractiveElement, StyleRefinement, Styled, Window, div, px,
 };
 
@@ -493,15 +493,35 @@ impl CalendarItemState {
 pub struct CalendarItem {
     base: crate::ObservedElement<gpui::Stateful<gpui::Div>>,
     state: CalendarItemState,
+    focus_handle: Option<FocusHandle>,
     style: StyleRefinement,
     children: Vec<AnyElement>,
 }
 
 impl CalendarItem {
-    fn new(id: impl Into<ElementId>, state: CalendarItemState) -> Self {
+    fn new(
+        id: impl Into<ElementId>,
+        state: CalendarItemState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self {
+        let id = id.into();
+        let mut base = div().id(id.clone()).test_support();
+        let mut focus_handle = None;
+        if state.kind() != CalendarItemKind::Weekday {
+            let focus = window
+                .use_keyed_state(format!("{id}-focus"), cx, |_, cx| cx.focus_handle())
+                .read(cx)
+                .clone();
+            base = base
+                .role(Role::Button)
+                .track_focus(&focus.clone().tab_stop(!state.is_disabled()));
+            focus_handle = Some(focus);
+        }
         Self {
-            base: div().id(id.into()).test_support(),
+            base,
             state,
+            focus_handle,
             style: StyleRefinement::default(),
             children: vec![],
         }
@@ -514,6 +534,12 @@ impl CalendarItem {
 
     pub fn item_state(&self) -> CalendarItemState {
         self.state
+    }
+
+    pub fn is_focused(&self, window: &Window) -> bool {
+        self.focus_handle
+            .as_ref()
+            .is_some_and(|focus| focus.is_focused(window))
     }
 
     /// Remove the default label so a styled facade can provide custom content.
@@ -624,7 +650,7 @@ impl Calendar {
     ) -> AnyElement {
         let label = (self.label)(state.kind(), value);
         (self.item)(
-            CalendarItem::new(id, state).with_label(label),
+            CalendarItem::new(id, state, window, cx).with_label(label),
             state,
             window,
             cx,
@@ -649,8 +675,13 @@ impl RenderOnce for Calendar {
                     || view.is_month()
                     || (view.is_year() && !self.state.read(cx).has_prev_year_page()),
             );
-            let mut item =
-                CalendarItem::new("calendar-prev", st).with_label((self.label)(st.kind(), 0));
+            let mut item = CalendarItem::new("calendar-prev", st, window, cx)
+                .with_label((self.label)(st.kind(), 0))
+                .aria_label(if view.is_day() {
+                    "Previous month"
+                } else {
+                    "Previous year page"
+                });
             if !st.is_disabled() {
                 let entity = self.state.clone();
                 item = item.on_click(move |_, _window, cx| {
@@ -679,7 +710,7 @@ impl RenderOnce for Calendar {
                     .active(active)
                     .disabled(self.disabled);
                 let entity = self.state.clone();
-                let mut item = CalendarItem::new(format!("calendar-{kind:?}"), st)
+                let mut item = CalendarItem::new(format!("calendar-{kind:?}"), st, window, cx)
                     .with_label((self.label)(kind, value));
                 item = item.when(!self.disabled, |item| {
                     item.on_click(move |_, _, cx| {
@@ -724,8 +755,13 @@ impl RenderOnce for Calendar {
                     || view.is_month()
                     || (view.is_year() && !self.state.read(cx).has_next_year_page()),
             );
-            let mut item =
-                CalendarItem::new("calendar-next", st).with_label((self.label)(st.kind(), 0));
+            let mut item = CalendarItem::new("calendar-next", st, window, cx)
+                .with_label((self.label)(st.kind(), 0))
+                .aria_label(if view.is_day() {
+                    "Next month"
+                } else {
+                    "Next year page"
+                });
             if !st.is_disabled() {
                 let entity = self.state.clone();
                 item = item.on_click(move |_, _, cx| {
@@ -783,10 +819,14 @@ impl RenderOnce for Calendar {
                                 .disabled(disabled)
                                 .today(date == s.today())
                         };
-                        let mut item =
-                            CalendarItem::new(format!("calendar-{date}-{offset}-{week_index}"), st)
-                                .with_label((self.label)(st.kind(), date.day() as i32))
-                                .aria_label(date.to_string());
+                        let mut item = CalendarItem::new(
+                            format!("calendar-{date}-{offset}-{week_index}"),
+                            st,
+                            window,
+                            cx,
+                        )
+                        .with_label((self.label)(st.kind(), date.day() as i32))
+                        .aria_label(date.to_string());
                         if !st.is_disabled() {
                             let entity = self.state.clone();
                             item = item.on_click(move |_, _, cx| {
@@ -808,7 +848,7 @@ impl RenderOnce for Calendar {
                     .active(month == current)
                     .disabled(self.disabled);
                 let entity = self.state.clone();
-                let item = CalendarItem::new(format!("calendar-month-{month}"), st)
+                let item = CalendarItem::new(format!("calendar-month-{month}"), st, window, cx)
                     .with_label((self.label)(st.kind(), month as i32))
                     .when(!self.disabled, |item| {
                         item.on_click(move |_, _, cx| {
@@ -828,7 +868,7 @@ impl RenderOnce for Calendar {
                     .active(year == current)
                     .disabled(self.disabled);
                 let entity = self.state.clone();
-                let item = CalendarItem::new(format!("calendar-year-{year}"), st)
+                let item = CalendarItem::new(format!("calendar-year-{year}"), st, window, cx)
                     .with_label((self.label)(st.kind(), year))
                     .when(!self.disabled, |item| {
                         item.on_click(move |_, _, cx| {

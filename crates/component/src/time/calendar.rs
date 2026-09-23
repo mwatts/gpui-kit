@@ -5,7 +5,7 @@ use gpui::{
 };
 use rust_i18n::t;
 
-use crate::{ActiveTheme, Icon, IconName, Sizable, Size, StyledExt as _};
+use crate::{ActiveTheme, Icon, IconName, Sizable, Size, StyledExt as _, ThemeStyled as _};
 
 use gpui_base::{Calendar as BaseCalendar, CalendarItemKind};
 pub use gpui_base::{CalendarEvent, CalendarState, Date, Matcher};
@@ -108,7 +108,8 @@ impl RenderOnce for Calendar {
                 .into(),
                 _ => value.to_string().into(),
             })
-            .item(move |item, state, _, cx| {
+            .item(move |item, state, window, cx| {
+                let is_focused = item.is_focused(window);
                 let item = match state.kind() {
                     CalendarItemKind::Previous => item
                         .clear_children()
@@ -201,6 +202,7 @@ impl RenderOnce for Calendar {
                     this.bg(cx.theme().accent)
                         .text_color(cx.theme().accent_foreground)
                 })
+                .when(is_focused, |this| this.focus_ring_style(window, cx))
                 .into_any_element()
             })
             .border_1()
