@@ -144,6 +144,7 @@ impl SlashRegistry {
     /// that entry installs this catalog so later-gate image/mention stay off.
     pub fn install_editor(cx: &mut App) {
         Self::set_commands(cx, Self::editor_commands());
+        MarkRegistry::install_editor(cx);
     }
 
     pub fn init(cx: &mut App) {
