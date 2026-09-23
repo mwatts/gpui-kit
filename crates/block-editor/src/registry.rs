@@ -98,14 +98,52 @@ impl SlashRegistry {
         ]
     }
 
-    /// Replace the catalog (hosts install the G-NOTES subset after [`crate::init`]).
+    #[must_use]
+    pub fn editor_commands() -> Vec<SlashCommand> {
+        vec![
+            SlashCommand::insert("paragraph", "Text", BlockType::Paragraph),
+            SlashCommand::insert("h1", "Heading 1", BlockType::Heading { level: 1 }),
+            SlashCommand::insert("h2", "Heading 2", BlockType::Heading { level: 2 }),
+            SlashCommand::insert("h3", "Heading 3", BlockType::Heading { level: 3 }),
+            SlashCommand::insert("h4", "Heading 4", BlockType::Heading { level: 4 }),
+            SlashCommand::insert("h5", "Heading 5", BlockType::Heading { level: 5 }),
+            SlashCommand::insert("h6", "Heading 6", BlockType::Heading { level: 6 }),
+            SlashCommand::insert("bullet", "Bullet", BlockType::Bullet),
+            SlashCommand::insert("ordered", "Numbered", BlockType::Ordered),
+            SlashCommand::insert("task", "Task", BlockType::Task),
+            SlashCommand::insert("toggle", "Toggle", BlockType::Custom("toggle".into())),
+            SlashCommand::insert("quote", "Quote", BlockType::Quote),
+            SlashCommand::insert("code", "Code", BlockType::Code),
+            SlashCommand {
+                id: "markdown".into(),
+                label: "Markdown".into(),
+                action: SlashAction::InsertCode {
+                    language: "markdown".into(),
+                },
+            },
+            SlashCommand::insert("table", "Table", BlockType::Table),
+            SlashCommand::insert("rule", "Divider", BlockType::Rule),
+            SlashCommand::insert("bookmark", "Bookmark", BlockType::Bookmark),
+            SlashCommand::insert_custom("callout", "Callout", "callout"),
+        ]
+    }
+
+    /// Replace the catalog (hosts install the enabled subset after [`crate::init`]).
     pub fn set_commands(cx: &mut App, commands: Vec<SlashCommand>) {
         Self::global_mut(cx).commands = commands;
     }
 
-    /// Restrict slash actions to paragraph and heading transformations.
+    /// Host entry used by the notes window. G-EDITOR replaces the paragraph/heading
+    /// subset with the editor catalog; image and reference slash stay unregistered.
     pub fn install_notes(cx: &mut App) {
-        Self::set_commands(cx, Self::notes_commands());
+        Self::install_editor(cx);
+    }
+
+    /// G-EDITOR slash catalog: built-in text kinds without image or references.
+    /// The notes window host still calls [`Self::install_notes`]; after G-EDITOR
+    /// that entry installs this catalog so later-gate image/mention stay off.
+    pub fn install_editor(cx: &mut App) {
+        Self::set_commands(cx, Self::editor_commands());
     }
 
     pub fn init(cx: &mut App) {
@@ -194,12 +232,30 @@ impl MarkRegistry {
             .collect()
     }
 
+    /// Ordinary styling registered at G-EDITOR. Passage/highlight stays later.
+    #[must_use]
+    pub fn editor_marks() -> Vec<MarkSpec> {
+        Self::default_marks()
+            .into_iter()
+            .filter(|spec| matches!(spec.key.as_str(), "bold" | "italic" | "strike" | "code"))
+            .collect()
+    }
+
     pub fn init(cx: &mut App) {
         if !cx.has_global::<Self>() {
             cx.set_global(Self {
                 marks: Self::default_marks(),
             });
         }
+    }
+
+    pub fn set_marks(cx: &mut App, marks: Vec<MarkSpec>) {
+        Self::global_mut(cx).marks = marks;
+    }
+
+    /// Restrict marks to bold, italic, strike, and inline code.
+    pub fn install_editor(cx: &mut App) {
+        Self::set_marks(cx, Self::editor_marks());
     }
 
     pub fn global(cx: &App) -> &Self {
@@ -279,6 +335,36 @@ mod tests {
             .collect();
         assert_eq!(ids, ["paragraph", "h1", "h2", "h3"]);
         assert!(SlashRegistry::default_commands().len() > ids.len());
+    }
+
+    #[test]
+    fn editor_slash_catalog_covers_g_editor_kinds_without_image() {
+        let ids: Vec<_> = SlashRegistry::editor_commands()
+            .into_iter()
+            .map(|command| command.id.to_string())
+            .collect();
+        assert!(ids.contains(&"code".to_string()));
+        assert!(ids.contains(&"quote".to_string()));
+        assert!(ids.contains(&"bullet".to_string()));
+        assert!(ids.contains(&"ordered".to_string()));
+        assert!(ids.contains(&"task".to_string()));
+        assert!(ids.contains(&"toggle".to_string()));
+        assert!(ids.contains(&"table".to_string()));
+        assert!(ids.contains(&"bookmark".to_string()));
+        assert!(ids.contains(&"callout".to_string()));
+        assert!(ids.contains(&"markdown".to_string()));
+        assert!(ids.contains(&"h6".to_string()));
+        assert!(!ids.iter().any(|id| id == "image"));
+        assert!(!ids.iter().any(|id| id == "mention"));
+    }
+
+    #[test]
+    fn editor_marks_are_ordinary_styling() {
+        let keys: Vec<_> = MarkRegistry::editor_marks()
+            .into_iter()
+            .map(|spec| spec.key.to_string())
+            .collect();
+        assert_eq!(keys, ["bold", "italic", "strike", "code"]);
     }
 
     #[test]

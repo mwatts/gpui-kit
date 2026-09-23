@@ -1,5 +1,5 @@
 use super::*;
-use crate::types::BlockOp;
+use crate::types::{BlockOp, LwwValue};
 use block_markdown::{BlockId, BlockType};
 use std::collections::BTreeMap;
 
@@ -545,4 +545,210 @@ fn notes_gate_rejects_heading_to_code() {
     );
     assert_eq!(session.snapshots()[0].block_type, BlockType::Paragraph);
     assert!(session.draft().content.is_empty());
+}
+
+fn open_editor() -> CompositionSession {
+    CompositionSession::open(fixture(), EditorGate::Editor, IdSource::default())
+}
+
+const NEST_CHILD: &str = "ashlar/child/opaque/n00child00000000000000in";
+
+#[test]
+fn editor_gate_writes_code_marks_and_language() {
+    let mut session = open_editor();
+    session.apply(
+        BlockOp::SetType {
+            id: BlockId(BLOCK_A.into()),
+            kind: BlockType::Code,
+        },
+        Some(&occ(CHILD_A1)),
+    );
+    assert_eq!(session.snapshots()[0].block_type, BlockType::Code);
+    session.apply(
+        BlockOp::SetProp {
+            id: BlockId(BLOCK_A.into()),
+            key: "language",
+            value: LwwValue::String("rust".into()),
+        },
+        Some(&occ(CHILD_A1)),
+    );
+    assert_eq!(
+        session.snapshots()[0].language.as_deref(),
+        Some("rust")
+    );
+    session.apply(
+        BlockOp::ToggleMark {
+            id: BlockId(BLOCK_A.into()),
+            start: 0,
+            end: 2,
+            mark: "bold".into(),
+        },
+        Some(&occ(CHILD_A1)),
+    );
+    assert!(
+        session.snapshots()[0].runs.iter().any(|run| matches!(
+            run,
+            loro::TextDelta::Insert {
+                attributes: Some(attrs),
+                ..
+            } if attrs.get("bold").is_some()
+        )),
+        "bold mark should apply: {:?}",
+        session.snapshots()[0].runs
+    );
+    let draft = session.draft();
+    assert!(draft.content.contains_key(BLOCK_A));
+    assert!(draft.relations.is_empty());
+}
+
+#[test]
+fn editor_indent_reparents_child_and_undo_restores_occurrence() {
+    let mut session = CompositionSession::open(
+        fixture(),
+        EditorGate::Editor,
+        ids(&[], &[NEST_CHILD]),
+    );
+    let content = session.snapshots()[1].id.0.clone();
+    let original = session.snapshots()[1]
+        .occurrence_id
+        .as_ref()
+        .unwrap()
+        .0
+        .clone();
+    session.apply(
+        BlockOp::Indent {
+            id: BlockId(BLOCK_B.into()),
+        },
+        Some(&occ(CHILD_B1)),
+    );
+    assert_eq!(session.snapshots()[1].id.0, content);
+    assert_eq!(session.snapshots()[1].indent, 1);
+    let nested = session.snapshots()[1]
+        .occurrence_id
+        .as_ref()
+        .unwrap()
+        .0
+        .clone();
+    assert_ne!(nested, original, "cross-parent indent allocates a new Child");
+    assert_eq!(nested, NEST_CHILD);
+    let occs = session.occurrences();
+    assert_eq!(occs[1].parent, BLOCK_A);
+    assert_eq!(occs[1].child, BLOCK_B);
+    assert_eq!(occs[1].slot, "body");
+    let draft = session.draft();
+    assert!(
+        draft
+            .relations
+            .iter()
+            .any(|rel| rel.id == original && rel.tombstone)
+    );
+    assert!(
+        draft
+            .relations
+            .iter()
+            .any(|rel| rel.id == nested && !rel.tombstone)
+    );
+    assert_eq!(
+        draft.placements,
+        vec![(
+            nested.clone(),
+            PlaceIntent::Append {
+                parent: BLOCK_A.into(),
+                slot: "body".into(),
+            }
+        )]
+    );
+    assert!(
+        draft
+            .read_set
+            .collections
+            .contains_key(&(BLOCK_A.into(), "body".into()))
+    );
+
+    session.undo();
+    assert_eq!(
+        session.snapshots()[1]
+            .occurrence_id
+            .as_ref()
+            .unwrap()
+            .0,
+        original
+    );
+    assert_eq!(session.snapshots()[1].indent, 0);
+    assert_eq!(session.occurrences()[1].parent, NOTE);
+    assert_eq!(session.occurrences()[1].child, BLOCK_B);
+}
+
+#[test]
+fn editor_outdent_returns_to_root_collection() {
+    let mut session = CompositionSession::open(
+        fixture(),
+        EditorGate::Editor,
+        ids(&[], &[NEST_CHILD, "ashlar/child/opaque/n00child00000000000000ou"]),
+    );
+    session.apply(
+        BlockOp::Indent {
+            id: BlockId(BLOCK_B.into()),
+        },
+        Some(&occ(CHILD_B1)),
+    );
+    session.apply(
+        BlockOp::Outdent {
+            id: BlockId(BLOCK_B.into()),
+        },
+        Some(&occ(NEST_CHILD)),
+    );
+    assert_eq!(session.snapshots()[1].indent, 0);
+    assert_eq!(session.occurrences()[1].parent, NOTE);
+    assert_eq!(session.occurrences()[1].child, BLOCK_B);
+    assert_ne!(
+        session.occurrences()[1].relation_id,
+        NEST_CHILD,
+        "outdent is a new occurrence, not the indented id"
+    );
+}
+
+#[test]
+fn editor_image_stays_read_only() {
+    let mut objects = BTreeMap::new();
+    objects.insert(
+        BLOCK_A.into(),
+        object(BLOCK_A, BlockType::Image, ""),
+    );
+    let mut session = CompositionSession::open(
+        CompositionRead {
+            root: NOTE.into(),
+            root_type: "ashlar.Note".into(),
+            version_tip: "tip".into(),
+            objects,
+            children: vec![child(CHILD_A1, BLOCK_A, "a")],
+            collection_versions: BTreeMap::new(),
+        },
+        EditorGate::Editor,
+        IdSource::default(),
+    );
+    assert!(session.snapshots()[0].read_only);
+    session.apply(
+        BlockOp::InsertText {
+            id: BlockId(BLOCK_A.into()),
+            offset: 0,
+            text: "x".into(),
+        },
+        Some(&occ(CHILD_A1)),
+    );
+    assert!(session.draft().content.is_empty());
+}
+
+#[test]
+fn notes_gate_still_ignores_indent() {
+    let mut session = open_fixture();
+    session.apply(
+        BlockOp::Indent {
+            id: BlockId(BLOCK_B.into()),
+        },
+        Some(&occ(CHILD_B1)),
+    );
+    assert_eq!(session.occurrences()[1].parent, NOTE);
+    assert_eq!(session.snapshots()[1].indent, 0);
+    assert!(session.draft().relations.is_empty());
 }
