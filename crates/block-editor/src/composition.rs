@@ -342,6 +342,7 @@ pub struct CompositionSession {
     version_tip: String,
     objects: HashMap<ObjectId, ContentSession>,
     occurrences: Vec<ChildOccurrence>,
+    saved_occurrences: BTreeMap<ObjectId, ChildOccurrence>,
     collection_versions: BTreeMap<(ObjectId, String), ObjectVersion>,
     pending_relations: Vec<RelationMutation>,
     pending_placements: Vec<(ObjectId, PlaceIntent)>,
@@ -356,6 +357,11 @@ impl CompositionSession {
     /// imported bytes are mapped, not replaced.
     #[must_use]
     pub fn open(read: CompositionRead, gate: EditorGate, ids: IdSource) -> Self {
+        let saved_occurrences = read
+            .children
+            .iter()
+            .map(|child| (child.relation_id.clone(), child.clone()))
+            .collect();
         let slot = read
             .children
             .first()
@@ -387,6 +393,7 @@ impl CompositionSession {
             version_tip: read.version_tip,
             objects,
             occurrences: read.children,
+            saved_occurrences,
             collection_versions: read.collection_versions,
             pending_relations: Vec::new(),
             pending_placements: Vec::new(),
@@ -647,8 +654,6 @@ impl CompositionSession {
             for key in self.touched_collections() {
                 if let Some(version) = self.collection_versions.get(&key) {
                     collections.insert(key, version.clone());
-                } else {
-                    collections.insert(key, ObjectVersion(self.version_tip.clone()));
                 }
             }
         }
@@ -659,10 +664,70 @@ impl CompositionSession {
                 collections,
             },
             content,
-            relations: self.pending_relations.clone(),
-            placements: self.pending_placements.clone(),
+            relations: self.materialize_relations(),
+            placements: self.materialize_placements(),
             new_images: BTreeMap::new(),
         }
+    }
+
+    fn materialize_relations(&self) -> Vec<RelationMutation> {
+        let current: BTreeSet<&ObjectId> = self
+            .occurrences
+            .iter()
+            .map(|child| &child.relation_id)
+            .collect();
+        let mut relations = Vec::new();
+        for (id, child) in &self.saved_occurrences {
+            if !current.contains(id) {
+                relations.push(child_relation(child, true));
+            }
+        }
+        for child in &self.occurrences {
+            if !self.saved_occurrences.contains_key(&child.relation_id) {
+                relations.push(child_relation(child, false));
+            }
+        }
+        relations
+    }
+
+    fn materialize_placements(&self) -> Vec<(ObjectId, PlaceIntent)> {
+        let pending: BTreeSet<&ObjectId> =
+            self.pending_placements.iter().map(|(id, _)| id).collect();
+        let mut placements = Vec::with_capacity(pending.len());
+        for (index, occurrence) in self.occurrences.iter().enumerate() {
+            if !pending.contains(&occurrence.relation_id) {
+                continue;
+            }
+            let same_collection = |other: &&ChildOccurrence| {
+                other.parent == occurrence.parent && other.slot == occurrence.slot
+            };
+            let parent = occurrence.parent.clone();
+            let slot = occurrence.slot.clone();
+            let place = if let Some(previous) =
+                self.occurrences[..index].iter().rev().find(same_collection)
+            {
+                PlaceIntent::PlaceAfter {
+                    parent,
+                    slot,
+                    after: previous.relation_id.clone(),
+                }
+            } else if let Some(next_saved) = self.occurrences[index + 1..].iter().find(|other| {
+                other.parent == occurrence.parent
+                    && other.slot == occurrence.slot
+                    && self.saved_occurrences.contains_key(&other.relation_id)
+                    && !pending.contains(&other.relation_id)
+            }) {
+                PlaceIntent::PlaceBefore {
+                    parent,
+                    slot,
+                    before: next_saved.relation_id.clone(),
+                }
+            } else {
+                PlaceIntent::Append { parent, slot }
+            };
+            placements.push((occurrence.relation_id.clone(), place));
+        }
+        placements
     }
 
     /// Mark the current draft as saved without clearing per-object undo.
@@ -683,6 +748,11 @@ impl CompositionSession {
         }
         self.pending_relations.clear();
         self.pending_placements.clear();
+        self.saved_occurrences = self
+            .occurrences
+            .iter()
+            .map(|child| (child.relation_id.clone(), child.clone()))
+            .collect();
     }
 
     fn resolve(
