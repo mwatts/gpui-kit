@@ -545,6 +545,7 @@ pub struct DatePicker {
     state: Entity<DatePickerState>,
     cleanable: bool,
     placeholder: Option<SharedString>,
+    accessibility_label: Option<SharedString>,
     size: Size,
     number_of_months: usize,
     presets: Option<Vec<DateRangePreset>>,
@@ -603,6 +604,7 @@ impl DatePicker {
             state: state.clone(),
             cleanable: false,
             placeholder: None,
+            accessibility_label: None,
             size: Size::default(),
             style: StyleRefinement::default(),
             number_of_months: 1,
@@ -616,6 +618,12 @@ impl DatePicker {
     /// Set the placeholder of the date picker, default: "".
     pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.placeholder = Some(placeholder.into());
+        self
+    }
+
+    /// Set the name exposed for the combo box.
+    pub fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.accessibility_label = Some(label.into());
         self
     }
 
@@ -695,6 +703,9 @@ impl RenderOnce for DatePicker {
         let picker_state = self.state.clone();
 
         BaseDatePicker::new(self.id, &state.focus_handle)
+            .when_some(self.accessibility_label, |this, label| {
+                this.aria_label(label)
+            })
             .open(state.open)
             .when(state.date.is_some(), |this| {
                 this.aria_value(display_title.clone())

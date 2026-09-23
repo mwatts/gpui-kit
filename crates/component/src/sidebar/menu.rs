@@ -1,5 +1,6 @@
 use crate::{
     ActiveTheme as _, Collapsible, Icon, IconName, Placement, Sizable as _, StyledExt,
+    ThemeStyled as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{ContextMenuExt, PopupMenu},
@@ -268,6 +269,10 @@ impl SidebarItem for SidebarMenuItem {
         let id = id.into();
         let label_text = self.label.clone();
         let accessibility_label = self.accessibility_label.clone();
+        let focus = window
+            .use_keyed_state(format!("{id}-focus"), cx, |_, cx| cx.focus_handle())
+            .read(cx)
+            .clone();
         let is_submenu = self.is_submenu();
         let open_state = if is_submenu {
             Some(window.use_keyed_state(id.clone(), cx, |_, _| default_open))
@@ -294,6 +299,7 @@ impl SidebarItem for SidebarMenuItem {
                     .role(Role::TreeItem)
                     .aria_label(accessibility_label.unwrap_or_else(|| label_text.clone()))
                     .aria_selected(is_active)
+                    .track_focus(&focus.clone().tab_stop(!is_disabled))
                     .overflow_x_hidden()
                     .flex_shrink_0()
                     .p_2()
@@ -311,6 +317,9 @@ impl SidebarItem for SidebarMenuItem {
                         this.font_medium()
                             .bg(cx.theme().tokens.sidebar_accent)
                             .text_color(cx.theme().sidebar_accent_foreground)
+                    })
+                    .when(focus.is_focused(window), |this| {
+                        this.focus_ring_style(window, cx)
                     })
                     .when_some(self.icon.clone(), |this, icon| this.child(icon))
                     .when(is_collapsed, |this| {

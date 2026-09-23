@@ -202,6 +202,7 @@ impl RenderOnce for Sheet {
                             .small()
                             .ghost()
                             .icon(IconName::Close)
+                            .accessibility_label("Close sheet")
                             .on_click(|_, window, cx| {
                                 window.dispatch_action(Box::new(Cancel), cx);
                             }),
