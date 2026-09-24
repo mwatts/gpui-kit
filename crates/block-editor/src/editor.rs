@@ -78,6 +78,9 @@ pub struct Editor {
     blink: Option<Task<()>>,
     stored: Vec<Mark>,
     pub(crate) slash: Option<Slash>,
+    /// Scroll offset for the slash menu. Arrow keys reveal the active row;
+    /// the wheel moves this handle.
+    pub(crate) slash_scroll: ScrollHandle,
     pub(crate) pasted: Option<link::Paste>,
     url_prompt: Option<Prompt>,
     pub(crate) dropping: Option<BlockId>,
@@ -141,6 +144,7 @@ impl Editor {
             blink: None,
             stored: Vec::new(),
             slash: None,
+            slash_scroll: ScrollHandle::new(),
             pasted: None,
             url_prompt: None,
             dropping: None,
@@ -863,6 +867,7 @@ impl Editor {
                     Cursor::new(at.id.clone(), at.part, slash),
                     cx,
                 ));
+                self.slash_scroll.set_offset(gpui::point(px(0.), px(0.)));
             }
             return;
         }
@@ -878,6 +883,7 @@ impl Editor {
         if let Some(slash) = &mut self.slash {
             slash.refilter(&query);
         }
+        self.slash_scroll.scroll_to_item(0);
     }
 
     pub(crate) fn confirm_slash(
@@ -1220,8 +1226,15 @@ impl Editor {
     }
 
     fn move_vertical(&mut self, extend: bool, down: bool, cx: &mut Context<Self>) {
-        if let Some(slash) = &mut self.slash {
-            slash.step(if down { 1 } else { -1 });
+        if self.slash.is_some() {
+            let active = {
+                let slash = self.slash.as_mut().unwrap();
+                slash.step(if down { 1 } else { -1 });
+                slash.filter.active()
+            };
+            if let Some(active) = active {
+                self.slash_scroll.scroll_to_item(active);
+            }
             return cx.notify();
         }
         if let Some(pasted) = &mut self.pasted {

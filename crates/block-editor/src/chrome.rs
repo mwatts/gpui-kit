@@ -30,6 +30,10 @@ const SURFACE_RADIUS: f32 = 12.0;
 const HANDLE_SIZE: f32 = 18.0;
 const SLASH_WIDTH: f32 = 200.0;
 const SLASH_MAX_H: f32 = 280.0;
+/// Padding on the card plus one row (`py-5` and a line). Kept under the real
+/// row so a long catalog stays shorter than its content and can scroll.
+const SLASH_CHROME_H: f32 = 12.0;
+const SLASH_ROW_H: f32 = 24.0;
 const PASTE_WIDTH: f32 = 180.0;
 const LANG_WIDTH: f32 = 150.0;
 const CHIP_PAD_X: f32 = 4.0;
@@ -42,6 +46,12 @@ pub const GLASS_ALPHA: f32 = 1.0;
 
 /// Popover card fill: opaque `popover` while glass is off; Bezel
 /// `glass_overlay` when glass is on.
+/// Viewport for the slash list. A long catalog stays at [`SLASH_MAX_H`] so the
+/// card is a scrollport instead of growing with every row.
+fn slash_viewport_height(row_count: usize) -> f32 {
+    (SLASH_CHROME_H + row_count as f32 * SLASH_ROW_H).min(SLASH_MAX_H)
+}
+
 fn frost(cx: &App) -> gpui::Hsla {
     if GLASS_ALPHA >= 1.0 {
         return cx.theme().popover;
@@ -79,11 +89,21 @@ impl Editor {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let slash = self.slash.as_ref()?;
-        let (point, line) = self.layouts.position(&slash.at)?;
+        // Prefer the caret layout. If this frame has not painted the body yet,
+        // fall back to the block bounds / editor origin so "/" still opens a menu.
+        let (point, line) = self.layouts.position(&slash.at).unwrap_or_else(|| {
+            let fallback = self
+                .layouts
+                .block_bounds(&slash.at.id)
+                .map(|b| gpui::point(b.origin.x + px(8.0), b.origin.y + b.size.height))
+                .unwrap_or(self.origin);
+            (fallback, px(20.0))
+        });
         let origin = gpui::point(point.x, point.y + line + px(4.0));
         let commands = slash.commands().to_vec();
         let filtered = slash.filter.filtered().to_vec();
         let active = slash.filter.active();
+        let viewport = slash_viewport_height(filtered.len());
 
         let rows = filtered.into_iter().enumerate().map(|(view_ix, item_ix)| {
             let command = commands[item_ix].clone();
@@ -113,7 +133,15 @@ impl Editor {
                     .child(
                         frost_card(SLASH_MENU, SLASH_WIDTH, cx)
                             .debug_selector(|| SLASH_MENU.into())
+                            .h(px(viewport))
+                            .flex_shrink_0()
+                            .track_scroll(&self.slash_scroll)
                             .occlude()
+                            .on_scroll_wheel(cx.listener(|_, _, _, cx| {
+                                // The card is the scrollport. Keep the wheel off
+                                // the page underneath it.
+                                cx.stop_propagation();
+                            }))
                             .children(rows),
                     ),
             )

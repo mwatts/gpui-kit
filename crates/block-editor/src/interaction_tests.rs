@@ -3,7 +3,7 @@
 use block_markdown::BlockType;
 use gpui::{
     AppContext as _, Element as _, EntityInputHandler, Focusable as _, IntoElement as _, Render,
-    TestAppContext, VisualTestContext,
+    ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, VisualTestContext, point, px,
 };
 use gpui_component::Root;
 use gpui_component_block_view::CHART_LANGUAGE;
@@ -133,6 +133,39 @@ fn slash_opens_menu(cx: &mut TestAppContext) {
     );
     editor.read_with(cx, |editor, _| {
         assert!(editor.slash.is_some(), "slash state should be open");
+    });
+}
+
+#[gpui::test]
+fn slash_menu_wheel_scrolls(cx: &mut TestAppContext) {
+    let (editor, cx) = harness(cx);
+    editor.update(cx, |editor, cx| {
+        editor.insert_text("/", cx);
+    });
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+    cx.run_until_parked();
+    let bounds = cx
+        .debug_bounds("slash-menu")
+        .expect("slash menu should be painted");
+    let position = bounds.center();
+    cx.simulate_mouse_move(position, None, gpui::Modifiers::default());
+    cx.simulate_event(ScrollWheelEvent {
+        position,
+        delta: ScrollDelta::Pixels(point(px(0.), px(-120.))),
+        modifiers: gpui::Modifiers::default(),
+        touch_phase: TouchPhase::Moved,
+    });
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+    editor.read_with(cx, |editor, _| {
+        assert!(
+            editor.slash_scroll.offset().y < px(0.),
+            "wheel should scroll the slash menu, offset={:?}",
+            editor.slash_scroll.offset()
+        );
     });
 }
 
