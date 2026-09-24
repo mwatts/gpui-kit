@@ -584,7 +584,7 @@ mod tests {
         });
         cx.update(|window, cx| {
             let state = &view.read(cx).0;
-            window.focus(&state.focus_handle(cx));
+            window.focus(&state.focus_handle(cx), cx);
             window.draw(cx).clear(cx);
         });
         assert!(!view.read_with(cx, |view, cx| view.0.read(cx).is_open()));
