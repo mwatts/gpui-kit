@@ -29,7 +29,7 @@ pub const LANGUAGE_MENU: &str = "language-menu";
 const SURFACE_RADIUS: f32 = 12.0;
 const HANDLE_SIZE: f32 = 18.0;
 const SLASH_WIDTH: f32 = 200.0;
-const SLASH_MAX_H: f32 = 280.0;
+const SLASH_MAX_H: f32 = 420.0;
 /// Padding on the card plus one row (`py-5` and a line). Kept under the real
 /// row so a long catalog stays shorter than its content and can scroll.
 const SLASH_CHROME_H: f32 = 12.0;
