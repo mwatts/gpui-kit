@@ -295,7 +295,7 @@ impl ToastStack {
     pub fn new(id: impl Into<ElementId>, state: ToastStackState) -> Self {
         let id = id.into();
         Self {
-            base: div().id(id.clone()).test_support(),
+            base: div().id(id.clone()).role(Role::Status).test_support(),
             id,
             style: StyleRefinement::default(),
             state,
