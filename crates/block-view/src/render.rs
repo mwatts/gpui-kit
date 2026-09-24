@@ -50,6 +50,7 @@ const CARD_COVER: f32 = 44.0;
 const IMAGE_EMPTY_HEIGHT: f32 = 52.0;
 const CAPTION_GAP: f32 = 4.0;
 const IMAGE_EMPTY: &str = "Add an image";
+const IMAGE_UNAVAILABLE: &str = "Image unavailable";
 const CAPTION_HINT: &str = "Write a caption";
 const TABLE_CELL_PADDING: f32 = 12.0;
 const TABLE_DIVIDER: f32 = 1.0;
@@ -508,7 +509,7 @@ fn block_element(
                 ),
             }
         }
-        BlockType::Image => image_block(block, overlay, typography, palette),
+        BlockType::Image => image_block(block, overlay, typography, palette, cx),
         BlockType::Bookmark => bookmark(
             overlay.block_ix,
             block.url.as_deref().unwrap_or(""),
@@ -1280,55 +1281,33 @@ fn image_block(
     overlay: Overlay<'_>,
     typography: &Typography,
     palette: &EditorPalette,
+    cx: &App,
 ) -> AnyElement {
     let hint = SharedString::new_static(CAPTION_HINT);
     let overlay = Overlay {
         placeholder: Some(&hint),
         ..overlay.at(Part::Caption)
     };
-    let url = block.url.as_deref().unwrap_or("");
-    let picture = if url.is_empty() {
-        div()
-            .h(px(IMAGE_EMPTY_HEIGHT))
-            .flex()
-            .items_center()
-            .px(px(CARD_PADDING))
-            .rounded(px(BUTTON_RADIUS))
-            .border_1()
-            .border_dashed()
-            .border_color(palette.border)
-            .text_size(px(typography.body.size()))
-            .text_color(palette.text_muted)
-            .debug_selector(|| "image-empty".into())
-            .child(IMAGE_EMPTY)
-    } else {
-        let picture = match url.contains("://") {
-            true => img(SharedString::from(url.to_string())),
-            false => img(std::path::PathBuf::from(url)),
-        };
-        let box_ = div()
-            .relative()
-            .rounded(px(BUTTON_RADIUS))
-            .overflow_hidden()
-            .border_1()
-            .border_color(palette.border)
-            .children(overlay.layouts.map(|layouts| {
-                let layouts = layouts.clone();
-                let id = overlay.block_id.clone();
-                canvas(
-                    move |bounds, _, _| layouts.record_picture(id, bounds),
-                    |_, _, _, _| (),
-                )
-                .absolute()
-                .size_full()
-            }));
-        match block.width {
-            Some(width) => box_
-                .self_start()
-                .max_w_full()
-                .w(px(width as f32))
-                .child(picture.w(px(width as f32)).max_w_full()),
-            None => box_.child(picture.max_w_full()),
+    let stored = block.url.clone();
+    let url = stored.as_deref().unwrap_or("");
+    let resolver = crate::image_resolve::installed(cx);
+    let resolved = resolver.map(|resolve| resolve(url));
+    let paint =
+        crate::image_resolve::image_paint(url, resolved.as_ref().map(|path| path.as_deref()));
+    debug_assert_eq!(block.url, stored);
+    let picture = match paint {
+        crate::image_resolve::ImagePaint::Empty => {
+            image_placeholder(IMAGE_EMPTY, "image-empty", typography, palette)
+        }
+        crate::image_resolve::ImagePaint::Unavailable => {
+            image_placeholder(IMAGE_UNAVAILABLE, "image-unavailable", typography, palette)
+        }
+        crate::image_resolve::ImagePaint::Remote(url) => {
+            image_frame(img(SharedString::from(url)), &overlay, block, palette)
+        }
+        crate::image_resolve::ImagePaint::Cache(path)
+        | crate::image_resolve::ImagePaint::Path(path) => {
+            image_frame(img(path), &overlay, block, palette)
         }
     };
     div()
@@ -1352,6 +1331,61 @@ fn image_block(
             },
         )
         .into_any_element()
+}
+
+fn image_placeholder(
+    label: &'static str,
+    selector: &'static str,
+    typography: &Typography,
+    palette: &EditorPalette,
+) -> AnyElement {
+    div()
+        .h(px(IMAGE_EMPTY_HEIGHT))
+        .flex()
+        .items_center()
+        .px(px(CARD_PADDING))
+        .rounded(px(BUTTON_RADIUS))
+        .border_1()
+        .border_dashed()
+        .border_color(palette.border)
+        .text_size(px(typography.body.size()))
+        .text_color(palette.text_muted)
+        .debug_selector(|| selector.into())
+        .child(label)
+        .into_any_element()
+}
+
+fn image_frame(
+    picture: impl IntoElement,
+    overlay: &Overlay<'_>,
+    block: &BlockSnapshot,
+    palette: &EditorPalette,
+) -> AnyElement {
+    let box_ = div()
+        .relative()
+        .rounded(px(BUTTON_RADIUS))
+        .overflow_hidden()
+        .border_1()
+        .border_color(palette.border)
+        .children(overlay.layouts.map(|layouts| {
+            let layouts = layouts.clone();
+            let id = overlay.block_id.clone();
+            canvas(
+                move |bounds, _, _| layouts.record_picture(id, bounds),
+                |_, _, _, _| (),
+            )
+            .absolute()
+            .size_full()
+        }));
+    match block.width {
+        Some(width) => box_
+            .self_start()
+            .max_w_full()
+            .w(px(width as f32))
+            .child(picture)
+            .into_any_element(),
+        None => box_.child(picture).into_any_element(),
+    }
 }
 
 fn bookmark(
