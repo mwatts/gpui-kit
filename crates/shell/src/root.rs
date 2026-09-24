@@ -17,7 +17,7 @@ use std::{path::PathBuf, rc::Rc, time::Duration};
 use gpui::{
     Anchor, AnyElement, AnyView, App, AppContext as _, ClickEvent, ClipboardItem, Context,
     ElementId, Entity, FocusHandle, Global, Hsla, InteractiveElement as _, IntoElement, KeyBinding,
-    MouseButton, MouseDownEvent, ParentElement as _, Render, SharedString,
+    MouseButton, MouseDownEvent, ParentElement as _, Render, Role, SharedString,
     StatefulInteractiveElement as _, StyleRefinement, Styled as _, WeakFocusHandle, Window,
     actions, deferred, div, hsla, prelude::FluentBuilder as _, px,
 };
@@ -708,6 +708,7 @@ impl ShellRoot {
             .map(|(id, toast, status)| (id.clone(), toast.clone(), status))
             .collect::<Vec<_>>();
 
+        let empty = items.is_empty();
         deferred(
             items
                 .into_iter()
@@ -739,7 +740,9 @@ impl ShellRoot {
                     },
                 )
                 .placement(Anchor::TopRight)
-                .focus_handle(self.toast_focus_handle.clone())
+                .when(!empty, |stack| {
+                    stack.focus_handle(self.toast_focus_handle.clone())
+                })
                 .v_flex()
                 .absolute()
                 .top(spacing.lg)
@@ -810,6 +813,7 @@ impl Render for ShellRoot {
 
         div()
             .id("shell-root")
+            .role(Role::Application)
             // The window's base text size, from the theme rather than from
             // GPUI's default rem.
             //
