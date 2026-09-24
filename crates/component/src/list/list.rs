@@ -14,8 +14,8 @@ use crate::{Icon, IndexPath, Selectable, Sizable, StyledExt};
 use crate::{VirtualListScrollHandle, list::ListDelegate, v_virtual_list};
 use gpui::{
     App, AvailableSpace, ClickEvent, Context, DefiniteLength, EdgesRefinement, EventEmitter,
-    ListSizingBehavior, RenderOnce, Role, ScrollStrategy, SharedString, StatefulInteractiveElement,
-    StyleRefinement, Subscription, px, size,
+    ListSizingBehavior, Pixels, Point, RenderOnce, Role, ScrollStrategy, SharedString,
+    StatefulInteractiveElement, StyleRefinement, Subscription, px, size,
 };
 use gpui::{
     AppContext, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding,
@@ -61,6 +61,31 @@ impl Default for ListOptions {
             search_placeholder: None,
             paddings: EdgesRefinement::default(),
         }
+    }
+}
+
+/// Selection and exact scroll position captured before leaving a list.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ListReturnContext {
+    selected_index: Option<IndexPath>,
+    selected_item_id: Option<SharedString>,
+    scroll_offset: Point<Pixels>,
+}
+
+impl ListReturnContext {
+    /// The selected item to restore when the delegate did not supply an id.
+    pub const fn selected_index(&self) -> Option<IndexPath> {
+        self.selected_index
+    }
+
+    /// The stable accessibility id of the selected item, when the delegate supplied one.
+    pub fn selected_item_id(&self) -> Option<&SharedString> {
+        self.selected_item_id.as_ref()
+    }
+
+    /// The exact list scroll offset to restore.
+    pub const fn scroll_offset(&self) -> Point<Pixels> {
+        self.scroll_offset
     }
 }
 
@@ -193,6 +218,49 @@ where
 
     pub fn selected_index(&self) -> Option<IndexPath> {
         self.selected_index
+    }
+
+    /// Capture the selected item and exact scroll position before leaving the list.
+    pub fn return_context(&self, cx: &App) -> ListReturnContext {
+        ListReturnContext {
+            selected_index: self.selected_index,
+            selected_item_id: self
+                .selected_index
+                .and_then(|ix| self.delegate.accessibility_id(ix, cx)),
+            scroll_offset: self.scroll_handle.base_handle().offset(),
+        }
+    }
+
+    /// Restore a captured selection, exact scroll position, and keyboard focus.
+    ///
+    /// When the context carries an accessibility id, that id is resolved
+    /// against the current collection. A stale row index is used only when
+    /// the delegate did not supply an id.
+    pub fn restore_return_context(
+        &mut self,
+        context: ListReturnContext,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let selected_index = match context.selected_item_id.as_ref() {
+            Some(item_id) => self.index_for_accessibility_id(item_id, cx),
+            None => context.selected_index,
+        };
+        self.set_selected_index(selected_index, window, cx);
+        self.scroll_handle
+            .base_handle()
+            .set_offset(context.scroll_offset);
+        self.focus(window, cx);
+        cx.notify();
+    }
+
+    fn index_for_accessibility_id(&self, item_id: &SharedString, cx: &App) -> Option<IndexPath> {
+        (0..self.delegate.sections_count(cx)).find_map(|section| {
+            (0..self.delegate.items_count(section, cx)).find_map(|row| {
+                let ix = IndexPath::new(row).section(section);
+                (self.delegate.accessibility_id(ix, cx).as_ref() == Some(item_id)).then_some(ix)
+            })
+        })
     }
 
     /// Set the index of the item that has been right clicked.
@@ -484,6 +552,7 @@ where
             .map(|s| s.eq_row(ix))
             .unwrap_or(false);
         let id = SharedString::from(format!("list-item-{}", ix));
+        let accessibility_id = self.delegate.accessibility_id(ix, cx);
         let accessibility_label = self.delegate.accessibility_label(ix, cx);
 
         let total_items = self.rows_cache.items_count();
@@ -491,10 +560,12 @@ where
         div()
             .id(id)
             .role(Role::ListItem)
+            .when_some(accessibility_id, |this, id| this.accessibility_id(id))
             .when_some(accessibility_label, |this, label| this.aria_label(label))
             .aria_position_in_set(ix.row + 1)
             .aria_size_of_set(total_items)
             .aria_selected(selected)
+            .when(selected, |this| this.aria_active_descendant())
             .w_full()
             .relative()
             .overflow_hidden()
@@ -934,5 +1005,129 @@ mod measurement_tests {
                 div()
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod return_context_tests {
+    use super::*;
+    use crate::list::ListItem;
+    use gpui::{Element as _, TestAppContext, point};
+
+    struct Delegate {
+        order: Vec<usize>,
+    }
+
+    impl ListDelegate for Delegate {
+        type Item = ListItem;
+
+        fn items_count(&self, _: usize, _: &App) -> usize {
+            self.order.len()
+        }
+
+        fn render_item(
+            &mut self,
+            ix: IndexPath,
+            _: &mut Window,
+            _: &mut Context<ListState<Self>>,
+        ) -> Option<Self::Item> {
+            let item = self.order[ix.row];
+            Some(ListItem::new(ix.row).child(format!("Item {}", item + 1)))
+        }
+
+        fn accessibility_id(&self, ix: IndexPath, _: &App) -> Option<SharedString> {
+            Some(format!("test.list-item.{}", self.order[ix.row]).into())
+        }
+
+        fn accessibility_label(&self, ix: IndexPath, _: &App) -> Option<SharedString> {
+            Some(format!("Item {}", self.order[ix.row] + 1).into())
+        }
+
+        fn set_selected_index(
+            &mut self,
+            _: Option<IndexPath>,
+            _: &mut Window,
+            _: &mut Context<ListState<Self>>,
+        ) {
+        }
+    }
+
+    fn delegate() -> Delegate {
+        Delegate {
+            order: (0..8).collect(),
+        }
+    }
+
+    #[gpui::test]
+    fn rendered_list_item_exposes_delegate_accessibility_id(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let window = cx.add_empty_window();
+        window.update(|window, cx| {
+            let list = cx.new(|cx| ListState::new(delegate(), window, cx));
+            list.update(cx, |list, cx| {
+                list.selected_index = Some(IndexPath::new(1));
+                let item = list
+                    .render_list_item(IndexPath::new(1), window, cx)
+                    .into_element();
+                let mut node = gpui::accesskit::Node::new(Role::ListItem);
+                item.write_a11y_info(&mut node);
+
+                assert_eq!(node.author_id(), Some("test.list-item.1"));
+                assert_eq!(node.label(), Some("Item 2"));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn return_context_restores_scroll_selection_and_focus(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let window = cx.add_empty_window();
+        window.update(|window, cx| {
+            let list = cx.new(|cx| ListState::new(delegate(), window, cx));
+            let captured = list.update(cx, |list, cx| {
+                list.set_selected_index(Some(IndexPath::new(1)), window, cx);
+                list.scroll_handle()
+                    .base_handle()
+                    .set_offset(point(px(0.), px(-42.)));
+                list.return_context(cx)
+            });
+            assert_eq!(
+                captured.selected_item_id().map(AsRef::as_ref),
+                Some("test.list-item.1")
+            );
+
+            list.update(cx, |list, cx| {
+                list.set_selected_index(Some(IndexPath::new(2)), window, cx);
+                list.scroll_handle()
+                    .base_handle()
+                    .set_offset(point(px(0.), px(-100.)));
+                list.restore_return_context(captured, window, cx);
+                assert!(list.focus_handle(cx).is_focused(window));
+                assert_eq!(list.selected_index(), Some(IndexPath::new(1)));
+                assert_eq!(
+                    list.scroll_handle().base_handle().offset(),
+                    point(px(0.), px(-42.))
+                );
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn return_context_follows_stable_item_id_after_reorder(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let window = cx.add_empty_window();
+        window.update(|window, cx| {
+            let list = cx.new(|cx| ListState::new(delegate(), window, cx));
+            let captured = list.update(cx, |list, cx| {
+                list.set_selected_index(Some(IndexPath::new(1)), window, cx);
+                list.return_context(cx)
+            });
+
+            list.update(cx, |list, cx| {
+                list.delegate_mut().order.swap(1, 2);
+                list.restore_return_context(captured, window, cx);
+                assert_eq!(list.selected_index(), Some(IndexPath::new(2)));
+            });
+        });
     }
 }

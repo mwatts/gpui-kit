@@ -54,6 +54,14 @@ pub trait ListDelegate: Sized + 'static {
         None
     }
 
+    /// Return a stable accessibility id for the item.
+    ///
+    /// Unlike the row index, this survives reordering and is what return
+    /// context uses to restore the same item.
+    fn accessibility_id(&self, _ix: IndexPath, _cx: &App) -> Option<SharedString> {
+        None
+    }
+
     /// Render the section header at the given index, default is None.
     ///
     /// NOTE: Every header should have same height.
