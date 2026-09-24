@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn canonical_reference_round_trips_without_becoming_a_cache_path() {
         let bytes = b"png-bytes";
-        let reference = format!("meta-bin/{:x}", bytes.len());
+        let reference = format!("bytes/{:x}", bytes.len());
         let saved = saved_image_reference(&reference);
         assert_eq!(saved, reference);
         assert!(!saved.starts_with('/'));

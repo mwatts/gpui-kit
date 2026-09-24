@@ -11,7 +11,7 @@ struct Installed(ImageResolver);
 
 impl Global for Installed {}
 
-/// Install the resolver that maps a `meta-bin/{hash}` reference to a cache path.
+/// Install the resolver that maps a `bytes/{hash}` reference to a cache path.
 pub fn set_image_resolver(cx: &mut App, resolver: ImageResolver) {
     cx.set_global(Installed(resolver));
 }
@@ -34,7 +34,7 @@ pub enum ImagePaint {
 /// A stored reference names archive bytes, not a filesystem path.
 #[must_use]
 pub fn is_canonical_image_reference(url: &str) -> bool {
-    let rest = url.strip_prefix("meta-bin/").unwrap_or("");
+    let rest = url.strip_prefix("bytes/").unwrap_or("");
     !rest.is_empty()
         && !rest.contains('/')
         && !rest.contains('\\')
@@ -65,7 +65,7 @@ mod tests {
 
     #[test]
     fn resolver_maps_a_hash_without_replacing_the_reference() {
-        let reference = "meta-bin/abcdef";
+        let reference = "bytes/abcdef";
         let stored = reference.to_owned();
         let cache = Path::new("/tmp/ashlar-cache/abcdef");
         assert_eq!(
@@ -85,7 +85,7 @@ mod tests {
             ImagePaint::Path(PathBuf::from("/tmp/photo.png"))
         );
         assert_eq!(
-            image_paint("meta-bin/ab", None),
+            image_paint("bytes/ab", None),
             ImagePaint::Unavailable
         );
         assert_eq!(
