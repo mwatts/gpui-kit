@@ -1606,14 +1606,8 @@ impl ShellRuntime {
         window: &mut Window,
         cx: &mut App,
     ) -> Result<Entity<ScriptView>> {
-        let (_scope, _) = scope::enter_with_runtime(
-            self,
-            window,
-            cx,
-            ScopePhase::Event,
-            None,
-            policy.clone(),
-        );
+        let (_scope, _) =
+            scope::enter_with_runtime(self, window, cx, ScopePhase::Event, None, policy.clone());
         let loaded = self.load_host_source(source)?;
         loaded.mounted.set(true);
         self.instantiate_view_with_policy(&loaded.view_type, policy, window, cx)

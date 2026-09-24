@@ -63,6 +63,7 @@ mod overlays;
 mod questionnaire;
 mod retained_forms;
 mod scroll;
+mod searchable_list;
 mod separator;
 mod settings;
 mod skeleton;
