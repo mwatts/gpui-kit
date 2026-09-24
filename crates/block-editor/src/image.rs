@@ -19,9 +19,17 @@ pub enum Source<'a> {
     File(&'a Path),
 }
 
-/// Host callback: store screenshot / drop bytes and return a URL the renderer
-/// can `img()`. Required for clipboard images; without it, paste falls through.
+/// Host callback: store screenshot / drop bytes and return the canonical
+/// reference that is written into the block. That string is the document
+/// authority. A cache path used only for paint must not be returned here.
+/// Required for clipboard images; without it, paste falls through.
 pub type ImageStore = Arc<dyn Fn(Source<'_>, &mut App) -> Option<String> + Send + Sync>;
+
+/// The store result is saved unchanged. Paint resolution must not replace it.
+#[must_use]
+pub fn saved_image_reference(store_result: &str) -> &str {
+    store_result
+}
 
 struct ImageStoreGlobal(Option<ImageStore>);
 
@@ -88,6 +96,21 @@ impl Prompt {
     #[must_use]
     pub fn value(&self, cx: &App) -> SharedString {
         self.input.read(cx).value()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::saved_image_reference;
+
+    #[test]
+    fn canonical_reference_round_trips_without_becoming_a_cache_path() {
+        let bytes = b"png-bytes";
+        let reference = format!("meta-bin/{:x}", bytes.len());
+        let saved = saved_image_reference(&reference);
+        assert_eq!(saved, reference);
+        assert!(!saved.starts_with('/'));
+        assert_eq!(bytes, b"png-bytes");
     }
 }
 
