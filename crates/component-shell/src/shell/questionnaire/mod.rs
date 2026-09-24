@@ -216,42 +216,68 @@ impl ComponentMaterializer for RootMaterializer {
             )?);
         }
 
-        let names: Vec<(gpui::SharedString, Vec<gpui::SharedString>)> = definitions
-            .iter()
-            .map(|item| {
-                (
-                    item.name().clone(),
-                    item.choices()
-                        .iter()
-                        .map(|choice| choice.value().clone())
-                        .collect(),
-                )
-            })
-            .collect();
         let fingerprint = fingerprint(&definitions, shortcuts);
-        let (state, error) = request.with_window_app(|window, cx| {
-            let retained =
-                window.use_keyed_state(format!("shell-questionnaire:{id}"), cx, |_, cx| {
-                    build_retained(definitions.clone(), shortcuts, fingerprint, cx)
-                });
-            retained.update(cx, |retained, cx| {
-                if retained.fingerprint != fingerprint {
-                    *retained = build_retained(definitions.clone(), shortcuts, fingerprint, cx);
-                }
-            });
-            let retained = retained.read(cx);
-            Ok((retained.native.clone(), retained.error.clone()))
-        })?;
-        if let Some(error) = error {
-            anyhow::bail!(error);
+        let style = request.take_style();
+        Ok(BoundQuestionnaire {
+            id,
+            definitions,
+            shortcuts,
+            fingerprint,
+            style,
         }
+        .into_any_element())
+    }
+}
 
+/// Retains the flow during render. `ShellRuntime::check` materializes outside
+/// paint, where `use_keyed_state` has no current view.
+#[derive(gpui::IntoElement)]
+struct BoundQuestionnaire {
+    id: String,
+    definitions: Vec<QuestionnaireItemDefinition>,
+    shortcuts: Option<QuestionnaireShortcutMode>,
+    fingerprint: Fingerprint,
+    style: gpui::StyleRefinement,
+}
+
+impl gpui::RenderOnce for BoundQuestionnaire {
+    fn render(self, window: &mut gpui::Window, cx: &mut gpui::App) -> impl gpui::IntoElement {
+        let definitions = self.definitions.clone();
+        let shortcuts = self.shortcuts;
+        let fingerprint = self.fingerprint;
+        let retained = window.use_keyed_state(
+            format!("shell-questionnaire:{}", self.id),
+            cx,
+            move |_, cx| build_retained(definitions, shortcuts, fingerprint, cx),
+        );
+        retained.update(cx, |retained, cx| {
+            if retained.fingerprint != self.fingerprint {
+                *retained = build_retained(
+                    self.definitions.clone(),
+                    self.shortcuts,
+                    self.fingerprint,
+                    cx,
+                );
+            }
+        });
+        let retained = retained.read(cx);
+        let error = retained.error.clone();
+        let state = retained.native.clone();
+        drop(retained);
+        if let Some(error) = error {
+            return gpui::div().child(error).into_any_element();
+        }
         let mut questionnaire =
             Questionnaire::new(&state).child(QuestionnaireProgress::new(&state));
-        for (name, values) in names {
+        for item in &self.definitions {
+            let name = item.name().clone();
             let mut answers = QuestionnaireChoices::new(&state, name.clone());
-            for value in values {
-                answers = answers.child(QuestionnaireChoice::new(&state, name.clone(), value));
+            for choice in item.choices() {
+                answers = answers.child(QuestionnaireChoice::new(
+                    &state,
+                    name.clone(),
+                    choice.value(),
+                ));
             }
             questionnaire = questionnaire.child(
                 QuestionnaireItem::new(&state, name.clone())
@@ -268,8 +294,8 @@ impl ComponentMaterializer for RootMaterializer {
                 .child(QuestionnaireNext::new(&state))
                 .child(QuestionnaireSubmit::new(&state)),
         );
-        element.style().refine(&request.take_style());
-        Ok(element.into_any_element())
+        element.style().refine(&self.style);
+        element.into_any_element()
     }
 }
 
