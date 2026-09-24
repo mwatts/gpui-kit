@@ -3,8 +3,8 @@ use crate::input::Copy;
 use crate::{StyledExt, TextSelectionLayer};
 use gpui::{
     AnyElement, AnyView, App, AppContext, ClipboardItem, Context, Div, Entity, Global,
-    InteractiveElement, IntoElement, KeyBinding, ParentElement, Render, Stateful, StyleRefinement,
-    Styled, Window, actions, div,
+    InteractiveElement, IntoElement, KeyBinding, ParentElement, Render, Role, Stateful,
+    StatefulInteractiveElement, StyleRefinement, Styled, Window, actions, div,
 };
 use std::{any::TypeId, rc::Rc};
 
@@ -284,6 +284,7 @@ impl Render for Root {
         }
         let mut content = div()
             .id("root")
+            .role(Role::Application)
             .key_context(CONTEXT)
             .on_action(cx.listener(Self::on_action_tab))
             .on_action(cx.listener(Self::on_action_tab_prev))
