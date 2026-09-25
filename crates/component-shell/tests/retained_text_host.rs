@@ -125,3 +125,48 @@ fn textarea_model_round_trip(cx: &mut TestAppContext) {
 fn editor_model_round_trip(cx: &mut TestAppContext) {
     exercise(cx, "Editor", "EditorState(\"\")");
 }
+
+/// `size("large")` makes the field 44px tall, so a click 38px down lands in it;
+/// the default medium field is 32px, so the same click misses.
+fn click_below_medium_height(cx: &mut TestAppContext, modifiers: &str) -> String {
+    let source = format!(
+        r#"
+import {{ View, div }} from "gpui-kit";
+import {{ Input, InputState }} from "gpui-component";
+export default class App extends View {{
+  init() {{ this.state = InputState(); this.model = ""; }}
+  render() {{
+    return div().size_full()
+      .child(new Input(this.state){modifiers}.absolute().left(0).top(0).w(400)
+        .on_change((value, cx) => {{ this.model = value; cx.notify(); }}))
+      .child(`model:${{this.model}}`);
+  }}
+}}
+"#
+    );
+    let (mut context, view, _app) = mount(cx, &source);
+    draw(&mut context);
+    context.update(|_, cx| assert_eq!(view.read(cx).build_error(), None));
+    context.simulate_click(point(px(20.), px(38.)), Modifiers::default());
+    context.simulate_keystrokes("7");
+    draw(&mut context);
+    context.update(|_, cx| view.read(cx).snapshot().unwrap().debug_tree())
+}
+
+#[gpui::test]
+fn input_size_large_grows_the_field(cx: &mut TestAppContext) {
+    let text = click_below_medium_height(cx, r#".size("large").appearance(false).bordered(false)"#);
+    assert!(
+        text.contains("model:7"),
+        "a large field takes the click: {text}"
+    );
+}
+
+#[gpui::test]
+fn input_default_size_stays_medium(cx: &mut TestAppContext) {
+    let text = click_below_medium_height(cx, "");
+    assert!(
+        text.contains("model:") && !text.contains("model:7"),
+        "{text}"
+    );
+}
