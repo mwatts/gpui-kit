@@ -161,7 +161,7 @@ pub use resizable::{
 };
 #[doc(hidden)]
 pub use resizable::{PANEL_MIN_SIZE, resize_handle};
-pub use root::{Root, RootPlugin};
+pub use root::{Root, RootPlugin, unfocused_tab_direction};
 pub use scroll_bounce::{ScrollBounce, ScrollBounceMotion};
 pub use scrollable_mask::{RoundedFrameCover, ScrollableMask};
 pub use scrollbar::{

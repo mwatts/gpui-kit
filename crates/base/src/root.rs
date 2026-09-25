@@ -20,6 +20,58 @@ pub(crate) fn init(cx: &mut App) {
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-c", Copy, Some(CONTEXT)),
     ]);
+    if !cx.has_global::<UnfocusedTabObserver>() {
+        cx.observe_keystrokes(|event, window, cx| {
+            let Some(forward) = unfocused_tab_direction(event, window, cx) else {
+                return;
+            };
+            if window.root::<Root>().flatten().is_none() {
+                return;
+            }
+            Root::update(window, cx, |root, window, cx| {
+                if forward {
+                    root.on_action_tab(&Tab, window, cx);
+                } else {
+                    root.on_action_tab_prev(&TabPrev, window, cx);
+                }
+            });
+        })
+        .detach();
+        cx.set_global(UnfocusedTabObserver);
+    }
+}
+
+/// Marks the one keystroke observer that moves focus on Tab when nothing in
+/// a window is focused.
+struct UnfocusedTabObserver;
+impl Global for UnfocusedTabObserver {}
+
+/// `Some(true)` for Tab and `Some(false)` for Shift-Tab when no element in
+/// `window` is focused and no binding claimed the keystroke.
+///
+/// With nothing focused GPUI dispatches a key from the dispatch tree's root
+/// node, which is the window's root view and carries no key context, so a
+/// root's context-scoped Tab binding never matches and the first Tab would do
+/// nothing. A keystroke observer still sees that keystroke, so the root takes
+/// the step itself: Tab reaches the first tab stop and Shift-Tab the last.
+pub fn unfocused_tab_direction(
+    event: &gpui::KeystrokeEvent,
+    window: &Window,
+    cx: &App,
+) -> Option<bool> {
+    let keystroke = &event.keystroke;
+    let modifiers = keystroke.modifiers;
+    if event.action.is_some()
+        || keystroke.key != "tab"
+        || modifiers.control
+        || modifiers.alt
+        || modifiers.platform
+        || modifiers.function
+        || window.focused(cx).is_some()
+    {
+        return None;
+    }
+    Some(!modifiers.shift)
 }
 
 /// A presentation layer's retained, per-window facilities.
