@@ -824,3 +824,40 @@ fn notes_gate_still_ignores_indent() {
     assert_eq!(session.snapshots()[1].indent, 0);
     assert!(session.draft().relations.is_empty());
 }
+
+#[test]
+fn structural_save_updates_expected_collection_versions() {
+    let mut session = CompositionSession::open(
+        fixture(),
+        EditorGate::Notes,
+        ids(&[NEW_BLOCK, SUFFIX_BLOCK], &[NEW_CHILD, SUFFIX_CHILD]),
+    );
+    let body = (NOTE.to_string(), "body".to_string());
+    session.create(BlockType::Paragraph, Some(CHILD_B1));
+    let draft = session.draft();
+    assert_eq!(
+        draft.read_set.collections.get(&body),
+        Some(&ObjectVersion("col-1".into()))
+    );
+    session.acknowledge_save_with_collections(
+        BTreeMap::from([(NEW_BLOCK.to_string(), ObjectVersion("v1".into()))]),
+        BTreeMap::from([(body.clone(), ObjectVersion("col-2".into()))]),
+    );
+    assert!(session.draft().relations.is_empty());
+    assert!(session.draft().read_set.collections.is_empty());
+
+    session.create(BlockType::Paragraph, Some(NEW_CHILD));
+    let draft = session.draft();
+    assert_eq!(
+        draft.read_set.collections.get(&body),
+        Some(&ObjectVersion("col-2".into())),
+        "the next placement expects the version the structural save wrote"
+    );
+
+    // A plain acknowledgement keeps the previous expected version.
+    session.acknowledge_save(BTreeMap::new());
+    assert_eq!(
+        session.collection_versions().get(&body),
+        Some(&ObjectVersion("col-2".into()))
+    );
+}

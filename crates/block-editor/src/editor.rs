@@ -322,9 +322,23 @@ impl Editor {
     }
 
     /// Flush a completed save without clearing per-object undo.
+    ///
+    /// After a structural save (relations or placements), use
+    /// [`Self::acknowledge_save_with_collections`] so the next placement does
+    /// not send stale collection versions.
     pub fn acknowledge_save(&mut self, versions: BTreeMap<String, ObjectVersion>) {
+        self.acknowledge_save_with_collections(versions, BTreeMap::new());
+    }
+
+    /// [`Self::acknowledge_save`] plus the `(parent, slot)` collection
+    /// versions the save wrote.
+    pub fn acknowledge_save_with_collections(
+        &mut self,
+        versions: BTreeMap<String, ObjectVersion>,
+        collections: BTreeMap<(String, String), ObjectVersion>,
+    ) {
         if let Some(session) = &mut self.bridge {
-            session.acknowledge_save(versions);
+            session.acknowledge_save_with_collections(versions, collections);
         }
     }
 
