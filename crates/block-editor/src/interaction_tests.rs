@@ -537,6 +537,70 @@ fn rendered_editor_has_multiline_role_and_accessible_name(cx: &mut TestAppContex
     });
 }
 
+#[gpui::test]
+fn read_only_rejects_edits_but_selects_and_copies(cx: &mut TestAppContext) {
+    let (editor, cx) = harness(cx);
+    let changes = std::rc::Rc::new(std::cell::Cell::new(0));
+    editor.update(cx, |editor, cx| {
+        editor.insert_text("hello", cx);
+        let id = editor.snapshots()[0].id.clone();
+        editor.select(Selection::caret(Cursor::new(id, Part::Body, 0)), cx);
+        editor.set_read_only(true, cx);
+        assert!(editor.read_only());
+    });
+    let counter = changes.clone();
+    cx.update(|_, cx| {
+        cx.subscribe(&editor, move |_, event: &crate::EditorEvent, _| {
+            if matches!(event, crate::EditorEvent::Changed) {
+                counter.set(counter.get() + 1);
+            }
+        })
+        .detach();
+    });
+    cx.simulate_input("x/");
+    cx.simulate_keystrokes("enter backspace delete tab");
+    #[cfg(target_os = "macos")]
+    cx.simulate_keystrokes("cmd-z cmd-b cmd-x cmd-v");
+    #[cfg(not(target_os = "macos"))]
+    cx.simulate_keystrokes("ctrl-z ctrl-shift-x ctrl-x ctrl-v");
+    editor.update(cx, |editor, cx| {
+        let id = editor.snapshots()[0].id.clone();
+        editor.apply(crate::BlockOp::DeleteBlock { id }, cx);
+        editor.insert_text("/", cx);
+    });
+    cx.run_until_parked();
+    editor.read_with(cx, |editor, _| {
+        assert_eq!(editor.snapshots().len(), 1);
+        assert_eq!(editor.snapshots()[0].plain, "hello");
+        assert!(
+            editor.slash.is_none(),
+            "read-only must not open the slash menu"
+        );
+    });
+    assert_eq!(changes.get(), 0, "read-only must not emit Changed");
+
+    cx.simulate_keystrokes("shift-right shift-right");
+    #[cfg(target_os = "macos")]
+    cx.simulate_keystrokes("cmd-c");
+    #[cfg(not(target_os = "macos"))]
+    cx.simulate_keystrokes("ctrl-c");
+    cx.run_until_parked();
+    editor.read_with(cx, |editor, _| {
+        let (start, end) = editor.selection().ordered();
+        assert_eq!((start.offset, end.offset), (0, 2), "selection still moves");
+    });
+    let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    assert_eq!(copied.as_deref(), Some("he"));
+
+    editor.update(cx, |editor, cx| {
+        editor.set_read_only(false, cx);
+        editor.insert_text("!", cx);
+    });
+    editor.read_with(cx, |editor, _| {
+        assert_eq!(editor.snapshots()[0].plain, "!llo");
+    });
+}
+
 #[test]
 fn interaction_tests_collect() {
     assert!(true);
