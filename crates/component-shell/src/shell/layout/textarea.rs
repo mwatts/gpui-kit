@@ -111,7 +111,7 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
         })])
 .with_methods([vec![
             retained_forms::value_method(),
-            retained_forms::on_submit_method("Textarea", "(value: string, cx: Context) => void"),
+            retained_forms::on_submit_method("Textarea", retained_forms::TEXT_SUBMIT_SCHEMA),
             MethodDescriptor::new("disabled", vec![ArgumentDescriptor::new("disabled", ArgumentSchema::Boolean)], |_| Ok(ComponentPayload::new(()))).with_documentation("Sets the common disabled state."),
             bool_method("Textarea", "appearance", "Sets the corresponding native textarea presentation or editing policy.", Op::Appearance), bool_method("Textarea", "bordered", "Sets the corresponding native textarea presentation or editing policy.", Op::Bordered), bool_method("Textarea", "readonly", "Sets the corresponding native textarea presentation or editing policy.", Op::Readonly),
             MethodDescriptor::new("aria_label", vec![ArgumentDescriptor::new("label", ArgumentSchema::String)], |args| match args {

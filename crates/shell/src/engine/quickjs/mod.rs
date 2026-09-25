@@ -4908,7 +4908,19 @@ impl ShellRuntime {
         window: &mut Window,
         cx: &mut App,
     ) -> Result<ComponentCallbackValue> {
-        self.dispatch_component_event(id, EventArguments::Scalar(arguments), window, cx)
+        self.dispatch_component_event(id, EventArguments::Scalar(arguments), &[], window, cx)
+    }
+    /// Like [`Self::dispatch_component_callback_value`], with plain data
+    /// passed after the `Context`, so callbacks that stop at `cx` still work.
+    pub(crate) fn dispatch_component_callback_value_trailing(
+        self: &Rc<Self>,
+        id: CallbackId,
+        arguments: &[ComponentCallbackArgument],
+        trailing: &[ComponentDataValue],
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Result<ComponentCallbackValue> {
+        self.dispatch_component_event(id, EventArguments::Scalar(arguments), trailing, window, cx)
     }
     pub(crate) fn dispatch_component_event_data(
         self: &Rc<Self>,
@@ -4917,13 +4929,14 @@ impl ShellRuntime {
         window: &mut Window,
         cx: &mut App,
     ) -> Result<ComponentCallbackValue> {
-        self.dispatch_component_event(id, EventArguments::Data(arguments), window, cx)
+        self.dispatch_component_event(id, EventArguments::Data(arguments), &[], window, cx)
     }
 
     fn dispatch_component_event(
         self: &Rc<Self>,
         id: CallbackId,
         arguments: EventArguments<'_>,
+        trailing: &[ComponentDataValue],
         window: &mut Window,
         cx: &mut App,
     ) -> Result<ComponentCallbackValue> {
@@ -4960,7 +4973,7 @@ impl ShellRuntime {
         );
         let result = self.with_js(|ctx| {
             let handler = entry.value.clone().restore(ctx)?;
-            let mut js_arguments = JsArgs::new(ctx.clone(), arguments.len() + 1);
+            let mut js_arguments = JsArgs::new(ctx.clone(), arguments.len() + 1 + trailing.len());
             match arguments {
                 EventArguments::Scalar(values) => {
                     for value in values {
@@ -4974,6 +4987,9 @@ impl ShellRuntime {
                 }
             }
             js_arguments.push_arg(context_object(ctx, ContextBinding::Call(generation))?)?;
+            for value in trailing {
+                js_arguments.push_arg(component_data_into_js(ctx, value)?)?;
+            }
             let value: Value<'_> = handler.call_arg(js_arguments)?;
             if value.is_null() || value.is_undefined() {
                 Ok(ComponentCallbackValue::Null)
