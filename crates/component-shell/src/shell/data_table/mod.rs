@@ -11,8 +11,8 @@ use gpui_shell::{
     anyhow,
     gpui::{
         self, AppContext as _, Entity, InteractiveElement as _, IntoElement as _,
-        ParentElement as _, Refineable as _, RenderOnce, StyleRefinement, Styled as _,
-        Subscription, Window,
+        ParentElement as _, Refineable as _, RenderOnce, StatefulInteractiveElement as _,
+        StyleRefinement, Styled as _, Subscription, Window,
     },
 };
 use std::{
@@ -109,6 +109,22 @@ impl TableDelegate for Delegate {
             cell = cell.text_color(color);
         }
         cell
+    }
+    fn render_tr(
+        &mut self,
+        row_ix: usize,
+        _: &mut gpui::Window,
+        _: &mut gpui::Context<TableState<Self>>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let label = self
+            .rows
+            .row(row_ix)
+            .ok()
+            .and_then(|row| object_string_field(row, "accessibility_label"))
+            .map(str::to_owned);
+        #[cfg(test)]
+        test_probe::label(row_ix, label.clone());
+        row_element(row_ix, label)
     }
     fn render_td(
         &mut self,
@@ -306,6 +322,16 @@ impl ComponentMaterializer for Materializer {
             style,
         }
         .into_any_element())
+    }
+}
+
+/// A DataTable row, named for assistive technology when the row object
+/// carries an `accessibility_label` string.
+fn row_element(row_ix: usize, label: Option<String>) -> gpui::Stateful<gpui::Div> {
+    let row = gpui::div().id(("row", row_ix));
+    match label {
+        Some(label) => row.aria_label(label),
+        None => row,
     }
 }
 
@@ -651,7 +677,7 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
             MethodDescriptor::new("on_activate", vec![ArgumentDescriptor::new("on_activate", ArgumentSchema::Callback("(id: string, cx: Context) => void"))], |args| match args { [argument @ ComponentArgument::Callback(_)] => Ok(ComponentPayload::new(Op::OnActivate(argument.clone()))), _ => Err("DataTable.on_activate expects one callback".into()) }).with_documentation("Reports the stable row id after a row is activated."),
             MethodDescriptor::new("selected", vec![ArgumentDescriptor::new("id", ArgumentSchema::String)], |args| match args { [ComponentArgument::String(id)] if !id.is_empty() => Ok(ComponentPayload::new(Op::Selected(id.clone()))), _ => Err("DataTable.selected expects a non-empty row id".into()) }).with_documentation("Controls the selected row by stable id."),
         ])
-.with_documentation("A real retained native DataTable. Rows are captured as an immutable plain-data snapshot and visible cells are built lazily from (row, column). Style applies to the full-size table host."))?;
+.with_documentation("A real retained native DataTable. Rows are captured as an immutable plain-data snapshot and visible cells are built lazily from (row, column). A row object may provide an `accessibility_label` string that names the row for assistive technology. Style applies to the full-size table host."))?;
     Ok(())
 }
 
@@ -666,6 +692,13 @@ pub(crate) mod test_probe {
         static SORTS: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
         static SELECTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
         static CLEARS: Cell<usize> = const { Cell::new(0) };
+        static LABELS: RefCell<Vec<(usize, Option<String>)>> = const { RefCell::new(Vec::new()) };
+    }
+    pub(super) fn label(row: usize, label: Option<String>) {
+        LABELS.with(|values| values.borrow_mut().push((row, label)));
+    }
+    pub(crate) fn take_labels() -> Vec<(usize, Option<String>)> {
+        LABELS.with(|values| std::mem::take(&mut *values.borrow_mut()))
     }
     pub(super) fn built() {
         BUILDS.with(|value| value.set(value.get() + 1));
@@ -692,6 +725,7 @@ pub(crate) mod test_probe {
         SORTS.with(|values| values.borrow_mut().clear());
         SELECTS.with(|values| values.borrow_mut().clear());
         CLEARS.with(|value| value.set(0));
+        LABELS.with(|values| values.borrow_mut().clear());
     }
     pub(crate) fn cell_builds() -> usize {
         BUILDS.with(Cell::get)
@@ -720,6 +754,17 @@ pub(crate) mod test_probe {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_row_label_becomes_the_rows_accessible_name() {
+        use gpui::Element as _;
+        let mut node = gpui::accesskit::Node::new(gpui::Role::Unknown);
+        row_element(0, Some("Invoice 42, unpaid".into())).write_a11y_info(&mut node);
+        assert_eq!(node.label(), Some("Invoice 42, unpaid"));
+        let mut unnamed = gpui::accesskit::Node::new(gpui::Role::Unknown);
+        row_element(1, None).write_a11y_info(&mut unnamed);
+        assert_eq!(unnamed.label(), None);
+    }
+
     #[test]
     fn catalog_is_retained_data_table_only() {
         let mut registry = ComponentRegistry::new(
