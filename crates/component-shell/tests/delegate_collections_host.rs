@@ -49,7 +49,7 @@ import { List } from "gpui-component";
 export default class App extends View {
   init() { this.updated = false; }
   render() {
-    const rows = this.updated ? [{id: "beta", label: "Beta"}] : [{id: "alpha", label: "Alpha"}];
+    const rows = this.updated ? [{id: "beta", label: "Beta"}] : [{id: "alpha", label: "Alpha", accessibility_label: "Alpha, person"}];
     this.updated = true;
     return new List("people", () => rows, row => div().child(row.label));
   }
@@ -78,13 +78,28 @@ export default class App extends View {
     delegate_collections::test_probe::take_rows();
     context.update(|window, cx| window.draw(cx).clear(cx));
     let initial = delegate_collections::test_probe::take_rows();
+    let labels = delegate_collections::test_probe::take_labels();
+    assert!(
+        !labels.is_empty()
+            && labels
+                .iter()
+                .all(|label| label.as_deref() == Some("Alpha, person")),
+        "{labels:?}"
+    );
     assert!(!initial.is_empty());
     assert!(initial.iter().all(|id| id == "alpha"), "{initial:?}");
     context.update(|_, cx| view.update(cx, |view, cx| view.refresh(cx)));
     context.run_until_parked();
     delegate_collections::test_probe::take_rows();
+    delegate_collections::test_probe::take_labels();
     context.update(|window, cx| window.draw(cx).clear(cx));
     let refreshed = delegate_collections::test_probe::take_rows();
+    assert!(
+        delegate_collections::test_probe::take_labels()
+            .iter()
+            .all(Option::is_none),
+        "a row without accessibility_label stays unnamed"
+    );
     assert!(!refreshed.is_empty());
     assert!(refreshed.iter().all(|id| id == "beta"), "{refreshed:?}");
     context.update(|_, cx| assert_eq!(view.read(cx).build_error(), None));
