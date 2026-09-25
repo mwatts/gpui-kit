@@ -406,6 +406,13 @@ impl CompositionSession {
         session
     }
 
+    /// The expected version of each ordered collection, keyed by
+    /// `(parent, slot)`.
+    #[must_use]
+    pub fn collection_versions(&self) -> &BTreeMap<(ObjectId, String), ObjectVersion> {
+        &self.collection_versions
+    }
+
     #[must_use]
     pub fn gate(&self) -> EditorGate {
         self.gate
@@ -731,7 +738,23 @@ impl CompositionSession {
     }
 
     /// Mark the current draft as saved without clearing per-object undo.
+    ///
+    /// After a save that carried relations or placements, use
+    /// [`Self::acknowledge_save_with_collections`] so the next draft's
+    /// `read_set.collections` expects the versions that save wrote.
     pub fn acknowledge_save(&mut self, versions: BTreeMap<ObjectId, ObjectVersion>) {
+        self.acknowledge_save_with_collections(versions, BTreeMap::new());
+    }
+
+    /// [`Self::acknowledge_save`] plus the ordered-collection versions the
+    /// save wrote, keyed by `(parent, slot)`. Collections not named keep
+    /// their previous expected version.
+    pub fn acknowledge_save_with_collections(
+        &mut self,
+        versions: BTreeMap<ObjectId, ObjectVersion>,
+        collections: BTreeMap<(ObjectId, String), ObjectVersion>,
+    ) {
+        self.collection_versions.extend(collections);
         if versions.is_empty() {
             for session in self.objects.values_mut() {
                 session.baseline = session.export_bytes();
