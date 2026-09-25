@@ -97,6 +97,9 @@ impl ComponentMaterializer for ButtonMaterializer {
                 ButtonOp::Compact => component.compact(),
             };
         }
+        if let Some(focus) = request.focus_handle() {
+            component = component.track_focus(focus);
+        }
         if let Some(callback) = request.on_click() {
             component =
                 component.on_click(move |event, window, cx| callback.invoke(event, window, cx));
@@ -320,6 +323,7 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
 .with_methods(vec![
             support::on_click_method("Button"),
             support::disabled_method("Button"),
+            support::track_focus_method("Button"),
             button_string("label", "Sets the visible button label.", ButtonOp::Label),
             button_string(
                 "accessibility_label",
@@ -340,7 +344,7 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
             variant_method!("compact", ButtonOp::Compact, "Uses compact internal spacing."),
         ])
 .with_documentation(
-            "A stateless command button. Shell disabled, selected, children, style, and on_click operations are honored.",
+            "A stateless command button. Shell disabled, selected, track_focus, children, style, and on_click operations are honored. An enabled button is a tab stop, and Enter or Space activates it.",
         ))?;
     for (name, materializer) in [
         (
