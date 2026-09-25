@@ -691,6 +691,7 @@ pub struct MaterializeRequest<'a> {
     disabled: bool,
     selected: bool,
     on_click: Option<crate::spec::CallbackId>,
+    focus_handle: Option<gpui::FocusHandle>,
     application_owner: Option<(
         Rc<crate::runtime::ApplicationGeneration>,
         gpui::WeakEntity<crate::ScriptView>,
@@ -719,6 +720,7 @@ pub(crate) struct MaterializeRequestInit<'a> {
     pub disabled: bool,
     pub selected: bool,
     pub on_click: Option<crate::spec::CallbackId>,
+    pub focus_handle: Option<gpui::FocusHandle>,
     pub application_owner: Option<(
         Rc<crate::runtime::ApplicationGeneration>,
         gpui::WeakEntity<crate::ScriptView>,
@@ -750,6 +752,7 @@ impl<'a> MaterializeRequest<'a> {
             disabled: init.disabled,
             selected: init.selected,
             on_click: init.on_click,
+            focus_handle: init.focus_handle,
             application_owner: init.application_owner,
         }
     }
@@ -852,6 +855,13 @@ impl<'a> MaterializeRequest<'a> {
 
     pub fn selected(&self) -> bool {
         self.selected
+    }
+
+    /// The focus handle the script passed to `track_focus`, for a component
+    /// whose descriptor declares that method. The adapter tracks it in place of
+    /// the control's own handle, so the script can move focus to the control.
+    pub fn focus_handle(&self) -> Option<&gpui::FocusHandle> {
+        self.focus_handle.as_ref()
     }
 
     pub fn children_len(&self) -> usize {
@@ -2546,6 +2556,7 @@ mod tests {
             disabled: false,
             selected: false,
             on_click: None,
+            focus_handle: None,
             application_owner: None,
         });
 
@@ -2590,6 +2601,7 @@ mod tests {
             disabled: false,
             selected: false,
             on_click: None,
+            focus_handle: None,
             application_owner: None,
         });
 
@@ -2630,6 +2642,7 @@ mod tests {
             disabled: false,
             selected: false,
             on_click: None,
+            focus_handle: None,
             application_owner: None,
         });
 
@@ -2671,6 +2684,7 @@ mod tests {
             disabled: false,
             selected: false,
             on_click: None,
+            focus_handle: None,
             application_owner: None,
         });
 
@@ -2708,6 +2722,7 @@ mod tests {
             disabled: false,
             selected: false,
             on_click: None,
+            focus_handle: None,
             application_owner: None,
         });
         assert_eq!(ordinary.take_children().unwrap().len(), 1);
@@ -2735,6 +2750,7 @@ mod tests {
             disabled: false,
             selected: false,
             on_click: None,
+            focus_handle: None,
             application_owner: None,
         });
         let mut child = typed.take_typed_children().unwrap().pop().unwrap();
@@ -2778,6 +2794,7 @@ mod tests {
             disabled: false,
             selected: false,
             on_click: None,
+            focus_handle: None,
             application_owner: None,
         });
 
@@ -2816,6 +2833,7 @@ mod tests {
             disabled: false,
             selected: false,
             on_click: None,
+            focus_handle: None,
             application_owner: None,
         });
         let mut request_b = MaterializeRequest::new(MaterializeRequestInit {
@@ -2834,6 +2852,7 @@ mod tests {
             disabled: false,
             selected: false,
             on_click: None,
+            focus_handle: None,
             application_owner: None,
         });
         let mut request_c = MaterializeRequest::new(MaterializeRequestInit {
@@ -2852,6 +2871,7 @@ mod tests {
             disabled: false,
             selected: false,
             on_click: None,
+            focus_handle: None,
             application_owner: None,
         });
 
