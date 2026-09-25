@@ -52,6 +52,12 @@ pub enum EditorEvent {
     CommentActivated(CommentId),
     /// A host-registered slash command was confirmed.
     SlashCustom(SharedString),
+    /// The user activated a reference token: a mention chip (its target
+    /// URI) or a link run (its URL). A read-only editor activates on click
+    /// or on Enter with the caret in the token; an editable one on a
+    /// secondary-modifier click (Cmd on macOS, Ctrl elsewhere), since a
+    /// plain click places the caret and Enter splits the block.
+    OpenReference(String),
 }
 
 /// One comment thread projected for the host list.
@@ -606,6 +612,18 @@ impl Editor {
             start.offset.min(end.offset),
             start.offset.max(end.offset),
         )
+    }
+
+    /// The reference token (mention target or link URL) at `at`, if any.
+    #[must_use]
+    pub fn reference_at(&self, at: &Cursor) -> Option<String> {
+        if at.part != Part::Body {
+            return None;
+        }
+        let snapshot = self.snapshots().iter().find(|s| {
+            s.id == at.id && (at.occurrence.is_none() || s.occurrence_id == at.occurrence)
+        })?;
+        reference_in(&snapshot.runs, at.offset)
     }
 
     #[must_use]
@@ -1408,6 +1426,11 @@ impl Editor {
 
     fn on_split(&mut self, _: &SplitBlock, window: &mut Window, cx: &mut Context<Self>) {
         if self.read_only {
+            if self.selection.is_collapsed() {
+                if let Some(reference) = self.reference_at(self.selection.head()) {
+                    cx.emit(EditorEvent::OpenReference(reference));
+                }
+            }
             return;
         }
         if let Some(choice) = self.pasted.as_ref().map(|p| p.choice()) {
@@ -2018,6 +2041,18 @@ impl Render for Editor {
                         this.press_claimed = true;
                         return cx.notify();
                     }
+                    if event.click_count == 1
+                        && !event.modifiers.shift
+                        && (this.read_only || event.modifiers.secondary())
+                    {
+                        if let Some(reference) = this.reference_at(&hit) {
+                            this.extra_selections.clear();
+                            this.selection = Selection::caret(hit);
+                            this.caret_moved();
+                            cx.emit(EditorEvent::OpenReference(reference));
+                            return cx.notify();
+                        }
+                    }
                     this.selection = match event.click_count {
                         _ if event.modifiers.secondary() => {
                             this.extra_selections.push(Selection::caret(hit.clone()));
@@ -2119,6 +2154,41 @@ impl Render for Editor {
                 p.paint(origin, cx)
             }))
     }
+}
+
+/// The mention target or link URL whose run covers byte `offset`.
+pub(crate) fn reference_in(runs: &[loro::TextDelta], offset: usize) -> Option<String> {
+    let mut start = 0usize;
+    for run in runs {
+        let loro::TextDelta::Insert { insert, attributes } = run else {
+            continue;
+        };
+        let end = start + insert.len();
+        if start <= offset && offset <= end {
+            let found = attributes.as_ref().and_then(|attrs| {
+                let value = |key: &str| {
+                    attrs
+                        .get(key)
+                        .and_then(|value| value.as_string())
+                        .map(|value| value.to_string())
+                };
+                value("mention")
+                    .map(|value| match value.split_once('|') {
+                        Some((_, uri)) => uri.to_string(),
+                        None => value,
+                    })
+                    .or_else(|| value("link"))
+            });
+            if found.is_some() {
+                return found;
+            }
+        }
+        if start > offset {
+            break;
+        }
+        start = end;
+    }
+    None
 }
 
 /// Start of the word before `offset` — Bezel `Cursor::word_left`.

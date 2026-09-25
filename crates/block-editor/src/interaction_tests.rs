@@ -657,6 +657,87 @@ fn type_scale_changes_one_editors_line_height(cx: &mut TestAppContext) {
     });
 }
 
+#[gpui::test]
+fn activating_a_reference_emits_open_reference(cx: &mut TestAppContext) {
+    let (editor, cx) = harness(cx);
+    editor.update(cx, |editor, cx| {
+        *editor = Editor::from_markdown("go [docs](https://b.example) now", cx);
+        editor.set_read_only(true, cx);
+    });
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| editor.focus_handle(cx).focus(window, cx));
+        let _ = window.draw(cx);
+    });
+    let opened = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let sink = opened.clone();
+    cx.update(|_, cx| {
+        cx.subscribe(&editor, move |_, event: &crate::EditorEvent, _| {
+            if let crate::EditorEvent::OpenReference(reference) = event {
+                sink.borrow_mut().push(reference.clone());
+            }
+        })
+        .detach();
+    });
+    let inside = editor.read_with(cx, |editor, _| {
+        Cursor::new(editor.snapshots()[0].id.clone(), Part::Body, 5)
+    });
+
+    // Enter with the caret in the token (read-only).
+    editor.update(cx, |editor, cx| {
+        editor.select(Selection::caret(inside.clone()), cx)
+    });
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(opened.borrow().as_slice(), ["https://b.example"]);
+    editor.read_with(cx, |editor, _| assert_eq!(editor.snapshots().len(), 1));
+
+    // Click on the token (read-only).
+    let point = editor.read_with(cx, |editor, _| {
+        let (point, line) = editor.layouts.position(&inside).expect("painted token");
+        point + gpui::point(px(1.0), line / 2.0)
+    });
+    cx.simulate_click(point, gpui::Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(opened.borrow().len(), 2);
+
+    // Editable: a plain click places the caret; a secondary click opens.
+    editor.update(cx, |editor, cx| editor.set_read_only(false, cx));
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+    cx.simulate_click(point, gpui::Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(opened.borrow().len(), 2, "plain click edits");
+    cx.simulate_click(point, gpui::Modifiers::secondary_key());
+    cx.run_until_parked();
+    assert_eq!(opened.borrow().len(), 3);
+}
+
+#[test]
+fn reference_in_prefers_the_mention_target() {
+    let attrs = [(
+        "mention".to_string(),
+        loro::LoroValue::from("inline|ashlar://obj/abc"),
+    )]
+    .into_iter()
+    .collect();
+    let runs = vec![
+        loro::TextDelta::Insert {
+            insert: "see ".into(),
+            attributes: None,
+        },
+        loro::TextDelta::Insert {
+            insert: "Note".into(),
+            attributes: Some(attrs),
+        },
+    ];
+    assert_eq!(crate::editor::reference_in(&runs, 1), None);
+    assert_eq!(
+        crate::editor::reference_in(&runs, 6).as_deref(),
+        Some("ashlar://obj/abc")
+    );
+}
+
 #[test]
 fn interaction_tests_collect() {
     assert!(true);
