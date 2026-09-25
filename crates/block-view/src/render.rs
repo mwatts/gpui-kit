@@ -203,6 +203,7 @@ pub fn render_with(
         placeholder,
         caption,
         composition,
+        typography,
     } = editing;
 
     let reset = layouts.map(|layouts| {
@@ -213,7 +214,7 @@ pub fn render_with(
     });
 
     let palette = EditorPalette::from_app(cx);
-    let typography = Typography::of(cx);
+    let typography = typography.unwrap_or_else(|| Typography::of(cx));
     let order_map: Vec<_> = snapshots.iter().map(|s| s.paint_id().clone()).collect();
     let order = move |id: &block_markdown::BlockId| order_map.iter().position(|x| x == id);
 
