@@ -8,7 +8,7 @@
 //! TimeField remains a styled leaf without those event callbacks.
 
 use gpui_component::{
-    Disableable as _,
+    Disableable as _, Sizable as _,
     calendar::{Calendar, CalendarState, Date},
     color_picker::{ColorPicker, ColorPickerState},
     date_picker::{DatePicker, DatePickerState},
@@ -248,6 +248,9 @@ enum FormOp {
     Disabled(bool),
     Placeholder(String),
     AriaLabel(String),
+    Size(gpui_component::Size),
+    Appearance(bool),
+    Bordered(bool),
     Groups(usize),
     Vertical,
     Reverse,
@@ -555,6 +558,9 @@ impl ComponentMaterializer for InputMaterializer {
             input = match op {
                 FormOp::Disabled(value) => input.disabled(*value),
                 FormOp::AriaLabel(value) => input.aria_label(value.clone()),
+                FormOp::Size(size) => input.with_size(*size),
+                FormOp::Appearance(value) => input.appearance(*value),
+                FormOp::Bordered(value) => input.bordered(*value),
                 _ => input,
             };
         }
@@ -988,6 +994,42 @@ fn placeholder_method(owner: &'static str) -> MethodDescriptor {
     .with_documentation("Sets the empty-value prompt shown by the control.")
 }
 
+fn input_size_method() -> MethodDescriptor {
+    MethodDescriptor::new(
+        "size",
+        vec![ArgumentDescriptor::new(
+            "size",
+            ArgumentSchema::Enum(&["small", "medium", "large"]),
+        )],
+        |arguments| {
+            let size = match arguments {
+                [ComponentArgument::Enum(value)] => match value.as_str() {
+                    "small" => gpui_component::Size::Small,
+                    "medium" => gpui_component::Size::Medium,
+                    "large" => gpui_component::Size::Large,
+                    _ => return Err(format!("unsupported Input size `{value}`")),
+                },
+                _ => return Err("Input.size expects a semantic size literal".into()),
+            };
+            Ok(ComponentPayload::new(FormOp::Size(size)))
+        },
+    )
+    .with_documentation("Sets the semantic control size: small, medium (default), or large.")
+}
+
+fn input_bool_method(
+    name: &'static str,
+    documentation: &'static str,
+    make: fn(bool) -> FormOp,
+) -> MethodDescriptor {
+    MethodDescriptor::new(
+        name,
+        vec![ArgumentDescriptor::new(name, ArgumentSchema::Boolean)],
+        move |arguments| bool_op(arguments, &format!("Input.{name}"), make),
+    )
+    .with_documentation(documentation)
+}
+
 fn aria_label_method(owner: &'static str) -> MethodDescriptor {
     MethodDescriptor::new(
         "aria_label",
@@ -1174,6 +1216,17 @@ pub fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
             vec![
                 aria_label_method("Input"),
                 disabled_method("Input"),
+                input_size_method(),
+                input_bool_method(
+                    "appearance",
+                    "When false, draws the field plain: no border and no background.",
+                    FormOp::Appearance,
+                ),
+                input_bool_method(
+                    "bordered",
+                    "When false, removes the border and keeps the background.",
+                    FormOp::Bordered,
+                ),
                 value_method(),
                 on_submit_method("Input", "(value: string, cx: Context) => void"),
             ],
