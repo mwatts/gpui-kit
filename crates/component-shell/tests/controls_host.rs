@@ -124,7 +124,7 @@ export default class App extends View {
   init(_props, _cx) { this.hits = 0; }
   render() {
     return div().size_full()
-      .child(new Button("press").primary().label("Press me").absolute().left(0).top(0).w(200).h(32)
+      .child(new Button("press").primary().label("Press me").accessibility_label("Press the test button").absolute().left(0).top(0).w(200).h(32)
         .on_click((_event, cx) => { this.hits++; cx.notify(); }))
       .child(`hits: ${this.hits}`);
   }
