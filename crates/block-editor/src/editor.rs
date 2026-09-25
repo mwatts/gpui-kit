@@ -74,6 +74,7 @@ pub struct Editor {
     pub(crate) composition: Option<Composition>,
     accessibility_label: Option<SharedString>,
     read_only: bool,
+    placeholder: Option<SharedString>,
     pub(crate) layouts: BlockLayouts,
     caret_on: bool,
     blink: Option<Task<()>>,
@@ -141,6 +142,7 @@ impl Editor {
             composition: None,
             accessibility_label: None,
             read_only: false,
+            placeholder: None,
             layouts: BlockLayouts::default(),
             caret_on: true,
             blink: None,
@@ -232,6 +234,27 @@ impl Editor {
             self.code_leaves.clear();
         }
         cx.notify();
+    }
+
+    /// Replaces the hint painted in an empty block ("Type / for commands"
+    /// by default). The default hint is hidden while the editor is
+    /// read-only; a hint set here is shown in both modes.
+    pub fn set_placeholder(
+        &mut self,
+        placeholder: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        self.placeholder = Some(placeholder.into());
+        cx.notify();
+    }
+
+    /// The hint painted in an empty block, if any.
+    #[must_use]
+    pub fn placeholder(&self) -> Option<SharedString> {
+        match &self.placeholder {
+            Some(placeholder) => Some(placeholder.clone()),
+            None => (!self.read_only).then(|| PLACEHOLDER.into()),
+        }
     }
 
     #[must_use]
@@ -1854,13 +1877,13 @@ impl Render for Editor {
         };
         let composition = self.composition.clone();
         let annotations = self.annotations_cache.clone();
-        let placeholder: Option<SharedString> = (!self.read_only).then(|| PLACEHOLDER.into());
+        let placeholder = self.placeholder();
         let editing = Editing {
             selections: &painted_selections,
             caret_on: focused && self.caret_on,
             layouts: Some(&self.layouts),
             annotations: &annotations,
-            placeholder,
+            placeholder: placeholder.clone(),
             caption: Caption::Shown,
             composition: composition.as_ref(),
         };
@@ -1874,6 +1897,9 @@ impl Render for Editor {
             .role(Role::MultilineTextInput)
             .when_some(self.accessibility_label.clone(), |this, label| {
                 this.aria_label(label)
+            })
+            .when_some(placeholder, |this, placeholder| {
+                this.aria_placeholder(placeholder)
             })
             .when_some(accessibility, |this, accessibility| {
                 this.a11y_synthetic_children(move |builder| accessibility.write(builder))
