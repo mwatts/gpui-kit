@@ -57,6 +57,22 @@ impl Typography {
             .map_or_else(Self::default, |installed| installed.0)
     }
 
+    /// Every role's size and leading multiplied by `factor`; weights stay.
+    #[must_use]
+    pub fn scaled(self, factor: f32) -> Self {
+        let scale = |m: Metrics| Metrics::new(m.size * factor, m.line_height * factor, m.weight);
+        Self {
+            body: scale(self.body),
+            h1: scale(self.h1),
+            h2: scale(self.h2),
+            h3: scale(self.h3),
+            h4: scale(self.h4),
+            code: scale(self.code),
+            card: scale(self.card),
+            caption: scale(self.caption),
+        }
+    }
+
     #[must_use]
     pub fn heading(&self, level: u8) -> Metrics {
         match level {
@@ -110,5 +126,13 @@ mod tests {
         assert_eq!(t.h3.size(), 15.0);
         assert_eq!(t.code.size(), 12.5);
         assert_eq!(t.caption.size(), 11.5);
+    }
+
+    #[test]
+    fn scaled_multiplies_size_and_leading() {
+        let t = Typography::default().scaled(1.5);
+        assert_eq!(t.body.size(), 21.0);
+        assert_eq!(t.body.line_height(), 33.0);
+        assert_eq!(t.h1.weight, FontWeight::SEMIBOLD);
     }
 }

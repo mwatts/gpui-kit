@@ -84,10 +84,7 @@ mod tests {
             image_paint("/tmp/photo.png", None),
             ImagePaint::Path(PathBuf::from("/tmp/photo.png"))
         );
-        assert_eq!(
-            image_paint("bytes/ab", None),
-            ImagePaint::Unavailable
-        );
+        assert_eq!(image_paint("bytes/ab", None), ImagePaint::Unavailable);
         assert_eq!(
             image_paint("https://example.org/a.png", Some(None)),
             ImagePaint::Remote("https://example.org/a.png".into())

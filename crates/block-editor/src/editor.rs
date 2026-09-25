@@ -18,7 +18,8 @@ use gpui::{
 use gpui_component::ActiveTheme;
 use gpui_component::input::{Editor as CodeEditor, EditorState};
 use gpui_component_block_view::{
-    Annotation, BlockLayouts, Caption, Composition, Cursor, Editing, Part, Selection, render_with,
+    Annotation, BlockLayouts, Caption, Composition, Cursor, Editing, Part, Selection, Typography,
+    render_with,
 };
 use loro::{LoroDoc, LoroError};
 
@@ -75,6 +76,8 @@ pub struct Editor {
     accessibility_label: Option<SharedString>,
     read_only: bool,
     placeholder: Option<SharedString>,
+    typography: Option<Typography>,
+    type_scale: f32,
     pub(crate) layouts: BlockLayouts,
     caret_on: bool,
     blink: Option<Task<()>>,
@@ -143,6 +146,8 @@ impl Editor {
             accessibility_label: None,
             read_only: false,
             placeholder: None,
+            typography: None,
+            type_scale: 1.0,
             layouts: BlockLayouts::default(),
             caret_on: true,
             blink: None,
@@ -254,6 +259,36 @@ impl Editor {
         match &self.placeholder {
             Some(placeholder) => Some(placeholder.clone()),
             None => (!self.read_only).then(|| PLACEHOLDER.into()),
+        }
+    }
+
+    /// Sets this editor's typography instead of the app-wide block-view
+    /// [`Typography`]. `None` returns to the app-wide setting.
+    pub fn set_typography(&mut self, typography: Option<Typography>, cx: &mut Context<Self>) {
+        self.typography = typography;
+        cx.notify();
+    }
+
+    /// Multiplies this editor's text size and leading by `scale` (1.0 is
+    /// unscaled). Applies on top of [`Self::set_typography`] or the app-wide
+    /// typography. Non-finite or non-positive values reset to 1.0.
+    pub fn set_type_scale(&mut self, scale: f32, cx: &mut Context<Self>) {
+        self.type_scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        cx.notify();
+    }
+
+    /// The typography this editor paints with.
+    #[must_use]
+    pub fn typography(&self, cx: &App) -> Typography {
+        let base = self.typography.unwrap_or_else(|| Typography::of(cx));
+        if self.type_scale == 1.0 {
+            base
+        } else {
+            base.scaled(self.type_scale)
         }
     }
 
@@ -1884,6 +1919,7 @@ impl Render for Editor {
             layouts: Some(&self.layouts),
             annotations: &annotations,
             placeholder: placeholder.clone(),
+            typography: Some(self.typography(cx)),
             caption: Caption::Shown,
             composition: composition.as_ref(),
         };

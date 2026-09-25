@@ -624,6 +624,39 @@ fn placeholder_defaults_and_can_be_replaced(cx: &mut TestAppContext) {
     });
 }
 
+#[gpui::test]
+fn type_scale_changes_one_editors_line_height(cx: &mut TestAppContext) {
+    let (editor, cx) = harness(cx);
+    editor.update(cx, |editor, cx| editor.insert_text("text", cx));
+    let line_height = |editor: &gpui::Entity<Editor>, cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        editor.read_with(cx, |editor, _| {
+            editor
+                .layouts
+                .position(editor.selection().head())
+                .map(|(_, height)| f32::from(height))
+                .expect("caret position after paint")
+        })
+    };
+    let base = line_height(&editor, cx);
+    editor.update(cx, |editor, cx| editor.set_type_scale(2.0, cx));
+    let scaled = line_height(&editor, cx);
+    assert!(
+        (scaled - base * 2.0).abs() < 0.5,
+        "scaled line height {scaled} should double {base}"
+    );
+    editor.read_with(cx, |editor, cx| {
+        assert_eq!(
+            gpui_component_block_view::Typography::of(cx).body.size(),
+            14.0,
+            "the app-wide typography is untouched"
+        );
+        assert_eq!(editor.typography(cx).body.size(), 28.0);
+    });
+}
+
 #[test]
 fn interaction_tests_collect() {
     assert!(true);
