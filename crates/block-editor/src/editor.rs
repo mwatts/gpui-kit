@@ -73,6 +73,7 @@ pub struct Editor {
     focus_handle: FocusHandle,
     pub(crate) composition: Option<Composition>,
     accessibility_label: Option<SharedString>,
+    read_only: bool,
     pub(crate) layouts: BlockLayouts,
     caret_on: bool,
     blink: Option<Task<()>>,
@@ -139,6 +140,7 @@ impl Editor {
             focus_handle: cx.focus_handle(),
             composition: None,
             accessibility_label: None,
+            read_only: false,
             layouts: BlockLayouts::default(),
             caret_on: true,
             blink: None,
@@ -200,6 +202,36 @@ impl Editor {
     pub fn with_accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
         self.accessibility_label = Some(label.into());
         self
+    }
+
+    /// Whether the editor rejects edits. See [`Self::set_read_only`].
+    #[must_use]
+    pub fn read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Turns editing off or on. A read-only editor rejects every
+    /// [`BlockOp`] (including [`Self::apply`] from the host), typing, paste,
+    /// cut, undo, the slash menu, and block drag. Selection, navigation, and
+    /// copy still work. Turning it on closes any open slash, paste, URL, or
+    /// language menu and drops a lifted block.
+    pub fn set_read_only(&mut self, read_only: bool, cx: &mut Context<Self>) {
+        if self.read_only == read_only {
+            return;
+        }
+        self.read_only = read_only;
+        if read_only {
+            self.slash = None;
+            self.pasted = None;
+            self.url_prompt = None;
+            self.language_menu = None;
+            self.block_menu = None;
+            self.lifted = None;
+            self.composition = None;
+            self.stored.clear();
+            self.code_leaves.clear();
+        }
+        cx.notify();
     }
 
     #[must_use]
@@ -279,6 +311,9 @@ impl Editor {
     }
 
     pub fn apply(&mut self, op: BlockOp, cx: &mut Context<Self>) -> ApplyResult {
+        if self.read_only {
+            return ApplyResult::default();
+        }
         // Skip project while composing (IME overlay owns the caret block).
         if self.composition.is_some() && !matches!(op, BlockOp::ImeCommit { .. }) {
             return ApplyResult::default();
@@ -302,7 +337,7 @@ impl Editor {
     }
 
     fn apply_many(&mut self, ops: &[BlockOp], cx: &mut Context<Self>) -> ApplyResult {
-        if ops.is_empty() {
+        if ops.is_empty() || self.read_only {
             return ApplyResult::default();
         }
         if self.bridge.is_some() {
@@ -323,6 +358,9 @@ impl Editor {
     }
 
     pub fn toggle_mark(&mut self, mark: Mark, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
         let ranges = self.selections();
         for selection in ranges {
             self.toggle_mark_in(&selection, mark, cx);
@@ -751,6 +789,9 @@ impl Editor {
     }
 
     pub(crate) fn after_edit(&mut self, typed: &str, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
         self.track_slash(typed, cx);
         self.reveal = true;
         self.caret_moved();
@@ -760,7 +801,7 @@ impl Editor {
     }
 
     pub(crate) fn insert_text(&mut self, text: &str, cx: &mut Context<Self>) {
-        if text.is_empty() {
+        if text.is_empty() || self.read_only {
             return;
         }
         // Prefix shortcut: completing character must not be inserted.
@@ -1021,6 +1062,9 @@ impl Editor {
     }
 
     pub(crate) fn paste_url(&mut self, url: String, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
         let at = self.selection.head().clone();
         let alone = self
             .snapshots()
@@ -1185,6 +1229,9 @@ impl Editor {
     }
 
     fn delete_word(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
         if !self.selection.is_collapsed() {
             return self.delete_back(cx);
         }
@@ -1288,14 +1335,23 @@ impl Editor {
     // --- key handlers ---
 
     fn on_backspace(&mut self, _: &Backspace, _: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
         self.delete_back(cx);
     }
 
     fn on_delete(&mut self, _: &Delete, _: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
         self.delete_forward(cx);
     }
 
     fn on_split(&mut self, _: &SplitBlock, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
         if let Some(choice) = self.pasted.as_ref().map(|p| p.choice()) {
             return self.confirm_paste(choice, cx);
         }
@@ -1361,6 +1417,9 @@ impl Editor {
     }
 
     fn on_undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
         let did = if let Some(session) = &mut self.bridge {
             session.undo()
         } else {
@@ -1374,6 +1433,9 @@ impl Editor {
     }
 
     fn on_redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
         let did = if let Some(session) = &mut self.bridge {
             session.redo()
         } else {
@@ -1475,10 +1537,16 @@ impl Editor {
 
     fn on_cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
         self.on_copy(&Copy, window, cx);
+        if self.read_only {
+            return;
+        }
         self.delete_back(cx);
     }
 
     fn on_paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
         let Some(item) = cx.read_from_clipboard() else {
             return;
         };
@@ -1572,6 +1640,9 @@ impl Editor {
         self.delete_word(true, cx);
     }
     fn on_delete_to_home(&mut self, _: &DeleteToHome, _: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
         let at = self.selection.head().clone();
         if at.offset > 0 {
             self.apply(
@@ -1625,7 +1696,7 @@ impl Editor {
 
     fn sync_code_leaves(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let head = self.selection.head().clone();
-        if head.part != Part::Code {
+        if head.part != Part::Code || self.read_only {
             return;
         }
         if self.code_leaves.contains_key(&head.id) {
@@ -1703,7 +1774,7 @@ impl Editor {
     /// painted bounds — not a dump below the canvas.
     fn code_leaf_element(&self, cx: &App) -> Option<AnyElement> {
         let head = self.selection.head();
-        if head.part != Part::Code {
+        if head.part != Part::Code || self.read_only {
             return None;
         }
         let state = self.code_leaves.get(&head.id)?.clone();
@@ -1750,7 +1821,7 @@ impl Render for Editor {
             self.blink = None;
         }
 
-        let in_code_leaf = self.selection.head().part == Part::Code;
+        let in_code_leaf = self.selection.head().part == Part::Code && !self.read_only;
         let handle = self.focus_handle.clone();
         let entity = cx.entity();
         let input = canvas(
@@ -1783,7 +1854,7 @@ impl Render for Editor {
         };
         let composition = self.composition.clone();
         let annotations = self.annotations_cache.clone();
-        let placeholder: Option<SharedString> = Some(PLACEHOLDER.into());
+        let placeholder: Option<SharedString> = (!self.read_only).then(|| PLACEHOLDER.into());
         let editing = Editing {
             selections: &painted_selections,
             caret_on: focused && self.caret_on,
@@ -1867,14 +1938,15 @@ impl Render for Editor {
                         return cx.notify();
                     };
                     // Empty image target
-                    if this
-                        .snapshots()
-                        .iter()
-                        .find(|s| s.id == hit.id)
-                        .is_some_and(|s| {
-                            s.block_type == BlockType::Image
-                                && s.url.as_deref().is_none_or(|u| u.is_empty())
-                        })
+                    if !this.read_only
+                        && this
+                            .snapshots()
+                            .iter()
+                            .find(|s| s.id == hit.id)
+                            .is_some_and(|s| {
+                                s.block_type == BlockType::Image
+                                    && s.url.as_deref().is_none_or(|u| u.is_empty())
+                            })
                         && this
                             .layouts
                             .picture_bounds(&hit.id)
@@ -1964,13 +2036,15 @@ impl Render for Editor {
             .child(input)
             .child(body)
             .when_some(self.code_leaf_element(cx), |el, overlay| el.child(overlay))
-            .children(self.block_handle(focused, cx))
-            .children(self.language_chip(cx))
-            .children(self.drop_indicator(cx))
-            .children(self.slash_menu(window, cx))
-            .children(self.paste_menu(window, cx))
-            .children(self.language_menu(window, cx))
-            .children(self.format_toolbar(window, cx))
+            .when(!self.read_only, |this| {
+                this.children(self.block_handle(focused, cx))
+                    .children(self.language_chip(cx))
+                    .children(self.drop_indicator(cx))
+                    .children(self.slash_menu(window, cx))
+                    .children(self.paste_menu(window, cx))
+                    .children(self.language_menu(window, cx))
+                    .children(self.format_toolbar(window, cx))
+            })
             .children(self.url_prompt.as_ref().map(|p| {
                 let origin = self
                     .layouts

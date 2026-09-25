@@ -169,6 +169,9 @@ impl EntityInputHandler for Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.read_only() {
+            return;
+        }
         if range_utf16.is_none()
             && self.composition.is_none()
             && block_markdown::is_url(text.trim())
@@ -236,7 +239,7 @@ impl EntityInputHandler for Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if text.is_empty() {
+        if text.is_empty() || self.read_only() {
             if self.composition.take().is_some() {
                 cx.notify();
             }
