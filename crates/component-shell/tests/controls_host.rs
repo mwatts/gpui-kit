@@ -198,6 +198,52 @@ export default class App extends View {
     );
 }
 
+/// With nothing focused, Tab reaches the first tab stop and Shift-Tab the
+/// last, although the root's Tab binding has no dispatch path until something
+/// holds focus.
+#[gpui::test]
+fn tab_with_nothing_focused_reaches_the_first_or_last_tab_stop(cx: &mut TestAppContext) {
+    let source = r#"
+import { View, div } from "gpui-kit";
+import { Button } from "gpui-component";
+export default class App extends View {
+  init() { this.hits = 0; }
+  render() {
+    return div().size_full()
+      .child(new Button("first").label("First")
+        .on_click((_event, cx) => { this.hits += 1; cx.notify(); }))
+      .child(new Button("last").label("Last")
+        .on_click((_event, cx) => { this.hits += 100; cx.notify(); }))
+      .child(`hits: ${this.hits}`);
+  }
+}
+"#;
+    let (mut context, view, _app) = mount(cx, source);
+    draw(&mut context);
+    assert_eq!(context.update(|window, cx| window.focused(cx)), None);
+    context.simulate_keystrokes("tab");
+    draw(&mut context);
+    assert!(context.update(|window, cx| window.focused(cx)).is_some());
+    activate(&mut context, "enter");
+    let after = hits(&mut context, &view);
+    assert!(
+        after.contains("hits: 1"),
+        "Tab focuses the first button: {after}"
+    );
+
+    context.update(|window, cx| window.blur(cx));
+    draw(&mut context);
+    assert_eq!(context.update(|window, cx| window.focused(cx)), None);
+    context.simulate_keystrokes("shift-tab");
+    draw(&mut context);
+    activate(&mut context, "enter");
+    let after = hits(&mut context, &view);
+    assert!(
+        after.contains("hits: 101"),
+        "Shift-Tab focuses the last button: {after}"
+    );
+}
+
 /// `track_focus` on a registered `Button` hands it a script-owned handle, so a
 /// script can put the keyboard on the button and Enter then activates it.
 #[gpui::test]
