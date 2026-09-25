@@ -5430,6 +5430,27 @@ fn sidebar_color_tokens_resolve_for_scripts(cx: &mut TestAppContext) {
     );
 }
 
+/// `card` and the status family (`danger`, `success`, `warning`, `info`) are
+/// script color tokens too, projected from the gpui-component theme.
+#[gpui::test]
+fn card_and_status_color_tokens_resolve_for_scripts(cx: &mut TestAppContext) {
+    let names = ["card", "danger", "success", "warning", "info"];
+    let warning: gpui::Hsla = gpui::rgb(0xabcdef).into();
+    cx.update(|cx| {
+        crate::init(cx);
+        gpui_base::Theme::global_mut(cx).tokens.colors.warning = warning;
+        crate::theme_tokens::sync(cx);
+    });
+    for name in names {
+        assert!(
+            crate::theme_tokens::color_token_names().contains(&name),
+            "{name} is a script color token"
+        );
+        assert!(crate::theme_tokens::token_color(name).is_some(), "{name}");
+    }
+    assert_eq!(crate::theme_tokens::token_color("warning"), Some(warning));
+}
+
 #[gpui::test]
 fn javascript_can_replace_the_active_gpui_base_theme(cx: &mut TestAppContext) {
     cx.update(|cx| crate::init(cx));

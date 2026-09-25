@@ -154,15 +154,19 @@ fn set_theme<'js>(ctx: Ctx<'js>, value: Value<'js>) -> JsResult<()> {
     Ok(())
 }
 
+/// Color tokens added after the original palette; a theme may omit them.
+const LATER_COLOR_TOKENS: &[&str] = &["card", "danger", "success", "warning", "info"];
+
 fn apply_colors(
     colors: &mut gpui_base::ColorTokens,
     supplied: &HashMap<String, String>,
 ) -> Result<(), String> {
     for name in theme_tokens::color_token_names() {
-        // The sidebar family arrived after the others, so a theme written
-        // before it may leave it out and keep the current sidebar colors.
+        // The sidebar family, card, and the status colors arrived after the
+        // others, so a theme written before them may leave them out and keep
+        // the current colors.
         let Some(source) = supplied.get(*name) else {
-            if name.starts_with("sidebar") {
+            if name.starts_with("sidebar") || LATER_COLOR_TOKENS.contains(name) {
                 continue;
             }
             return Err(format!("theme tokens.colors is missing `{name}`"));
@@ -196,6 +200,11 @@ fn apply_colors(
             "sidebar_accent_foreground" => colors.sidebar_accent_foreground = value,
             "sidebar_primary" => colors.sidebar_primary = value,
             "sidebar_primary_foreground" => colors.sidebar_primary_foreground = value,
+            "card" => colors.card = value,
+            "danger" => colors.danger = value,
+            "success" => colors.success = value,
+            "warning" => colors.warning = value,
+            "info" => colors.info = value,
             _ => unreachable!(),
         }
     }

@@ -59,6 +59,19 @@ pub struct ColorTokens {
     pub sidebar_primary: Hsla,
     #[serde(default = "ColorTokens::default_sidebar_primary_foreground")]
     pub sidebar_primary_foreground: Hsla,
+    /// A raised container's fill (a card or group box), and the status
+    /// family: `danger`, `success`, `warning` and `info`. Each carries a serde
+    /// default so palettes written before them still load.
+    #[serde(default = "ColorTokens::default_card")]
+    pub card: Hsla,
+    #[serde(default = "ColorTokens::default_danger")]
+    pub danger: Hsla,
+    #[serde(default = "ColorTokens::default_success")]
+    pub success: Hsla,
+    #[serde(default = "ColorTokens::default_warning")]
+    pub warning: Hsla,
+    #[serde(default = "ColorTokens::default_info")]
+    pub info: Hsla,
 }
 
 impl Default for ColorTokens {
@@ -96,6 +109,11 @@ impl ColorTokens {
             sidebar_accent_foreground: hsla(0., 0., 0.09, 1.),
             sidebar_primary: hsla(0., 0., 0.09, 1.),
             sidebar_primary_foreground: hsla(0., 0., 0.98, 1.),
+            card: rgb(0xf5f5f5).into(),
+            danger: rgb(0xef4444).into(),
+            success: rgb(0x22c55e).into(),
+            warning: rgb(0xeab308).into(),
+            info: rgb(0x06b6d4).into(),
         }
     }
 
@@ -127,6 +145,11 @@ impl ColorTokens {
             sidebar_accent_foreground: hsla(0., 0., 0.98, 1.),
             sidebar_primary: hsla(0., 0., 0.98, 1.),
             sidebar_primary_foreground: hsla(0., 0., 0.09, 1.),
+            card: rgb(0x0a0a0a).into(),
+            danger: rgb(0xf87171).into(),
+            success: rgb(0x4ade80).into(),
+            warning: rgb(0xfacc15).into(),
+            info: rgb(0x22d3ee).into(),
         }
     }
 
@@ -161,6 +184,26 @@ impl ColorTokens {
 
     fn default_sidebar_primary_foreground() -> Hsla {
         Self::light().sidebar_primary_foreground
+    }
+
+    fn default_card() -> Hsla {
+        Self::light().card
+    }
+
+    fn default_danger() -> Hsla {
+        Self::light().danger
+    }
+
+    fn default_success() -> Hsla {
+        Self::light().success
+    }
+
+    fn default_warning() -> Hsla {
+        Self::light().warning
+    }
+
+    fn default_info() -> Hsla {
+        Self::light().info
     }
 }
 
