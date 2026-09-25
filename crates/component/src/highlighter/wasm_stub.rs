@@ -451,6 +451,13 @@ impl gpui_base::input::HighlightStyleResolver for HighlightTheme {
     }
 }
 
+/// A token provider for a language that has no Tree-sitter grammar.
+///
+/// Mirrors the native type. Without Tree-sitter the stub highlighter creates no
+/// styles, so registered providers are accepted but never run.
+pub type TokenHighlighter =
+    std::sync::Arc<dyn Fn(&str) -> Vec<(std::ops::Range<usize>, SharedString)> + Send + Sync>;
+
 // Language registry stub
 pub struct LanguageRegistry {
     languages: Mutex<HashMap<SharedString, GrammarConfig>>,
@@ -469,6 +476,18 @@ impl LanguageRegistry {
             .lock()
             .unwrap()
             .insert(lang.to_string().into(), config.clone());
+    }
+
+    /// Registers the language name like the native registry does. The stub
+    /// highlighter creates no styles, so the provider itself is ignored.
+    pub fn register_token_highlighter(&self, lang: &str, _highlighter: TokenHighlighter) {
+        self.languages
+            .lock()
+            .unwrap()
+            .entry(lang.to_string().into())
+            .or_insert_with(|| GrammarConfig {
+                name: lang.to_string().into(),
+            });
     }
 
     pub(crate) fn editing_language_name(&self, name: &str) -> SharedString {
