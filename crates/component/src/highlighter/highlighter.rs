@@ -1,6 +1,6 @@
 #[cfg(test)]
 use crate::highlighter::HighlightTheme;
-use crate::highlighter::LanguageRegistry;
+use crate::highlighter::{LanguageRegistry, TokenHighlighter, registry::HIGHLIGHT_NAMES};
 
 use anyhow::{Context, Result, anyhow};
 use gpui::{HighlightStyle, SharedString};
@@ -54,6 +54,11 @@ pub struct SyntaxHighlighter {
     /// Parsed injection trees.
     /// These are built once in update() and queried multiple times in match_styles().
     injection_layers: Vec<InjectionLayer>,
+
+    /// Token provider for a language without a Tree-sitter grammar.
+    token_highlighter: Option<TokenHighlighter>,
+    /// Highlights from `token_highlighter` for `text`, sorted by start byte.
+    token_highlights: Vec<HighlightItem>,
 }
 
 /// A parsed injection layer.
@@ -363,6 +368,8 @@ impl SyntaxHighlighter {
             parser: Parser::new(),
             tree: None,
             injection_layers: Vec::new(),
+            token_highlighter: None,
+            token_highlights: Vec::new(),
         }
     }
 
@@ -378,10 +385,12 @@ impl SyntaxHighlighter {
         };
 
         // Languages without a parser (neither a statically linked grammar nor a
-        // registered parser factory) default to a highlighter that never parses
-        // and creates no styles.
+        // registered parser factory) never parse. They are styled by a registered
+        // token provider, or not at all.
         if !LanguageRegistry::singleton().has_parser(lang) {
-            return Ok(Self::build_inert(config.name.clone()));
+            let mut highlighter = Self::build_inert(config.name.clone());
+            highlighter.token_highlighter = LanguageRegistry::singleton().token_highlighter(lang);
+            return Ok(highlighter);
         }
 
         let (mut parser, grammar) = LanguageRegistry::singleton().parser(lang)?;
@@ -486,6 +495,8 @@ impl SyntaxHighlighter {
             parser,
             tree: None,
             injection_layers: Vec::new(),
+            token_highlighter: None,
+            token_highlights: Vec::new(),
         })
     }
 
@@ -504,7 +515,43 @@ impl SyntaxHighlighter {
         if let (Some(edit), Some(tree)) = (edit, self.tree.as_mut()) {
             tree.edit(&edit);
         }
+        self.set_token_text(text);
+    }
+
+    /// Whether this highlighter styles text through a registered token provider
+    /// instead of a Tree-sitter grammar. Token highlighting is always synchronous.
+    pub(crate) fn uses_token_highlighter(&self) -> bool {
+        self.token_highlighter.is_some()
+    }
+
+    /// Store `text` and, for a token-provider language, re-run the provider on it.
+    fn set_token_text(&mut self, text: &Rope) {
+        let changed = !self.text.eq(text);
         self.text = text.clone();
+        let Some(provider) = &self.token_highlighter else {
+            return;
+        };
+        if !changed {
+            return;
+        }
+
+        let source = self.text.to_string();
+        let len = source.len();
+        let mut highlights: Vec<HighlightItem> = provider(&source)
+            .into_iter()
+            .filter_map(|(range, name)| {
+                let range = range.start.min(len)..range.end.min(len);
+                if range.is_empty() {
+                    return None;
+                }
+                let name = HIGHLIGHT_NAMES
+                    .into_iter()
+                    .find(|known| *known == name.as_ref())?;
+                Some(HighlightItem::new(range, SharedString::new_static(name)))
+            })
+            .collect();
+        highlights.sort_by_key(|item| item.range.start);
+        self.token_highlights = highlights;
     }
 
     /// Returns the language name for this highlighter.
@@ -535,9 +582,10 @@ impl SyntaxHighlighter {
             return true;
         }
 
-        // If there's no grammar for the language, just update the text.
+        // If there's no grammar for the language, just update the text (and
+        // the token provider's highlights, if the language has one).
         if self.parser.language().is_none() {
-            self.text = text.clone();
+            self.set_token_text(text);
             return true;
         }
 
@@ -922,6 +970,16 @@ impl SyntaxHighlighter {
 
     /// Match the visible ranges of nodes in the Tree for highlighting.
     fn match_styles(&self, range: Range<usize>) -> Vec<HighlightItem> {
+        if self.token_highlighter.is_some() {
+            return self
+                .token_highlights
+                .iter()
+                .take_while(|item| item.range.start < range.end)
+                .filter(|item| item.range.end > range.start)
+                .cloned()
+                .collect();
+        }
+
         let mut highlights = vec![];
         let mut injection_highlights = vec![];
         let Some(tree) = &self.tree else {
@@ -1263,6 +1321,91 @@ mod tests {
         let mut highlighter = SyntaxHighlighter::new("no-such-language");
         assert!(highlighter.update(None, &rope, None));
         assert!(highlighter.tree().is_none());
+    }
+
+    fn fixture_token_provider() -> TokenHighlighter {
+        Arc::new(|text: &str| {
+            let mut tokens: Vec<(Range<usize>, SharedString)> = text
+                .match_indices("entity")
+                .map(|(start, word)| (start..start + word.len(), "keyword".into()))
+                .collect();
+            // Unknown names and out-of-range spans are ignored.
+            tokens.push((0..1, "not-a-highlight".into()));
+            tokens.push((text.len()..text.len() + 10, "keyword".into()));
+            tokens
+        })
+    }
+
+    #[test]
+    fn test_token_highlighter_styles_language_without_grammar() {
+        let registry = LanguageRegistry::singleton();
+        registry.register_token_highlighter("__fixture_tokens__", fixture_token_provider());
+        assert!(!registry.has_parser("__fixture_tokens__"));
+        assert!(
+            crate::highlighter::input_highlighter_factory()("__fixture_tokens__").is_some(),
+            "editors must get a highlighter for a token-provider language"
+        );
+
+        let mut highlighter = SyntaxHighlighter::new("__fixture_tokens__");
+        assert_eq!(highlighter.language().as_ref(), "__fixture_tokens__");
+        assert!(highlighter.uses_token_highlighter());
+
+        let theme = HighlightTheme::default_dark();
+        let keyword = theme.style("keyword").expect("theme styles keywords");
+
+        let text = Rope::from("entity Book {}");
+        assert!(highlighter.update(None, &text, None));
+        assert!(highlighter.tree().is_none());
+        let styles = highlighter.styles(&(0..text.len()), theme.as_ref());
+        assert!(styles.contains(&(0..6, keyword)), "styles: {styles:?}");
+        assert!(
+            styles
+                .iter()
+                .filter(|(_, style)| *style == keyword)
+                .all(|(range, _)| range == &(0..6)),
+            "styles: {styles:?}"
+        );
+
+        // The provider runs again on every text change.
+        let text = Rope::from("x entity A\nentity B");
+        assert!(highlighter.update(None, &text, None));
+        let styles = highlighter.styles(&(0..text.len()), theme.as_ref());
+        assert!(styles.contains(&(2..8, keyword)), "styles: {styles:?}");
+        assert!(styles.contains(&(11..17, keyword)), "styles: {styles:?}");
+        assert!(!styles.contains(&(0..6, keyword)), "styles: {styles:?}");
+
+        // A sub-range only sees the tokens it intersects.
+        let styles = highlighter.styles(&(9..text.len()), theme.as_ref());
+        assert!(styles.contains(&(11..17, keyword)), "styles: {styles:?}");
+        assert!(!styles.iter().any(|(range, _)| range.start < 9));
+    }
+
+    #[test]
+    fn test_tree_sitter_grammar_wins_over_token_highlighter() {
+        let registry = LanguageRegistry::singleton();
+        let json = registry
+            .language("json")
+            .expect("json is always registered");
+        registry.register("__fixture_json_tokens__", &json);
+        registry.register_token_highlighter("__fixture_json_tokens__", fixture_token_provider());
+        assert!(
+            registry
+                .token_highlighter("__fixture_json_tokens__")
+                .is_none()
+        );
+
+        let mut highlighter = SyntaxHighlighter::new("__fixture_json_tokens__");
+        assert!(!highlighter.uses_token_highlighter());
+        let text = Rope::from("{\"entity\": 1}");
+        assert!(highlighter.update(None, &text, None));
+        assert!(highlighter.tree().is_some());
+
+        let theme = HighlightTheme::default_dark();
+        let styles = highlighter.styles(&(0..text.len()), theme.as_ref());
+        let mut plain_json = SyntaxHighlighter::new("json");
+        plain_json.update(None, &text, None);
+        assert_eq!(styles, plain_json.styles(&(0..text.len()), theme.as_ref()));
+        assert!(styles.iter().any(|(_, style)| style.color.is_some()));
     }
 
     /// While a background reparse is pending (sync-parse timeout, or the

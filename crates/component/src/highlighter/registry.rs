@@ -501,10 +501,21 @@ impl gpui_base::input::HighlightStyleResolver for HighlightTheme {
 pub type LanguageParserFactory =
     Arc<dyn Fn() -> Result<(tree_sitter::Parser, tree_sitter::Language)> + Send + Sync>;
 
+/// A token provider for a language that has no Tree-sitter grammar.
+///
+/// It receives the whole buffer text and returns byte ranges paired with
+/// highlight names (for example `"keyword"`, `"type"`, `"string"`, `"number"`,
+/// `"comment"`). The names are looked up in the theme exactly like Tree-sitter
+/// captures; names the highlighter does not know are ignored. The provider runs
+/// again on every text change, so it should be cheap for the buffers it serves.
+pub type TokenHighlighter =
+    Arc<dyn Fn(&str) -> Vec<(std::ops::Range<usize>, SharedString)> + Send + Sync>;
+
 /// Registry for code highlighter languages.
 pub struct LanguageRegistry {
     languages: Mutex<HashMap<SharedString, GrammarConfig>>,
     parser_factories: Mutex<HashMap<SharedString, LanguageParserFactory>>,
+    token_highlighters: Mutex<HashMap<SharedString, TokenHighlighter>>,
 }
 
 impl LanguageRegistry {
@@ -517,6 +528,7 @@ impl LanguageRegistry {
                     .collect(),
             ),
             parser_factories: Mutex::new(HashMap::new()),
+            token_highlighters: Mutex::new(HashMap::new()),
         });
         &INSTANCE
     }
@@ -538,6 +550,37 @@ impl LanguageRegistry {
             .lock()
             .unwrap()
             .insert(lang.to_string().into(), factory);
+    }
+
+    /// Registers a token provider that highlights `lang` without a Tree-sitter grammar.
+    ///
+    /// If `lang` is not registered yet, a plain language configuration is
+    /// registered for it. The provider is used only while the language has no
+    /// statically linked grammar and no parser factory; Tree-sitter wins otherwise.
+    pub fn register_token_highlighter(&self, lang: &str, highlighter: TokenHighlighter) {
+        self.languages
+            .lock()
+            .unwrap()
+            .entry(lang.to_string().into())
+            .or_insert_with(|| GrammarConfig::plain(lang.to_string()));
+        self.token_highlighters
+            .lock()
+            .unwrap()
+            .insert(lang.to_string().into(), highlighter);
+    }
+
+    /// Returns the token provider for `name` when the language has one and
+    /// cannot produce a Tree-sitter parser.
+    pub(crate) fn token_highlighter(&self, name: &str) -> Option<TokenHighlighter> {
+        let config = self.language(name)?;
+        if self.has_parser(name) {
+            return None;
+        }
+        let token_highlighters = self.token_highlighters.lock().unwrap();
+        token_highlighters
+            .get(name)
+            .or_else(|| token_highlighters.get(&config.name))
+            .cloned()
     }
 
     /// Returns a fresh parser and grammar for `name`, preferring a registered
@@ -622,6 +665,7 @@ mod tests {
         let registry = super::LanguageRegistry {
             languages: std::sync::Mutex::new(std::collections::HashMap::new()),
             parser_factories: std::sync::Mutex::new(std::collections::HashMap::new()),
+            token_highlighters: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
         registry.register("json", &GrammarConfig::plain("canonical"));
         assert_eq!(registry.language("jsonc").unwrap().name, "canonical");
@@ -645,6 +689,7 @@ mod tests {
         let registry = super::LanguageRegistry {
             languages: std::sync::Mutex::new(std::collections::HashMap::new()),
             parser_factories: std::sync::Mutex::new(std::collections::HashMap::new()),
+            token_highlighters: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
         registry.register("typescript", &GrammarConfig::plain("typescript"));
         assert!(registry.language("ts").is_none());

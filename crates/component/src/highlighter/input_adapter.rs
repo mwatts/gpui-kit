@@ -21,9 +21,10 @@ use super::{LanguageRegistry, SyntaxHighlighter};
 
 pub(crate) fn input_highlighter_factory() -> InputHighlighterFactory {
     Rc::new(|language| {
-        LanguageRegistry::singleton().has_parser(language).then(|| {
-            Box::new(TreeSitterInputHighlighter::new(language)) as Box<dyn InputHighlighter>
-        })
+        let registry = LanguageRegistry::singleton();
+        (registry.has_parser(language) || registry.token_highlighter(language).is_some()).then(
+            || Box::new(TreeSitterInputHighlighter::new(language)) as Box<dyn InputHighlighter>,
+        )
     })
 }
 
@@ -72,7 +73,9 @@ impl InputHighlighter for TreeSitterInputHighlighter {
         let edit = edit.map(to_tree_sitter_edit);
         let completed = {
             let mut highlighter = self.inner.borrow_mut();
-            if text.len() > SYNC_PARSE_MAX_BYTES {
+            // Token providers run synchronously; only Tree-sitter parses defer
+            // large buffers to the background.
+            if text.len() > SYNC_PARSE_MAX_BYTES && !highlighter.uses_token_highlighter() {
                 highlighter.edit_tree(edit, text);
                 false
             } else {
