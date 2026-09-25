@@ -113,7 +113,7 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
 .with_methods(vec![
             retained_forms::value_method(),
             retained_forms::on_change_method("Editor", "(value: string, cx: Context) => void"),
-            retained_forms::on_submit_method("Editor", "(value: string, cx: Context) => void"),
+            retained_forms::on_submit_method("Editor", retained_forms::TEXT_SUBMIT_SCHEMA),
             MethodDescriptor::new("disabled", vec![ArgumentDescriptor::new("disabled", ArgumentSchema::Boolean)], |_| Ok(ComponentPayload::new(()))).with_documentation("Disables the editor."),
             bool_method("Editor", "appearance", "Controls the editor appearance.", Op::Appearance),
             bool_method("Editor", "bordered", "Controls the editor border.", Op::Bordered),

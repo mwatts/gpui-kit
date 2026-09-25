@@ -150,3 +150,46 @@ export default class App extends View {
         "unmounted input must not report further callbacks: {after}"
     );
 }
+
+#[gpui::test]
+fn text_submit_reports_enter_modifiers_after_the_context(cx: &mut TestAppContext) {
+    let source = r#"
+import { View, div } from "gpui-kit";
+import { Input, InputState } from "gpui-component";
+export default class App extends View {
+  init(_props, _cx) { this.input = InputState(); this.seen = []; }
+  render() {
+    return div().size_full()
+      .child(new Input(this.input).absolute().left(0).top(0).w(400).h(40)
+        .on_submit((value, cx, modifiers) => {
+          this.seen.push(`${value}:${modifiers.shift}:${modifiers.secondary}`);
+          cx.notify();
+        }))
+      .child(`seen:${this.seen.join("|")}`);
+  }
+}
+"#;
+    let (mut context, view, _app) = mount(cx, source);
+    retained_forms::test_probe::reset();
+    draw(&mut context);
+    context.simulate_click(point(px(20.), px(16.)), Modifiers::default());
+    context.simulate_keystrokes("a enter");
+    draw(&mut context);
+    context.simulate_keystrokes("shift-enter");
+    draw(&mut context);
+    context.simulate_keystrokes("secondary-enter");
+    draw(&mut context);
+    let text = context.update(|_, cx| {
+        assert_eq!(view.read(cx).build_error(), None);
+        view.read(cx).snapshot().unwrap().debug_tree()
+    });
+    assert!(
+        text.contains("seen:a:false:false|a:true:false|a:false:true"),
+        "on_submit must receive the Enter modifiers after cx: {text}"
+    );
+    assert_eq!(
+        retained_forms::test_probe::take_submit_modifiers(),
+        [(false, false), (true, false), (false, true)]
+    );
+    // `(value, cx) => ...` callbacks keep working; the test above uses one.
+}
