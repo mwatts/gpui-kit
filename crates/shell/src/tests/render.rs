@@ -8488,12 +8488,10 @@ export default class Form extends View {
     let handles = runtime.entities().focus_handles();
     assert_eq!(handles.len(), 4, "the script created four focus handles");
 
-    // Nothing is focused until something puts focus in the window, and while
-    // nothing is, the root's Tab binding has no dispatch path to reach — a
-    // ShellRoot limitation that predates focus reaching scripts at all. So the
-    // first step is taken directly; every step after it is a real keystroke.
+    // Nothing is focused until something puts focus in the window. The first
+    // Tab still reaches the first tab stop: the root takes that step from a
+    // keystroke observer, since its Tab binding has no dispatch path yet.
     assert_eq!(context.update(|window, cx| window.focused(cx)), None);
-    context.update(|window, cx| window.focus_next(cx));
 
     // One keystroke per control, in the order the script numbered them: a
     // Button, a Checkbox and a Toggle through base's own focus builders, and a

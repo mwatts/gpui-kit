@@ -1091,6 +1091,19 @@ fn install_key_bindings(cx: &mut App) {
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-c", Copy, Some(CONTEXT)),
     ]);
+    // With nothing focused the root's Tab binding has no dispatch path (see
+    // `gpui_base::unfocused_tab_direction`), so the root takes the first step
+    // from a keystroke observer.
+    cx.observe_keystrokes(|event, window, cx| {
+        let Some(forward) = gpui_base::unfocused_tab_direction(event, window, cx) else {
+            return;
+        };
+        if window.root::<ShellRoot>().flatten().is_none() {
+            return;
+        }
+        cycle_focus(forward, window, cx);
+    })
+    .detach();
     cx.set_global(KeyBindingsInstalled);
 }
 
