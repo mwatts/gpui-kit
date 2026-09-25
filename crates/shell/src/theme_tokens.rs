@@ -103,6 +103,13 @@ pub(crate) const COLOR_TOKEN_NAMES: &[&str] = &[
     "input",
     "ring",
     "selection",
+    "sidebar",
+    "sidebar_foreground",
+    "sidebar_border",
+    "sidebar_accent",
+    "sidebar_accent_foreground",
+    "sidebar_primary",
+    "sidebar_primary_foreground",
 ];
 
 pub(crate) const SPACING_TOKEN_NAMES: &[&str] = &["xxs", "xs", "sm", "md", "lg", "xl", "xxl"];
@@ -138,6 +145,13 @@ pub(crate) fn resolve_color(colors: &ColorTokens, name: &str) -> Option<Hsla> {
         "input" => colors.input,
         "ring" => colors.ring,
         "selection" => colors.selection,
+        "sidebar" => colors.sidebar,
+        "sidebar_foreground" => colors.sidebar_foreground,
+        "sidebar_border" => colors.sidebar_border,
+        "sidebar_accent" => colors.sidebar_accent,
+        "sidebar_accent_foreground" => colors.sidebar_accent_foreground,
+        "sidebar_primary" => colors.sidebar_primary,
+        "sidebar_primary_foreground" => colors.sidebar_primary_foreground,
         _ => return None,
     })
 }

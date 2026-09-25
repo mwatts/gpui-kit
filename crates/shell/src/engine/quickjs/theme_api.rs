@@ -159,9 +159,14 @@ fn apply_colors(
     supplied: &HashMap<String, String>,
 ) -> Result<(), String> {
     for name in theme_tokens::color_token_names() {
-        let source = supplied
-            .get(*name)
-            .ok_or_else(|| format!("theme tokens.colors is missing `{name}`"))?;
+        // The sidebar family arrived after the others, so a theme written
+        // before it may leave it out and keep the current sidebar colors.
+        let Some(source) = supplied.get(*name) else {
+            if name.starts_with("sidebar") {
+                continue;
+            }
+            return Err(format!("theme tokens.colors is missing `{name}`"));
+        };
         let value = Bridged::Str(source.clone())
             .as_color()
             .map_err(|e| format!("theme color `{name}`: {e}"))?;
@@ -184,6 +189,13 @@ fn apply_colors(
             "input" => colors.input = value,
             "ring" => colors.ring = value,
             "selection" => colors.selection = value,
+            "sidebar" => colors.sidebar = value,
+            "sidebar_foreground" => colors.sidebar_foreground = value,
+            "sidebar_border" => colors.sidebar_border = value,
+            "sidebar_accent" => colors.sidebar_accent = value,
+            "sidebar_accent_foreground" => colors.sidebar_accent_foreground = value,
+            "sidebar_primary" => colors.sidebar_primary = value,
+            "sidebar_primary_foreground" => colors.sidebar_primary_foreground = value,
             _ => unreachable!(),
         }
     }

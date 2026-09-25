@@ -5395,6 +5395,41 @@ fn theme_tokens_resolve_outside_a_call_scope(cx: &mut TestAppContext) {
     assert!(crate::theme_tokens::token_color("not_a_token").is_none());
 }
 
+/// The sidebar family is part of the semantic palette a script names, both as
+/// a style token and in `cx.theme().colors`.
+#[gpui::test]
+fn sidebar_color_tokens_resolve_for_scripts(cx: &mut TestAppContext) {
+    let names = [
+        "sidebar",
+        "sidebar_foreground",
+        "sidebar_border",
+        "sidebar_accent",
+        "sidebar_accent_foreground",
+        "sidebar_primary",
+        "sidebar_primary_foreground",
+    ];
+    let accent: gpui::Hsla = gpui::rgb(0x123456).into();
+    cx.update(|cx| {
+        crate::init(cx);
+        gpui_base::Theme::global_mut(cx)
+            .tokens
+            .colors
+            .sidebar_accent = accent;
+        crate::theme_tokens::sync(cx);
+    });
+    for name in names {
+        assert!(
+            crate::theme_tokens::color_token_names().contains(&name),
+            "{name} is a script color token"
+        );
+        assert!(crate::theme_tokens::token_color(name).is_some(), "{name}");
+    }
+    assert_eq!(
+        crate::theme_tokens::token_color("sidebar_accent"),
+        Some(accent)
+    );
+}
+
 #[gpui::test]
 fn javascript_can_replace_the_active_gpui_base_theme(cx: &mut TestAppContext) {
     cx.update(|cx| crate::init(cx));

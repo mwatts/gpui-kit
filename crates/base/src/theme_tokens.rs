@@ -42,6 +42,23 @@ pub struct ColorTokens {
     /// palettes written before the token existed still load.
     #[serde(default = "ColorTokens::default_selection")]
     pub selection: Hsla,
+    /// The sidebar family: a navigation rail's background, text and border,
+    /// its hovered or active row (`accent`), and its primary action. Each
+    /// carries a serde default so palettes written before them still load.
+    #[serde(default = "ColorTokens::default_sidebar")]
+    pub sidebar: Hsla,
+    #[serde(default = "ColorTokens::default_sidebar_foreground")]
+    pub sidebar_foreground: Hsla,
+    #[serde(default = "ColorTokens::default_sidebar_border")]
+    pub sidebar_border: Hsla,
+    #[serde(default = "ColorTokens::default_sidebar_accent")]
+    pub sidebar_accent: Hsla,
+    #[serde(default = "ColorTokens::default_sidebar_accent_foreground")]
+    pub sidebar_accent_foreground: Hsla,
+    #[serde(default = "ColorTokens::default_sidebar_primary")]
+    pub sidebar_primary: Hsla,
+    #[serde(default = "ColorTokens::default_sidebar_primary_foreground")]
+    pub sidebar_primary_foreground: Hsla,
 }
 
 impl Default for ColorTokens {
@@ -72,6 +89,13 @@ impl ColorTokens {
             input: hsla(0., 0., 0.898, 1.),
             ring: hsla(0., 0., 0.639, 1.),
             selection: Hsla::from(rgb(0x55a0fc)).alpha(0.3),
+            sidebar: hsla(0., 0., 0.98, 1.),
+            sidebar_foreground: hsla(0., 0., 0.039, 1.),
+            sidebar_border: hsla(0., 0., 0.898, 1.),
+            sidebar_accent: hsla(0., 0., 0.961, 1.),
+            sidebar_accent_foreground: hsla(0., 0., 0.09, 1.),
+            sidebar_primary: hsla(0., 0., 0.09, 1.),
+            sidebar_primary_foreground: hsla(0., 0., 0.98, 1.),
         }
     }
 
@@ -96,12 +120,47 @@ impl ColorTokens {
             input: hsla(0., 0., 47. / 255., 1.),
             ring: hsla(0., 0., 0.451, 1.),
             selection: Hsla::from(rgb(0x1d4ed8)).alpha(0.3),
+            sidebar: hsla(0., 0., 0.09, 1.),
+            sidebar_foreground: hsla(0., 0., 0.98, 1.),
+            sidebar_border: hsla(0., 0., 0.149, 1.),
+            sidebar_accent: hsla(0., 0., 0.149, 1.),
+            sidebar_accent_foreground: hsla(0., 0., 0.98, 1.),
+            sidebar_primary: hsla(0., 0., 0.98, 1.),
+            sidebar_primary_foreground: hsla(0., 0., 0.09, 1.),
         }
     }
 
     /// The selection color a palette falls back to when it predates the token.
     fn default_selection() -> Hsla {
         Self::light().selection
+    }
+
+    fn default_sidebar() -> Hsla {
+        Self::light().sidebar
+    }
+
+    fn default_sidebar_foreground() -> Hsla {
+        Self::light().sidebar_foreground
+    }
+
+    fn default_sidebar_border() -> Hsla {
+        Self::light().sidebar_border
+    }
+
+    fn default_sidebar_accent() -> Hsla {
+        Self::light().sidebar_accent
+    }
+
+    fn default_sidebar_accent_foreground() -> Hsla {
+        Self::light().sidebar_accent_foreground
+    }
+
+    fn default_sidebar_primary() -> Hsla {
+        Self::light().sidebar_primary
+    }
+
+    fn default_sidebar_primary_foreground() -> Hsla {
+        Self::light().sidebar_primary_foreground
     }
 }
 
