@@ -327,6 +327,8 @@ pub struct Editing<'a> {
     pub placeholder: Option<SharedString>,
     pub caption: Caption,
     pub composition: Option<&'a Composition>,
+    /// Overrides the app-wide [`crate::Typography`] for this render.
+    pub typography: Option<crate::Typography>,
 }
 
 impl Default for Editing<'_> {
@@ -339,6 +341,7 @@ impl Default for Editing<'_> {
             placeholder: None,
             caption: Caption::default(),
             composition: None,
+            typography: None,
         }
     }
 }

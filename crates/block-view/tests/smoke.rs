@@ -100,6 +100,7 @@ impl gpui::Render for SmokeView {
             placeholder: Some("Type / for commands".into()),
             caption: Default::default(),
             composition: None,
+            typography: None,
         };
         div()
             .size_full()

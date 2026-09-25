@@ -6,8 +6,8 @@
 mod block_renderer;
 mod chart;
 mod highlight;
-mod image_resolve;
 pub mod icons;
+mod image_resolve;
 mod layouts;
 mod paint;
 mod preview;
@@ -21,7 +21,9 @@ pub use chart::{
     parse_rows as parse_chart_rows, render as render_chart,
 };
 pub use highlight::{DEFAULT_LANGUAGES, Highlighter, languages, menu_languages, set_highlighter};
-pub use image_resolve::{ImagePaint, ImageResolver, image_paint, is_canonical_image_reference, set_image_resolver};
+pub use image_resolve::{
+    ImagePaint, ImageResolver, image_paint, is_canonical_image_reference, set_image_resolver,
+};
 pub use layouts::BlockLayouts;
 pub use paint::{
     EditorPalette, INK_FILL_SCALE, INK_HAIRLINE_SCALE, hairline, hairline_for, ink, ink_for, wash,
