@@ -263,7 +263,6 @@ impl gpui::RenderOnce for BoundQuestionnaire {
         let retained = retained.read(cx);
         let error = retained.error.clone();
         let state = retained.native.clone();
-        drop(retained);
         if let Some(error) = error {
             return gpui::div().child(error).into_any_element();
         }

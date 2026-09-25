@@ -1,5 +1,5 @@
 use super::*;
-use gpui::{InteractiveElement as _, StatefulInteractiveElement as _};
+use gpui::StatefulInteractiveElement as _;
 use gpui_component::{
     chart::{CandlestickChart, SankeyChart},
     plot::shape::SankeyLink,
