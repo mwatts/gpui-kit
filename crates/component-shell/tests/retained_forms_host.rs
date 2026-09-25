@@ -193,3 +193,52 @@ export default class App extends View {
     );
     // `(value, cx) => ...` callbacks keep working; the test above uses one.
 }
+
+#[gpui::test]
+fn time_field_takes_an_initial_and_controlled_value_and_reports_edits(cx: &mut TestAppContext) {
+    let source = r#"
+import { View, div } from "gpui-kit";
+import { TimeField, TimeFieldState } from "gpui-component";
+export default class App extends View {
+  init(_props, _cx) { this.state = TimeFieldState("09:30"); this.model = null; this.changes = 0; }
+  render() {
+    let field = new TimeField(this.state).absolute().left(0).top(0).w(200).h(32)
+      .on_change((value, cx) => { this.model = value; this.changes += 1; cx.notify(); });
+    if (this.model !== null) field = field.value(this.model);
+    return div().size_full()
+      .child(field)
+      .child(div().absolute().left(300).top(0).w(80).h(32).child("noon")
+        .on_click((_event, cx) => { this.model = "12:00"; cx.notify(); }))
+      .child(`model:${this.model} changes:${this.changes}`);
+  }
+}
+"#;
+    let (mut context, view, _app) = mount(cx, source);
+    draw(&mut context);
+    let state_time = |context: &mut VisualTestContext| {
+        context.update(|_, cx| {
+            let tree = view.read(cx).snapshot().unwrap().debug_tree();
+            assert_eq!(view.read(cx).build_error(), None, "{tree}");
+            tree
+        })
+    };
+    assert!(state_time(&mut context).contains("model:null changes:0"));
+
+    // The hour segment is selected first; Up steps it and reports "HH:MM".
+    context.simulate_click(point(px(12.), px(16.)), Modifiers::default());
+    context.simulate_keystrokes("up");
+    draw(&mut context);
+    let text = state_time(&mut context);
+    assert!(text.contains("model:10:30 changes:1"), "{text}");
+
+    // A controlled value replaces the time without reporting a change.
+    context.simulate_click(point(px(320.), px(16.)), Modifiers::default());
+    draw(&mut context);
+    let text = state_time(&mut context);
+    assert!(text.contains("model:12:00 changes:1"), "{text}");
+    context.simulate_click(point(px(12.), px(16.)), Modifiers::default());
+    context.simulate_keystrokes("up");
+    draw(&mut context);
+    let text = state_time(&mut context);
+    assert!(text.contains("model:13:00 changes:2"), "{text}");
+}

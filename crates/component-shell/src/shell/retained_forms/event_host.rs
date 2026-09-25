@@ -11,6 +11,7 @@ use gpui_component::{
     date_picker::{DatePickerEvent, DatePickerState},
     input::{InputEvent, InputState, NumberInputEvent, OtpEvent, OtpState},
     slider::{SliderEvent, SliderState, SliderValue},
+    time_field::{TimeFieldEvent, TimeFieldState},
 };
 use gpui_shell::{
     ComponentCallback, ComponentCallbackArgument, ComponentDataValue,
@@ -369,6 +370,26 @@ pub(crate) fn subscribe_date(
                 &cell,
                 "DatePicker.on_change",
                 date_argument(value.date()),
+                window,
+                cx,
+            );
+        }),
+    ]
+}
+
+pub(crate) fn subscribe_time(
+    state: Entity<TimeFieldState>,
+    cell: Rc<RefCell<FormCallbacks>>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Vec<Subscription> {
+    vec![
+        window.subscribe(&state, cx, move |_, event: &TimeFieldEvent, window, cx| {
+            let TimeFieldEvent::Change(time) = event;
+            invoke_change(
+                &cell,
+                "TimeField.on_change",
+                ComponentCallbackArgument::String(super::format_time(*time)),
                 window,
                 cx,
             );

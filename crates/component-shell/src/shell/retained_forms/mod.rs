@@ -5,7 +5,7 @@
 //! through a keyed host (see `event_host`). Constructors stay one-argument
 //! `*State` handles. Input and Textarea also keep inline token bindings, so
 //! their `on_change` stays on that binding and is not registered twice.
-//! TimeField remains a styled leaf without those event callbacks.
+//! TimeField reports edits through `on_change` as 24-hour `"HH:MM"` text.
 
 use gpui_component::{
     Disableable as _, Sizable as _,
@@ -239,6 +239,18 @@ mod tests {
     }
 
     #[test]
+    fn times_are_strict_24_hour_hh_mm() {
+        let time = parse_time("09:05").unwrap();
+        assert_eq!(format_time(time), "09:05");
+        assert_eq!(format_time(parse_time("23:59").unwrap()), "23:59");
+        for invalid in [
+            "", "9:05", "24:00", "12:60", "12-30", "12:3a", "+1:00", "12:30:00",
+        ] {
+            assert!(parse_time(invalid).is_err(), "accepted {invalid}");
+        }
+    }
+
+    #[test]
     fn otp_leaf_contract_rejects_ordinary_children() {
         let error = ensure_leaf(1, "OtpInput").unwrap_err();
         assert_eq!(error.to_string(), "OtpInput does not accept children");
@@ -250,6 +262,7 @@ mod tests {
 enum FormOp {
     Value(String),
     DateValue(Date),
+    TimeValue(chrono::NaiveTime),
     ColorValue(Option<gpui::Hsla>),
     SliderValue(f32),
     Disabled(bool),
@@ -962,20 +975,103 @@ impl ComponentMaterializer for CalendarMaterializer {
     }
 }
 
+/// Parses 24-hour `"HH:MM"` text.
+fn parse_time(text: &str) -> Result<chrono::NaiveTime, String> {
+    let bytes = text.as_bytes();
+    let digits = |range: std::ops::Range<usize>| {
+        bytes[range.clone()]
+            .iter()
+            .all(u8::is_ascii_digit)
+            .then(|| text[range].parse::<u32>().ok())
+            .flatten()
+    };
+    if bytes.len() != 5 || bytes[2] != b':' {
+        return Err("time expects 24-hour HH:MM".into());
+    }
+    digits(0..2)
+        .zip(digits(3..5))
+        .and_then(|(hour, minute)| chrono::NaiveTime::from_hms_opt(hour, minute, 0))
+        .ok_or_else(|| "time expects a valid 24-hour HH:MM".into())
+}
+
+/// Formats a time as the 24-hour `"HH:MM"` text scripts read and write.
+pub(crate) fn format_time(time: chrono::NaiveTime) -> String {
+    time.format("%H:%M").to_string()
+}
+
+fn time_value_method() -> MethodDescriptor {
+    MethodDescriptor::new(
+        "value",
+        vec![ArgumentDescriptor::new("time", ArgumentSchema::String)],
+        |arguments| match arguments {
+            [ComponentArgument::String(text)] => {
+                Ok(ComponentPayload::new(FormOp::TimeValue(parse_time(text)?)))
+            }
+            _ => Err("TimeField.value expects 24-hour HH:MM text".into()),
+        },
+    )
+    .with_documentation(
+        "Synchronizes the retained time from 24-hour HH:MM text without emitting change; omit for uncontrolled editing.",
+    )
+}
+
+#[derive(gpui::IntoElement)]
+struct BoundTimeField {
+    state: Entity<TimeFieldState>,
+    ops: Vec<FormOp>,
+    callbacks: event_host::FormCallbacks,
+    style: gpui::StyleRefinement,
+}
+
+impl RenderOnce for BoundTimeField {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl gpui::IntoElement {
+        if let Some(value) = self
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                FormOp::TimeValue(value) => Some(*value),
+                _ => None,
+            })
+            .next_back()
+        {
+            if self.state.read(cx).time() != value {
+                self.state
+                    .update(cx, |state, cx| state.set_time(value, window, cx));
+            }
+        }
+        let state = event_host::install(
+            host_key("shell-time-field-host", &self.state),
+            self.state,
+            self.callbacks,
+            event_host::subscribe_time,
+            window,
+            cx,
+        );
+        let mut field = TimeField::new(&state);
+        for op in self.ops {
+            if let FormOp::Disabled(value) = op {
+                field = field.disabled(value);
+            }
+        }
+        field.style().refine(&self.style);
+        field
+    }
+}
+
 struct TimeFieldMaterializer;
 impl ComponentMaterializer for TimeFieldMaterializer {
     fn materialize(&self, mut request: MaterializeRequest<'_>) -> anyhow::Result<gpui::AnyElement> {
         let state = state_entity!(request, TimeFieldState);
-        let mut field = TimeField::new(&state);
-        for op in request
-            .methods()
-            .filter_map(|method| method.payload().downcast_ref::<FormOp>())
-        {
-            if let FormOp::Disabled(value) = op {
-                field = field.disabled(*value);
-            }
+        let callbacks = resolve_callbacks(&request)?;
+        let ops = ops(&request);
+        ensure_leaf(request.children_len(), "TimeField")?;
+        Ok(BoundTimeField {
+            state,
+            ops,
+            callbacks,
+            style: request.take_style(),
         }
-        finish_leaf(&mut request, field)
+        .into_any_element())
     }
 }
 
@@ -1215,10 +1311,27 @@ pub fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
         StateDescriptor::new(
             "TimeFieldState",
             "TimeFieldState",
-            vec![],
-            |_, window, cx| Ok(Box::new(cx.new(|cx| TimeFieldState::new(window, cx)))),
+            vec![ArgumentDescriptor::new(
+                "initial_value",
+                ArgumentSchema::Optional(Box::new(ArgumentSchema::String)),
+            )],
+            |arguments, window, cx| {
+                let time = match nullable_text(arguments)? {
+                    Some(text) => Some(parse_time(text)?),
+                    None => None,
+                };
+                Ok(Box::new(cx.new(|cx| {
+                    let mut state = TimeFieldState::new(window, cx);
+                    if let Some(time) = time {
+                        state.set_time(time, window, cx);
+                    }
+                    state
+                })))
+            },
         )
-        .with_documentation("Retained 24-hour, minute-precision time-of-day editing state."),
+        .with_documentation(
+            "Retained 24-hour, minute-precision time-of-day editing state, optionally starting at 24-hour HH:MM text.",
+        ),
     )?;
 
     registry.register(component(
@@ -1376,7 +1489,11 @@ pub fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
     registry.register(component(
         "TimeField",
         "TimeFieldState",
-        vec![disabled_method("TimeField")],
+        vec![
+            disabled_method("TimeField"),
+            time_value_method(),
+            on_change_method("TimeField", "(value: string, cx: Context) => void"),
+        ],
         "A retained segmented time-of-day field edited from the keyboard.",
         TimeFieldMaterializer,
     ))?;
