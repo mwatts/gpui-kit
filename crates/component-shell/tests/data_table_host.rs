@@ -133,6 +133,51 @@ export default class App extends View { render() { return new DataTable(
     });
 }
 
+/// `header_text_size` sets the size every header cell paints its label at, and
+/// an unknown size literal is refused.
+#[gpui::test]
+fn header_text_size_reaches_every_header_cell(cx: &mut TestAppContext) {
+    data_table::test_probe::reset();
+    let (mut context, view, _app) = mount(
+        cx,
+        r#"
+import { View, div } from "gpui-kit";
+import { DataTableState, DataTable } from "gpui-component";
+export default class App extends View { render() { return new DataTable(
+  DataTableState(["name", "status"]), () => [{name: "Ada", status: "Ready"}],
+  (row, column) => div().child(row[column])
+).header_text_size("xs").w(600).h(200); } }
+"#,
+    );
+    draw(&mut context);
+    context.update(|_, cx| assert_eq!(view.read(cx).build_error(), None));
+    let sizes = data_table::test_probe::take_header_text_sizes();
+    let xs: gpui::AbsoluteLength = gpui::rems(0.75).into();
+    for column in [0, 1] {
+        assert!(
+            sizes.contains(&(column, Some(xs))),
+            "header {column} is xs: {sizes:?}"
+        );
+    }
+    assert!(sizes.iter().all(|(_, size)| *size == Some(xs)), "{sizes:?}");
+
+    let (mut context, view, _app) = mount(
+        cx,
+        r#"
+import { View, div } from "gpui-kit";
+import { DataTableState, DataTable } from "gpui-component";
+export default class App extends View { render() { return new DataTable(
+  DataTableState(["name"]), () => [{name: "Ada"}], (row, column) => div().child(row[column])
+).header_text_size("huge"); } }
+"#,
+    );
+    draw(&mut context);
+    context.update(|_, cx| {
+        let error = view.read(cx).build_error().unwrap_or_default();
+        assert!(error.contains("header_text_size"), "{error}");
+    });
+}
+
 #[gpui::test]
 fn data_table_rejects_non_array_snapshot_without_panicking(cx: &mut TestAppContext) {
     data_table::test_probe::reset();
