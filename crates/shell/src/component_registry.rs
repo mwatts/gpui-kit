@@ -1640,6 +1640,33 @@ impl ComponentCallback {
         runtime.dispatch_component_callback_value(self.id, arguments, window, cx)
     }
 
+    /// Invokes the script callback with `arguments`, then the `Context`, then
+    /// `trailing` plain data, and reports any failure like
+    /// [`Self::invoke_and_report_with`].
+    ///
+    /// Trailing data extends an existing `(value, cx) => ...` callback without
+    /// breaking it: a script that stops at `cx` ignores what follows.
+    pub fn invoke_and_report_with_trailing(
+        &self,
+        context: &str,
+        arguments: &[ComponentCallbackArgument],
+        trailing: &[ComponentDataValue],
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let result = match self.runtime.upgrade() {
+            Some(runtime) => runtime
+                .dispatch_component_callback_value_trailing(
+                    self.id, arguments, trailing, window, cx,
+                )
+                .map(|_| ()),
+            None => Err(anyhow::anyhow!(
+                "component callback runtime has been released"
+            )),
+        };
+        self.report(context, result);
+    }
+
     /// Invokes the script callback and reports any failure through the shell's
     /// tracing subscriber.
     ///
@@ -1667,7 +1694,12 @@ impl ComponentCallback {
         window: &mut Window,
         cx: &mut App,
     ) {
-        if let Err(error) = self.invoke_with(arguments, window, cx) {
+        let result = self.invoke_with(arguments, window, cx);
+        self.report(context, result);
+    }
+
+    fn report(&self, context: &str, result: anyhow::Result<()>) {
+        if let Err(error) = result {
             if error.downcast_ref::<crate::InactiveCallback>().is_some() {
                 tracing::debug!("{context}: {error:#}");
                 return;

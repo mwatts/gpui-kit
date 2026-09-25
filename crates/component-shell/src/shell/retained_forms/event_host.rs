@@ -13,7 +13,7 @@ use gpui_component::{
     slider::{SliderEvent, SliderState, SliderValue},
 };
 use gpui_shell::{
-    ComponentCallback, ComponentCallbackArgument,
+    ComponentCallback, ComponentCallbackArgument, ComponentDataValue,
     gpui::{self, App, Entity, Subscription, Window},
 };
 use std::{
@@ -184,7 +184,7 @@ pub(crate) fn subscribe_input<T: TextState>(
                         cx,
                     );
                 }
-                InputEvent::PressEnter { .. } => {
+                InputEvent::PressEnter { secondary, shift } => {
                     if !enter_armed.get() {
                         return;
                     }
@@ -194,13 +194,20 @@ pub(crate) fn subscribe_input<T: TextState>(
                     if owner == "Input" {
                         super::test_probe::submit(value.clone());
                     }
-                    invoke_submit(
-                        &change_cell,
-                        &format!("{owner}.on_submit"),
-                        ComponentCallbackArgument::String(value),
-                        window,
-                        cx,
-                    );
+                    #[cfg(test)]
+                    if owner == "Input" {
+                        super::test_probe::submit_modifiers(*shift, *secondary);
+                    }
+                    let callback = change_cell.borrow().on_submit.clone();
+                    if let Some(callback) = callback {
+                        callback.invoke_and_report_with_trailing(
+                            &format!("{owner}.on_submit"),
+                            &[ComponentCallbackArgument::String(value)],
+                            &[submit_modifiers(*shift, *secondary)],
+                            window,
+                            cx,
+                        );
+                    }
                     let enter_armed = enter_armed.clone();
                     window.defer(cx, move |_, _| enter_armed.set(true));
                 }
@@ -208,6 +215,15 @@ pub(crate) fn subscribe_input<T: TextState>(
             },
         )]
     }
+}
+
+/// The `{ shift, secondary }` object a text control's `on_submit` receives
+/// after its `Context`.
+fn submit_modifiers(shift: bool, secondary: bool) -> ComponentDataValue {
+    ComponentDataValue::Object(vec![
+        ("shift".into(), ComponentDataValue::Boolean(shift)),
+        ("secondary".into(), ComponentDataValue::Boolean(secondary)),
+    ])
 }
 
 pub(crate) fn subscribe_number_input(
