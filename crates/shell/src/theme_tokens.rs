@@ -110,6 +110,11 @@ pub(crate) const COLOR_TOKEN_NAMES: &[&str] = &[
     "sidebar_accent_foreground",
     "sidebar_primary",
     "sidebar_primary_foreground",
+    "card",
+    "danger",
+    "success",
+    "warning",
+    "info",
 ];
 
 pub(crate) const SPACING_TOKEN_NAMES: &[&str] = &["xxs", "xs", "sm", "md", "lg", "xl", "xxl"];
@@ -152,6 +157,11 @@ pub(crate) fn resolve_color(colors: &ColorTokens, name: &str) -> Option<Hsla> {
         "sidebar_accent_foreground" => colors.sidebar_accent_foreground,
         "sidebar_primary" => colors.sidebar_primary,
         "sidebar_primary_foreground" => colors.sidebar_primary_foreground,
+        "card" => colors.card,
+        "danger" => colors.danger,
+        "success" => colors.success,
+        "warning" => colors.warning,
+        "info" => colors.info,
         _ => return None,
     })
 }

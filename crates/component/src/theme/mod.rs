@@ -502,6 +502,11 @@ impl Theme {
             sidebar_accent_foreground: self.sidebar_accent_foreground,
             sidebar_primary: self.sidebar_primary,
             sidebar_primary_foreground: self.sidebar_primary_foreground,
+            card: self.group_box,
+            danger: self.danger,
+            success: self.success,
+            warning: self.warning,
+            info: self.info,
         }
     }
 
@@ -834,6 +839,13 @@ mod update_tests {
             // The sidebar family reaches the Base projection too, which is
             // where a script's `sidebar` color tokens resolve.
             assert_eq!(gpui_base::Theme::global(cx).tokens.colors.sidebar, sidebar);
+            // So do card and the status colors a script names.
+            let base = &gpui_base::Theme::global(cx).tokens.colors;
+            assert_eq!(base.card, theme.group_box);
+            assert_eq!(base.danger, theme.danger);
+            assert_eq!(base.success, theme.success);
+            assert_eq!(base.warning, theme.warning);
+            assert_eq!(base.info, theme.info);
             assert!(gpui_base::Theme::global(cx).tokens.radius.md.is_zero());
         });
     }
