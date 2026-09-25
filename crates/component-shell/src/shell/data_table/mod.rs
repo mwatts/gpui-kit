@@ -30,6 +30,7 @@ struct Delegate {
     on_sort: Option<ComponentCallback>,
     header_bg: Option<gpui::Hsla>,
     header_fg: Option<gpui::Hsla>,
+    header_text_size: Option<gpui::AbsoluteLength>,
 }
 
 impl Delegate {
@@ -45,6 +46,7 @@ impl Delegate {
             on_sort: None,
             header_bg: None,
             header_fg: None,
+            header_text_size: None,
         }
     }
 
@@ -94,6 +96,9 @@ impl TableDelegate for Delegate {
         if let Some(color) = self.header_fg {
             header = header.text_color(color);
         }
+        if let Some(size) = self.header_text_size {
+            header = header.text_size(size);
+        }
         header
     }
     fn render_th(
@@ -108,6 +113,11 @@ impl TableDelegate for Delegate {
         if let Some(color) = self.header_fg {
             cell = cell.text_color(color);
         }
+        if let Some(size) = self.header_text_size {
+            cell = cell.text_size(size);
+        }
+        #[cfg(test)]
+        test_probe::header_text_size(col_ix, self.header_text_size);
         cell
     }
     fn render_tr(
@@ -229,6 +239,7 @@ struct Payload {
 enum Op {
     HeaderBg(gpui::Hsla),
     HeaderFg(gpui::Hsla),
+    HeaderTextSize(gpui::AbsoluteLength),
     ColumnWidths(Vec<f32>),
     Stripe(bool),
     Bordered(bool),
@@ -543,10 +554,12 @@ impl RenderOnce for DataTableHost {
             );
             state.delegate_mut().header_bg = None;
             state.delegate_mut().header_fg = None;
+            state.delegate_mut().header_text_size = None;
             for op in &self.ops {
                 match op {
                     Op::HeaderBg(color) => state.delegate_mut().header_bg = Some(*color),
                     Op::HeaderFg(color) => state.delegate_mut().header_fg = Some(*color),
+                    Op::HeaderTextSize(size) => state.delegate_mut().header_text_size = Some(*size),
                     Op::ColumnWidths(widths) => {
                         for (column, width) in state.delegate_mut().columns.iter_mut().zip(widths) {
                             column.width = gpui::px(*width);
@@ -662,6 +675,21 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
             MethodDescriptor::new("scrollbar_visible", vec![ArgumentDescriptor::new("vertical", ArgumentSchema::Boolean), ArgumentDescriptor::new("horizontal", ArgumentSchema::Boolean)], |args| match args { [ComponentArgument::Boolean(value), ComponentArgument::Boolean(h)] => Ok(ComponentPayload::new(Op::Scrollbars(*value, *h))), _ => Err("DataTable.scrollbar_visible expects two booleans".into()) }).with_documentation("Chooses when the table shows its scrollbars."),
             MethodDescriptor::new("header_bg",vec![ArgumentDescriptor::new("color",ArgumentSchema::String)],|args|match args{[ComponentArgument::String(color)]=>gpui_component::try_parse_color(color).map(|c|ComponentPayload::new(Op::HeaderBg(c))).map_err(|e|e.to_string()),_=>Err("header_bg requires a color".into())}).with_documentation("Sets the header background color."),
             MethodDescriptor::new("header_fg",vec![ArgumentDescriptor::new("color",ArgumentSchema::String)],|args|match args{[ComponentArgument::String(color)]=>gpui_component::try_parse_color(color).map(|c|ComponentPayload::new(Op::HeaderFg(c))).map_err(|e|e.to_string()),_=>Err("header_fg requires a color".into())}).with_documentation("Sets the header foreground color."),
+            MethodDescriptor::new(
+                "header_text_size",
+                vec![ArgumentDescriptor::new(
+                    "size",
+                    ArgumentSchema::Enum(&["xs", "sm", "base", "lg"]),
+                )],
+                |args| match args {
+                    [ComponentArgument::Enum(size)] => header_text_size(size)
+                        .map(|size| ComponentPayload::new(Op::HeaderTextSize(size))),
+                    _ => Err("DataTable.header_text_size expects a size literal".into()),
+                },
+            )
+            .with_documentation(
+                "Sets the header text size: `xs` (0.75rem), `sm` (0.875rem), `base` (1rem), or `lg` (1.125rem).",
+            ),
             MethodDescriptor::new("column_widths",vec![ArgumentDescriptor::new("widths",ArgumentSchema::Array(Box::new(ArgumentSchema::Number)))],|args|match args{[ComponentArgument::Array(widths)]=>{
                 let widths=widths.iter().map(|v|match v{ComponentArgument::Number(n) if n.is_finite() && *n>0. && *n<100_000.=>Ok(*n as f32),_=>Err("column widths must be finite positive pixels".to_string())}).collect::<Result<Vec<_>,_>>()?;
                 Ok(ComponentPayload::new(Op::ColumnWidths(widths)))
@@ -681,9 +709,23 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
     Ok(())
 }
 
+/// The rem size of a header text size literal, matching gpui's `text_xs`,
+/// `text_sm`, `text_base`, and `text_lg`.
+fn header_text_size(size: &str) -> Result<gpui::AbsoluteLength, String> {
+    let rems = match size {
+        "xs" => 0.75,
+        "sm" => 0.875,
+        "base" => 1.,
+        "lg" => 1.125,
+        _ => return Err(format!("unsupported DataTable header text size `{size}`")),
+    };
+    Ok(gpui::rems(rems).into())
+}
+
 #[cfg(test)]
 #[allow(dead_code)]
 pub(crate) mod test_probe {
+    use gpui_shell::gpui;
     use std::cell::{Cell, RefCell};
     thread_local! {
         static BUILDS: Cell<usize> = const { Cell::new(0) };
@@ -693,6 +735,13 @@ pub(crate) mod test_probe {
         static SELECTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
         static CLEARS: Cell<usize> = const { Cell::new(0) };
         static LABELS: RefCell<Vec<(usize, Option<String>)>> = const { RefCell::new(Vec::new()) };
+        static HEADER_SIZES: RefCell<Vec<(usize, Option<gpui::AbsoluteLength>)>> = const { RefCell::new(Vec::new()) };
+    }
+    pub(super) fn header_text_size(column: usize, size: Option<gpui::AbsoluteLength>) {
+        HEADER_SIZES.with(|values| values.borrow_mut().push((column, size)));
+    }
+    pub(crate) fn take_header_text_sizes() -> Vec<(usize, Option<gpui::AbsoluteLength>)> {
+        HEADER_SIZES.with(|values| std::mem::take(&mut *values.borrow_mut()))
     }
     pub(super) fn label(row: usize, label: Option<String>) {
         LABELS.with(|values| values.borrow_mut().push((row, label)));
@@ -726,6 +775,7 @@ pub(crate) mod test_probe {
         SELECTS.with(|values| values.borrow_mut().clear());
         CLEARS.with(|value| value.set(0));
         LABELS.with(|values| values.borrow_mut().clear());
+        HEADER_SIZES.with(|values| values.borrow_mut().clear());
     }
     pub(crate) fn cell_builds() -> usize {
         BUILDS.with(Cell::get)
