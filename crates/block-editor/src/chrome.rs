@@ -29,11 +29,19 @@ pub const LANGUAGE_MENU: &str = "language-menu";
 const SURFACE_RADIUS: f32 = 12.0;
 const HANDLE_SIZE: f32 = 18.0;
 const SLASH_WIDTH: f32 = 200.0;
-const SLASH_MAX_H: f32 = 420.0;
-/// Padding on the card plus one row (`py-5` and a line). Kept under the real
-/// row so a long catalog stays shorter than its content and can scroll.
+/// Card padding (`p-6`, top and bottom).
 const SLASH_CHROME_H: f32 = 12.0;
-const SLASH_ROW_H: f32 = 24.0;
+/// Every slash row is exactly this tall, so the viewport math is exact.
+const SLASH_ROW_H: f32 = 28.0;
+/// Rows shown before the card scrolls. The largest built-in catalog
+/// ([`SlashRegistry::editor_commands`]) fits; longer host catalogs scroll.
+///
+/// [`SlashRegistry::editor_commands`]: crate::registry::SlashRegistry::editor_commands
+const SLASH_MAX_ROWS: usize = 18;
+/// Height cap for the paste and language menus, whose rows keep their natural height.
+const MENU_MAX_H: f32 = 280.0;
+/// Space kept between a menu card and the window edge.
+const MENU_MARGIN: f32 = 8.0;
 const PASTE_WIDTH: f32 = 180.0;
 const LANG_WIDTH: f32 = 150.0;
 const CHIP_PAD_X: f32 = 4.0;
@@ -46,10 +54,12 @@ pub const GLASS_ALPHA: f32 = 1.0;
 
 /// Popover card fill: opaque `popover` while glass is off; Bezel
 /// `glass_overlay` when glass is on.
-/// Viewport for the slash list. A long catalog stays at [`SLASH_MAX_H`] so the
-/// card is a scrollport instead of growing with every row.
-fn slash_viewport_height(row_count: usize) -> f32 {
-    (SLASH_CHROME_H + row_count as f32 * SLASH_ROW_H).min(SLASH_MAX_H)
+/// Viewport for the slash list: every row up to [`SLASH_MAX_ROWS`], and never
+/// taller than the window allows. Past either limit the card scrolls.
+fn slash_viewport_height(row_count: usize, window_height: f32) -> f32 {
+    let wanted = SLASH_CHROME_H + row_count.min(SLASH_MAX_ROWS) as f32 * SLASH_ROW_H;
+    let room = (window_height - 2.0 * MENU_MARGIN).max(SLASH_CHROME_H + SLASH_ROW_H);
+    wanted.min(room)
 }
 
 fn frost(cx: &App) -> gpui::Hsla {
@@ -64,14 +74,19 @@ fn frost(cx: &App) -> gpui::Hsla {
     }
 }
 
-fn frost_card(id: impl Into<ElementId>, width: f32, cx: &App) -> gpui::Stateful<gpui::Div> {
+fn frost_card(
+    id: impl Into<ElementId>,
+    width: f32,
+    max_height: f32,
+    cx: &App,
+) -> gpui::Stateful<gpui::Div> {
     let radius = px(SURFACE_RADIUS);
     let fill = frost(cx);
     div()
         .id(id)
         .relative()
         .w(px(width))
-        .max_h(px(SLASH_MAX_H))
+        .max_h(px(max_height))
         .overflow_y_scroll()
         .p(px(6.0))
         .rounded(radius)
@@ -85,7 +100,7 @@ fn frost_card(id: impl Into<ElementId>, width: f32, cx: &App) -> gpui::Stateful<
 impl Editor {
     pub(super) fn slash_menu(
         &self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let slash = self.slash.as_ref()?;
@@ -103,7 +118,8 @@ impl Editor {
         let commands = slash.commands().to_vec();
         let filtered = slash.filter.filtered().to_vec();
         let active = slash.filter.active();
-        let viewport = slash_viewport_height(filtered.len());
+        let viewport =
+            slash_viewport_height(filtered.len(), f32::from(window.viewport_size().height));
 
         let rows = filtered.into_iter().enumerate().map(|(view_ix, item_ix)| {
             let command = commands[item_ix].clone();
@@ -111,8 +127,11 @@ impl Editor {
             div()
                 .id(ElementId::Name(format!("slash-row-{view_ix}").into()))
                 .w_full()
+                .h(px(SLASH_ROW_H))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
                 .px(px(8.0))
-                .py(px(5.0))
                 .rounded(px(6.0))
                 .when(lit, |el| el.bg(ink(cx, 0.08)))
                 .child(command.label.clone())
@@ -129,9 +148,9 @@ impl Editor {
                 gpui::anchored()
                     .position(origin)
                     .anchor(gpui::Anchor::TopLeft)
-                    .snap_to_window_with_margin(px(8.0))
+                    .snap_to_window_with_margin(px(MENU_MARGIN))
                     .child(
-                        frost_card(SLASH_MENU, SLASH_WIDTH, cx)
+                        frost_card(SLASH_MENU, SLASH_WIDTH, viewport, cx)
                             .debug_selector(|| SLASH_MENU.into())
                             .h(px(viewport))
                             .flex_shrink_0()
@@ -190,7 +209,7 @@ impl Editor {
                     .anchor(gpui::Anchor::TopLeft)
                     .snap_to_window_with_margin(px(8.0))
                     .child(
-                        frost_card(PASTE_MENU, PASTE_WIDTH, cx)
+                        frost_card(PASTE_MENU, PASTE_WIDTH, MENU_MAX_H, cx)
                             .debug_selector(|| PASTE_MENU.into())
                             .occlude()
                             .children(rows),
@@ -408,7 +427,7 @@ impl Editor {
                     .anchor(gpui::Anchor::TopLeft)
                     .snap_to_window_with_margin(px(8.0))
                     .child(
-                        frost_card(LANGUAGE_MENU, LANG_WIDTH, cx)
+                        frost_card(LANGUAGE_MENU, LANG_WIDTH, MENU_MAX_H, cx)
                             .debug_selector(|| LANGUAGE_MENU.into())
                             .occlude()
                             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
@@ -491,7 +510,34 @@ impl Editor {
 
 #[cfg(test)]
 mod tests {
-    use super::GLASS_ALPHA;
+    use super::{
+        GLASS_ALPHA, MENU_MARGIN, SLASH_CHROME_H, SLASH_MAX_ROWS, SLASH_ROW_H,
+        slash_viewport_height,
+    };
+    use crate::registry::SlashRegistry;
+
+    #[test]
+    fn editor_catalog_fits_without_scrolling() {
+        let rows = SlashRegistry::editor_commands().len();
+        assert!(
+            rows <= SLASH_MAX_ROWS,
+            "raise SLASH_MAX_ROWS to {rows} so the editor catalog still fits"
+        );
+        let height = slash_viewport_height(rows, 900.0);
+        assert!((height - (SLASH_CHROME_H + rows as f32 * SLASH_ROW_H)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn long_catalog_stops_at_the_row_cap() {
+        let capped = SLASH_CHROME_H + SLASH_MAX_ROWS as f32 * SLASH_ROW_H;
+        assert!((slash_viewport_height(40, 2000.0) - capped).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn short_window_caps_the_menu() {
+        let height = slash_viewport_height(SLASH_MAX_ROWS, 300.0);
+        assert!((height - (300.0 - 2.0 * MENU_MARGIN)).abs() < f32::EPSILON);
+    }
 
     #[test]
     fn glass_alpha_opaque_until_backdrop_blur_ships() {
