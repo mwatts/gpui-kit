@@ -601,6 +601,29 @@ fn read_only_rejects_edits_but_selects_and_copies(cx: &mut TestAppContext) {
     });
 }
 
+#[gpui::test]
+fn placeholder_defaults_and_can_be_replaced(cx: &mut TestAppContext) {
+    let (editor, cx) = harness(cx);
+    editor.read_with(cx, |editor, _| {
+        assert_eq!(editor.placeholder().as_deref(), Some("Type / for commands"));
+    });
+    editor.update(cx, |editor, cx| {
+        editor.set_read_only(true, cx);
+        assert_eq!(editor.placeholder(), None, "read-only hides the slash hint");
+        editor.set_placeholder("Write a note", cx);
+        assert_eq!(editor.placeholder().as_deref(), Some("Write a note"));
+        editor.set_read_only(false, cx);
+    });
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| {
+            let element = editor.render(window, cx).into_element();
+            let mut node = gpui::accesskit::Node::new(gpui::Role::Unknown);
+            element.write_a11y_info(&mut node);
+            assert_eq!(node.placeholder(), Some("Write a note"));
+        });
+    });
+}
+
 #[test]
 fn interaction_tests_collect() {
     assert!(true);
