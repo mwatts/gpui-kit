@@ -370,7 +370,8 @@ pub(crate) fn declarations_with_components(components: &crate::FrozenComponentRe
 /// The behaviors a registered component answers only when its descriptor
 /// declares them. Mirrors the engine's `registered_common_behavior` list; a
 /// test asserts the two agree.
-pub(crate) const REGISTERED_COMMON_BEHAVIORS: [&str; 3] = ["disabled", "selected", "on_click"];
+pub(crate) const REGISTERED_COMMON_BEHAVIORS: [&str; 4] =
+    ["disabled", "selected", "on_click", "track_focus"];
 
 fn push_arguments(out: &mut String, arguments: &[crate::ArgumentDescriptor]) {
     for (index, argument) in arguments.iter().enumerate() {
@@ -4209,7 +4210,7 @@ mod tests {
         // to `Element`.
         assert!(
             declarations.contains(
-                "export type PlainElement = Omit<NativeElement, \"disabled\" | \"selected\" | \"on_click\" | \"role\" | \"transition\">"
+                "export type PlainElement = Omit<NativeElement, \"disabled\" | \"selected\" | \"on_click\" | \"track_focus\" | \"role\" | \"transition\">"
             ),
             "{declarations}"
         );

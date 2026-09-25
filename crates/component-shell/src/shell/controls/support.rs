@@ -1,5 +1,5 @@
 pub(super) use super::super::support::{
-    bool_method, disabled_method, on_click_method, string_method,
+    bool_method, disabled_method, on_click_method, string_method, track_focus_method,
 };
 
 use gpui_component::Size;

@@ -144,3 +144,115 @@ export default class App extends View {
         "the click must reach the script: {after}"
     );
 }
+
+/// GPUI activates a focused clickable on the key's release, so a press is the
+/// key going down and coming back up.
+fn activate(context: &mut VisualTestContext, key: &str) {
+    let keystroke = gpui::Keystroke::parse(key).unwrap();
+    context.simulate_event(gpui::KeyDownEvent {
+        keystroke: keystroke.clone(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    context.simulate_event(gpui::KeyUpEvent { keystroke });
+    draw(context);
+}
+
+fn hits(context: &mut VisualTestContext, view: &Entity<gpui_shell::ScriptView>) -> String {
+    context.update(|_, cx| view.read(cx).snapshot().unwrap().debug_tree())
+}
+
+/// An enabled `Button` is a tab stop, and Enter and Space each activate it the
+/// way the kit's native button does. A disabled one is skipped.
+#[gpui::test]
+fn tab_reaches_a_button_and_enter_or_space_activates_it(cx: &mut TestAppContext) {
+    let source = r#"
+import { View, div } from "gpui-kit";
+import { Button } from "gpui-component";
+export default class App extends View {
+  init(_props, cx) { this.hits = 0; this.field = cx.focus_handle(); }
+  render() {
+    return div().size_full()
+      .child(div().id("start").track_focus(this.field).tab_stop(true).w(10).h(10))
+      .child(new Button("off").label("Off").disabled(true)
+        .on_click((_event, cx) => { this.hits += 100; cx.notify(); }))
+      .child(new Button("press").label("Press me")
+        .on_click((_event, cx) => { this.hits++; cx.notify(); }))
+      .child(`hits: ${this.hits}`);
+  }
+}
+"#;
+    let (mut context, view, _app) = mount(cx, source);
+    draw(&mut context);
+    // Focus the leading tab stop, then Tab once onto the button.
+    context.update(|window, cx| window.focus_next(cx));
+    draw(&mut context);
+    context.simulate_keystrokes("tab");
+    draw(&mut context);
+    activate(&mut context, "enter");
+    activate(&mut context, "space");
+    let after = hits(&mut context, &view);
+    assert!(
+        after.contains("hits: 2"),
+        "Enter and Space each click once: {after}"
+    );
+}
+
+/// `track_focus` on a registered `Button` hands it a script-owned handle, so a
+/// script can put the keyboard on the button and Enter then activates it.
+#[gpui::test]
+fn a_button_tracks_a_script_focus_handle(cx: &mut TestAppContext) {
+    let source = r#"
+import { View, div } from "gpui-kit";
+import { Button } from "gpui-component";
+export default class App extends View {
+  init(_props, cx) { this.hits = 0; this.focus = cx.focus_handle(); this.focused = false; }
+  render() {
+    const self = this;
+    return div().size_full()
+      .child(new Button("other").label("Other")
+        .on_click((_event, cx) => { this.hits += 100; cx.notify(); }))
+      .child(new Button("press").label("Press me").track_focus(this.focus)
+        .on_click((_event, cx) => { this.hits++; cx.notify(); }))
+      .child(`hits: ${this.hits}`)
+      .when(!this.focused, el => el.on_mouse_down("left", (_event, cx) => {
+        self.focused = true; self.focus.focus(); cx.notify();
+      }));
+  }
+}
+"#;
+    let (mut context, view, _app) = mount(cx, source);
+    draw(&mut context);
+    context.simulate_click(point(px(400.), px(300.)), Modifiers::default());
+    draw(&mut context);
+    context.update(|window, cx| assert!(window.focused(cx).is_some(), "the handle took focus"));
+    activate(&mut context, "enter");
+    let after = hits(&mut context, &view);
+    assert!(
+        after.contains("hits: 1"),
+        "Enter clicks the tracked button: {after}"
+    );
+}
+
+/// Handing `track_focus` anything but a focus handle is refused at the call.
+#[gpui::test]
+fn a_button_refuses_a_non_handle_for_track_focus(cx: &mut TestAppContext) {
+    let source = r#"
+import { View, div } from "gpui-kit";
+import { Button } from "gpui-component";
+export default class App extends View {
+  render() {
+    return div().child(new Button("press").label("Press").track_focus({ __handle: 999999 }));
+  }
+}
+"#;
+    let (mut context, view, _app) = mount(cx, source);
+    draw(&mut context);
+    let error = context.update(|_, cx| view.read(cx).build_error().map(|error| error.to_string()));
+    assert!(
+        error
+            .as_deref()
+            .is_some_and(|error| error.contains("expects a live FocusHandle")),
+        "{error:?}"
+    );
+}

@@ -971,6 +971,7 @@ fn materialize_registered_component(
             disabled: behavior.disabled,
             selected: behavior.selected,
             on_click: behavior.on_click,
+            focus_handle: tracked_focus(runtime, &behavior, component.name()),
             application_owner: snapshot.and_then(RenderSnapshot::application_owner),
         });
     request.attach_render_authority(window, cx);

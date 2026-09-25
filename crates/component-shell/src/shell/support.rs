@@ -102,6 +102,27 @@ pub(super) fn disabled_method(component: &'static str) -> MethodDescriptor {
     .with_documentation("Controls whether this component accepts interaction.")
 }
 
+/// `track_focus(handle)`, for a component whose materializer tracks
+/// `MaterializeRequest::focus_handle` in place of its own handle.
+pub(super) fn track_focus_method(component: &'static str) -> MethodDescriptor {
+    MethodDescriptor::new(
+        "track_focus",
+        vec![ArgumentDescriptor::new(
+            "handle",
+            ArgumentSchema::Entity("FocusHandle"),
+        )],
+        move |arguments| match arguments {
+            [ComponentArgument::Entity { .. }] => Ok(ComponentPayload::new(CommonBehavior)),
+            _ => Err(format!(
+                "{component}.track_focus(handle) expects one FocusHandle"
+            )),
+        },
+    )
+    .with_documentation(
+        "Tracks a script-owned focus handle, so `handle.focus()` moves the keyboard to this component.",
+    )
+}
+
 /// `selected(value)`, for a component whose materializer honours
 /// `MaterializeRequest::selected`.
 pub(super) fn selected_method(component: &'static str) -> MethodDescriptor {

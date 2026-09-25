@@ -8322,7 +8322,32 @@ impl ShellRuntime {
         {
             return Err(Exception::throw_type(ctx, &unknown_method(method)));
         }
-        if registered_common_behavior && let Some(descriptor) = registered_method.as_ref() {
+        if method == "track_focus"
+            && self.is_registered_component(id)
+            && registered_method.is_some()
+        {
+            // The prelude has already unwrapped the handle to its number, so
+            // the check the descriptor's `FocusHandle` argument stands for is
+            // made here. The native arm below records it as the element's focus
+            // behavior, which reaches the adapter as `MaterializeRequest::focus_handle`.
+            self.arena
+                .borrow()
+                .check_live(id)
+                .map_err(|error| Exception::throw_type(ctx, &error.to_string()))?;
+            let handle = match args.first_value() {
+                Some(Bridged::Number(handle)) if *handle >= 0.0 && handle.fract() == 0.0 => {
+                    Some(*handle as EntityHandle)
+                }
+                _ => None,
+            };
+            if handle.and_then(|handle| self.entities.borrow().kind(handle)) != Some("FocusHandle")
+            {
+                return Err(Exception::throw_type(
+                    ctx,
+                    "track_focus(handle) expects a live FocusHandle from cx.focus_handle()",
+                ));
+            }
+        } else if registered_common_behavior && let Some(descriptor) = registered_method.as_ref() {
             self.arena
                 .borrow()
                 .check_live(id)
@@ -12107,13 +12132,13 @@ mod reserved_element_method_tests {
     }
 
     /// `typings.rs` withholds these from a registered component that does not
-    /// declare them. If the engine started accepting a fourth, the declarations
+    /// declare them. If the engine started accepting a fifth, the declarations
     /// would keep offering it on every component and the call would throw.
     #[test]
     fn the_declarations_withhold_exactly_the_behaviors_the_engine_gates() {
         assert_eq!(
             crate::typings::REGISTERED_COMMON_BEHAVIORS,
-            ["disabled", "selected", "on_click"]
+            ["disabled", "selected", "on_click", "track_focus"]
         );
     }
 
