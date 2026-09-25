@@ -79,11 +79,21 @@ impl ComponentMaterializer for LabelMaterializer {
                 LabelOp::Highlights(value) => component.highlights(value),
             };
         }
+        let style = request.take_style();
+        let component = with_text_style(component, &style);
         let mut wrapper = gpui::div().child(component);
-        wrapper.style().refine(&request.take_style());
+        wrapper.style().refine(&style);
         wrapper.extend(request.take_children()?);
         Ok(wrapper.into_any_element())
     }
+}
+
+/// The Label paints its own text with the theme foreground, so the node's
+/// text refinements (color, size, weight, ...) must reach the Label itself;
+/// the wrapper keeps layout, box styling, and children.
+fn with_text_style(mut label: Label, style: &gpui::StyleRefinement) -> Label {
+    label.style().text = style.text.clone();
+    label
 }
 
 struct LinkMaterializer;
@@ -225,4 +235,22 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
             .with_documentation("A platform-formatted keyboard shortcut keycap."),
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A script's `text_color` reaches the Label, which otherwise paints its
+    /// text with the theme foreground over whatever its wrapper inherits.
+    #[test]
+    fn the_node_text_style_reaches_the_label() {
+        let red: gpui::Hsla = gpui::rgb(0xff0000).into();
+        let mut style = gpui::StyleRefinement::default();
+        style.text.color = Some(red);
+        style.text.font_size = Some(gpui::rems(0.75).into());
+        let mut label = with_text_style(Label::new("Muted").secondary("extra"), &style);
+        assert_eq!(label.style().text.color, Some(red));
+        assert_eq!(label.style().text.font_size, Some(gpui::rems(0.75).into()));
+    }
 }
