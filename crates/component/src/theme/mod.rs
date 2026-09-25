@@ -495,6 +495,13 @@ impl Theme {
             input: self.input,
             ring: self.ring,
             selection: self.selection,
+            sidebar: self.sidebar,
+            sidebar_foreground: self.sidebar_foreground,
+            sidebar_border: self.sidebar_border,
+            sidebar_accent: self.sidebar_accent,
+            sidebar_accent_foreground: self.sidebar_accent_foreground,
+            sidebar_primary: self.sidebar_primary,
+            sidebar_primary_foreground: self.sidebar_primary_foreground,
         }
     }
 
@@ -824,6 +831,9 @@ mod update_tests {
             assert_eq!(theme.tokens.sidebar.background, sidebar.into());
             assert_eq!(theme.tokens.primary.color, primary);
             assert_eq!(gpui_base::Theme::global(cx).tokens.colors.primary, primary);
+            // The sidebar family reaches the Base projection too, which is
+            // where a script's `sidebar` color tokens resolve.
+            assert_eq!(gpui_base::Theme::global(cx).tokens.colors.sidebar, sidebar);
             assert!(gpui_base::Theme::global(cx).tokens.radius.md.is_zero());
         });
     }
