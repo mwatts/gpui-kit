@@ -8,7 +8,7 @@ use gpui::{
 use gpui_component::Root;
 use gpui_component_block_view::CHART_LANGUAGE;
 
-use crate::{Cursor, Editor, Mark, Part, Selection, init};
+use crate::{Cursor, Editor, Mark, Part, Selection, SlashCommand, SlashRegistry, init};
 
 fn harness(cx: &mut TestAppContext) -> (gpui::Entity<Editor>, &mut VisualTestContext) {
     cx.update(|cx| {
@@ -137,8 +137,50 @@ fn slash_opens_menu(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn slash_menu_shows_the_editor_catalog_without_scrolling(cx: &mut TestAppContext) {
+    let (editor, cx) = harness(cx);
+    cx.update(|_, cx| SlashRegistry::install_editor(cx));
+    editor.update(cx, |editor, cx| {
+        editor.insert_text("/", cx);
+    });
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("slash-menu").is_some(),
+        "slash menu should be painted"
+    );
+    editor.read_with(cx, |editor, _| {
+        let rows = editor
+            .slash
+            .as_ref()
+            .map_or(0, |slash| slash.filter.filtered().len());
+        assert_eq!(rows, SlashRegistry::editor_commands().len());
+        assert!(
+            editor.slash_scroll.max_offset().y <= px(0.5),
+            "every editor slash row should be visible, max offset={:?}",
+            editor.slash_scroll.max_offset()
+        );
+    });
+}
+
+#[gpui::test]
 fn slash_menu_wheel_scrolls(cx: &mut TestAppContext) {
     let (editor, cx) = harness(cx);
+    // Longer than the row cap, so the card must scroll.
+    cx.update(|_, cx| {
+        let commands = (0..40)
+            .map(|ix| {
+                SlashCommand::insert(
+                    format!("row-{ix}"),
+                    format!("Row {ix}"),
+                    BlockType::Paragraph,
+                )
+            })
+            .collect();
+        SlashRegistry::set_commands(cx, commands);
+    });
     editor.update(cx, |editor, cx| {
         editor.insert_text("/", cx);
     });
