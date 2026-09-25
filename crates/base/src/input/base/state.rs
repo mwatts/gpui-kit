@@ -2019,7 +2019,13 @@ impl<M: InputModeKind> InputBaseState<M> {
             // Single line input or submit-on-enter: just emit the event
             // (e.g.: in a dialog to confirm, or a chat textarea to send).
             self.undo_manager.break_transaction_coalescing();
-            cx.propagate();
+            // A single-line input lets Enter reach its container (a dialog
+            // confirms). A submit-on-enter textarea keeps it: a propagated
+            // Enter that nothing else handles is typed as "\n", so the
+            // textarea would both submit and insert a newline.
+            if !self.is_multi_line() {
+                cx.propagate();
+            }
         }
 
         cx.emit(InputEvent::PressEnter {
@@ -5974,6 +5980,37 @@ mod tests {
                 assert_eq!(state.value(), "");
             });
         });
+    }
+
+    #[gpui::test]
+    fn test_submit_on_enter_submits_without_typing_a_newline(cx: &mut TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        let input_view = InputView::build_textarea(cx, |state| state.submit_on_enter(true));
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+        let submits = Rc::new(RefCell::new(Vec::new()));
+        let sink = submits.clone();
+        cx.update(|window, cx| {
+            window
+                .subscribe(&input, cx, move |_, event: &InputEvent, _, _| {
+                    if let InputEvent::PressEnter { shift, .. } = event {
+                        sink.borrow_mut().push(*shift);
+                    }
+                })
+                .detach();
+            input.update(cx, |state, cx| state.focus(window, cx));
+        });
+        cx.run_until_parked();
+
+        cx.simulate_keystrokes("a enter");
+        cx.run_until_parked();
+        input.read_with(&cx, |state, _| assert_eq!(state.value(), "a"));
+        assert_eq!(submits.borrow().as_slice(), [false], "Enter submits once");
+
+        cx.simulate_keystrokes("shift-enter b");
+        cx.run_until_parked();
+        input.read_with(&cx, |state, _| assert_eq!(state.value(), "a\nb"));
     }
 
     #[gpui::test]
