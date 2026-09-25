@@ -10,7 +10,7 @@ use gpui_shell::{
     MaterializeRequest, MethodDescriptor, RegistryError, anyhow,
     gpui::{
         self, App, AppContext as _, Entity, IntoElement as _, ParentElement as _, Refineable as _,
-        RenderOnce, SharedString, Styled as _, Subscription, Window,
+        RenderOnce, SharedString, Styled as _, Subscription, Window, prelude::FluentBuilder as _,
     },
 };
 use std::{
@@ -103,6 +103,9 @@ impl ListDelegate for Delegate {
             );
         };
         let id: SharedString = id.into();
+        let label = object_string_field(&row, "accessibility_label").map(SharedString::from);
+        #[cfg(test)]
+        test_probe::label(label.as_ref().map(ToString::to_string));
         let child = match self.render_row.build_data_with(&[row], window, cx) {
             Ok(Some(element)) => {
                 #[cfg(test)]
@@ -117,6 +120,7 @@ impl ListDelegate for Delegate {
         Some(
             ListItem::new(id)
                 .selected(self.selected == Some(path))
+                .when_some(label, |item, label| item.accessibility_label(label))
                 .child(child),
         )
     }
@@ -138,6 +142,7 @@ pub(crate) mod test_probe {
 
     thread_local! {
         static ROWS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        static LABELS: RefCell<Vec<Option<String>>> = const { RefCell::new(Vec::new()) };
         static SELECTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
         static ACTIVATES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
         static CLEARS: Cell<usize> = const { Cell::new(0) };
@@ -145,6 +150,14 @@ pub(crate) mod test_probe {
 
     pub(super) fn row(id: String) {
         ROWS.with(|rows| rows.borrow_mut().push(id));
+    }
+
+    pub(super) fn label(label: Option<String>) {
+        LABELS.with(|labels| labels.borrow_mut().push(label));
+    }
+
+    pub(crate) fn take_labels() -> Vec<Option<String>> {
+        LABELS.with(|labels| std::mem::take(&mut *labels.borrow_mut()))
     }
 
     pub(super) fn select(id: String) {
@@ -442,7 +455,7 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
             MethodDescriptor::new("selected", vec![ArgumentDescriptor::new("id", ArgumentSchema::String)], |args| match args { [ComponentArgument::String(id)] if !id.is_empty() => Ok(ComponentPayload::new(ListOp::Selected(id.clone()))), _ => Err("List.selected expects a non-empty row id".into()) }).with_documentation("Controls the selected row by stable id."),
         ])
 .with_documentation(
-            "Native retained List backed by an immutable rows snapshot. Each row is lazily rendered; object rows must provide a unique string `id`. `item-{index}` is only a ListItem element id when a row cannot be read.",
+            "Native retained List backed by an immutable rows snapshot. Each row is lazily rendered; object rows must provide a unique string `id`, and may provide an `accessibility_label` string that names the row for assistive technology. `item-{index}` is only a ListItem element id when a row cannot be read.",
         ))?;
     Ok(())
 }

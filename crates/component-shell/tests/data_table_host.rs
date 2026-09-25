@@ -72,7 +72,7 @@ import { View, div } from "gpui-kit";
 import { DataTableState, DataTable } from "gpui-component";
 export default class App extends View { render() { return new DataTable(
   DataTableState(["name", "status"]),
-  () => [{name: "Ada", status: "Ready"}, {name: "Lin", status: "Busy"}],
+  () => [{name: "Ada", status: "Ready", accessibility_label: "Ada, ready"}, {name: "Lin", status: "Busy"}],
   (row, column) => div().child(row[column])
 ).stripe(true).bordered(false).row_selectable(true).cell_selectable(true)
  .header_bg('#123456').header_fg('#ffffff').column_widths([160, 120]); } }
@@ -81,6 +81,17 @@ export default class App extends View { render() { return new DataTable(
     draw(&mut context);
     context.update(|_, cx| assert_eq!(view.read(cx).build_error(), None));
     assert!(data_table::test_probe::cell_builds() >= 4);
+    let labels = data_table::test_probe::take_labels();
+    assert!(labels.iter().any(|(row, _)| *row == 0), "{labels:?}");
+    assert!(labels.iter().any(|(row, _)| *row == 1), "{labels:?}");
+    for (row, label) in &labels {
+        let expected = (*row == 0).then_some("Ada, ready");
+        assert_eq!(
+            label.as_deref(),
+            expected,
+            "a row's accessibility_label names that row only: {labels:?}"
+        );
+    }
 }
 
 #[gpui::test]
