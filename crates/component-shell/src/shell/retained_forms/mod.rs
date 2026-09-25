@@ -36,6 +36,7 @@ pub(crate) mod test_probe {
     thread_local! {
         static CHANGES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
         static SUBMITS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        static SUBMIT_MODIFIERS: RefCell<Vec<(bool, bool)>> = const { RefCell::new(Vec::new()) };
         static INPUT: RefCell<Option<gpui_shell::gpui::Entity<gpui_component::input::InputState>>> =
             const { RefCell::new(None) };
     }
@@ -55,6 +56,12 @@ pub(crate) mod test_probe {
     }
     pub(crate) fn take_changes() -> Vec<String> {
         CHANGES.with(|values| std::mem::take(&mut *values.borrow_mut()))
+    }
+    pub(super) fn submit_modifiers(shift: bool, secondary: bool) {
+        SUBMIT_MODIFIERS.with(|values| values.borrow_mut().push((shift, secondary)));
+    }
+    pub(crate) fn take_submit_modifiers() -> Vec<(bool, bool)> {
+        SUBMIT_MODIFIERS.with(|values| std::mem::take(&mut *values.borrow_mut()))
     }
     pub(crate) fn take_submits() -> Vec<String> {
         SUBMITS.with(|values| std::mem::take(&mut *values.borrow_mut()))
@@ -529,6 +536,11 @@ pub(crate) fn on_change_method(owner: &'static str, schema: &'static str) -> Met
         FormOp::OnChange,
     )
 }
+
+/// `on_submit` for text controls: the text, the `Context`, then the Enter
+/// modifiers. Callbacks written as `(value, cx) => ...` keep working.
+pub(crate) const TEXT_SUBMIT_SCHEMA: &str =
+    "(value: string, cx: Context, modifiers: { shift: boolean; secondary: boolean }) => void";
 
 pub(crate) fn on_submit_method(owner: &'static str, schema: &'static str) -> MethodDescriptor {
     callback_method(
@@ -1228,7 +1240,7 @@ pub fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
                     FormOp::Bordered,
                 ),
                 value_method(),
-                on_submit_method("Input", "(value: string, cx: Context) => void"),
+                on_submit_method("Input", TEXT_SUBMIT_SCHEMA),
             ],
             super::input_tokens::methods(true),
         ]
@@ -1244,7 +1256,7 @@ pub fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
             disabled_method("NumberInput"),
             value_method(),
             on_change_method("NumberInput", "(value: string, cx: Context) => void"),
-            on_submit_method("NumberInput", "(value: string, cx: Context) => void"),
+            on_submit_method("NumberInput", TEXT_SUBMIT_SCHEMA),
         ],
         "A retained numeric text field with increment and decrement controls.",
         NumberInputMaterializer,
