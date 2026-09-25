@@ -6,6 +6,7 @@ import {
   InputState, TextareaState, InputGroup, InputGroupInput, InputGroupTextarea,
   InputGroupAddon, InputGroupButton, InputGroupText,
 } from 'gpui-component';
+import { Button, Input, Textarea, TimeField, TimeFieldState } from 'gpui-component';
 
 function padded(element: Element): Element {
   return element.p(2).when(true, current => current.p(4));
@@ -14,10 +15,12 @@ function padded(element: Element): Element {
 export default class FluentContracts extends View {
   query!: ReturnType<typeof InputState>;
   message!: ReturnType<typeof TextareaState>;
+  time!: ReturnType<typeof TimeFieldState>;
 
   init() {
     this.query = InputState('Search');
     this.message = TextareaState();
+    this.time = TimeFieldState('09:30');
   }
 
   render(_cx: Context): Element {
@@ -62,6 +65,11 @@ export default class FluentContracts extends View {
           .p(12).text_base())
         .addon(new InputGroupAddon('message-actions').align('block-end')
           .child(new InputGroupButton('send').variant('primary').label('Send'))),
+      new Button('close').label('x').accessibility_label('Close'),
+      new Input(this.query).size('large').appearance(false).bordered(false)
+        .on_submit((_value, _cx, modifiers) => { const send: boolean = modifiers.secondary && !modifiers.shift; void send; }),
+      new Textarea(this.message).on_submit((_value, _cx) => {}),
+      new TimeField(this.time).value('10:00').on_change((_value: string, _cx) => {}),
     ]);
   }
 }
