@@ -13,6 +13,7 @@ path = "src/lib.rs"
 gpui-shell.workspace = true
 gpui-component = { workspace = true, features = ["tree-sitter-rust"] }
 gpui-base.workspace = true
+chrono = "0.4.38"
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

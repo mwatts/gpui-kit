@@ -3911,6 +3911,7 @@ dependencies = [
 name = "gpui-component-shell"
 version = "0.7.0"
 dependencies = [
+ "chrono",
  "gpui-base",
  "gpui-component",
  "gpui-pre",
