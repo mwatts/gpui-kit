@@ -34,9 +34,9 @@ fn string_constructor(export: &'static str, argument: &'static str) -> Construct
         export,
         vec![ArgumentDescriptor::new(argument, ArgumentSchema::String)],
         move |arguments| match arguments {
-            [ComponentArgument::String(value)] if !value.is_empty() => {
-                Ok(ComponentPayload::new(StringPayload(value.to_owned())))
-            }
+            [ComponentArgument::String(value)] if !value.is_empty() => Ok(
+                ComponentPayload::with_debug(StringPayload(value.to_owned()), value.as_str()),
+            ),
             [ComponentArgument::String(_)] => Err(format!("{export} {argument} must not be empty")),
             _ => Err(format!("{export} expects one string {argument}")),
         },
@@ -207,7 +207,7 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
                 vec![ArgumentDescriptor::new("keystroke", ArgumentSchema::String)],
                 |arguments| match arguments {
                     [ComponentArgument::String(value)] => Keystroke::parse(value)
-                        .map(ComponentPayload::new)
+                        .map(|stroke| ComponentPayload::with_debug(stroke, value.as_str()))
                         .map_err(|error| format!("invalid Kbd keystroke: {error}")),
                     _ => Err("Kbd expects one keystroke string".into()),
                 },
