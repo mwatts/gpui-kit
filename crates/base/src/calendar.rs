@@ -1,5 +1,5 @@
 use crate::TestSupportExt as _;
-use std::rc::Rc;
+use std::{collections::BTreeSet, rc::Rc};
 
 use crate::{h_flex, styled::StyledExt as _, v_flex};
 use chrono::{Datelike, Local, NaiveDate, Weekday};
@@ -177,6 +177,7 @@ pub struct CalendarState {
     today: NaiveDate,
     number_of_months: usize,
     disabled_matcher: Option<Rc<Matcher>>,
+    marked_dates: BTreeSet<NaiveDate>,
 }
 
 impl CalendarState {
@@ -193,6 +194,7 @@ impl CalendarState {
             today,
             number_of_months: 1,
             disabled_matcher: None,
+            marked_dates: BTreeSet::new(),
         }
         .year_range((today.year() - 50, today.year() + 50))
     }
@@ -213,6 +215,39 @@ impl CalendarState {
     }
     pub fn disabled_matcher_ref(&self) -> Option<&Matcher> {
         self.disabled_matcher.as_deref()
+    }
+    /// Mark days that have entries. A marked day keeps its behavior; the
+    /// styled calendar draws a dot under it and describes it to assistive
+    /// technology. Marks do not select, disable or navigate.
+    pub fn marked_dates(mut self, dates: impl IntoIterator<Item = NaiveDate>) -> Self {
+        self.marked_dates = dates.into_iter().collect();
+        self
+    }
+    /// Replace the marked days, notifying only when the set changes.
+    pub fn set_marked_dates(
+        &mut self,
+        dates: impl IntoIterator<Item = NaiveDate>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.apply_marked_dates(dates) {
+            cx.notify();
+        }
+    }
+    /// Replace the marked days and report whether the set changed.
+    pub fn apply_marked_dates(&mut self, dates: impl IntoIterator<Item = NaiveDate>) -> bool {
+        let dates: BTreeSet<NaiveDate> = dates.into_iter().collect();
+        if dates == self.marked_dates {
+            return false;
+        }
+        self.marked_dates = dates;
+        true
+    }
+    /// The marked days, in ascending order.
+    pub fn marked_dates_ref(&self) -> &BTreeSet<NaiveDate> {
+        &self.marked_dates
+    }
+    pub fn is_marked(&self, date: &NaiveDate) -> bool {
+        self.marked_dates.contains(date)
     }
     pub fn set_date(&mut self, date: impl Into<Date>, _: &mut Window, cx: &mut Context<Self>) {
         if self.apply_date(date.into()) {
@@ -420,6 +455,8 @@ pub struct CalendarItemState {
     muted: bool,
     disabled: bool,
     today: bool,
+    marked: bool,
+    date: Option<NaiveDate>,
 }
 
 impl CalendarItemState {
@@ -432,6 +469,8 @@ impl CalendarItemState {
             muted: false,
             disabled: false,
             today: false,
+            marked: false,
+            date: None,
         }
     }
 
@@ -463,6 +502,12 @@ impl CalendarItemState {
         self
     }
 
+    /// Set whether the day has entries, see [`CalendarState::marked_dates`].
+    pub fn marked(mut self, marked: bool) -> Self {
+        self.marked = marked;
+        self
+    }
+
     pub fn kind(&self) -> CalendarItemKind {
         self.kind
     }
@@ -485,6 +530,21 @@ impl CalendarItemState {
 
     pub fn is_today(&self) -> bool {
         self.today
+    }
+
+    pub fn is_marked(&self) -> bool {
+        self.marked
+    }
+
+    /// The date a day item stands for; `None` for every other kind.
+    pub fn date(&self) -> Option<NaiveDate> {
+        self.date
+    }
+
+    /// Set the date a day item stands for.
+    pub fn with_date(mut self, date: NaiveDate) -> Self {
+        self.date = Some(date);
+        self
     }
 }
 
@@ -593,6 +653,7 @@ pub struct Calendar {
     style: StyleRefinement,
     item: ItemRenderer,
     label: Labeler,
+    marked_description: SharedString,
 }
 
 impl Calendar {
@@ -611,7 +672,13 @@ impl Calendar {
                 CalendarItemKind::Weekday => value.to_string().into(),
                 _ => value.to_string().into(),
             }),
+            marked_description: "Has entries".into(),
         }
+    }
+    /// The accessible description given to a marked day.
+    pub fn marked_description(mut self, description: impl Into<SharedString>) -> Self {
+        self.marked_description = description.into();
+        self
     }
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
@@ -818,6 +885,8 @@ impl RenderOnce for Calendar {
                                 .muted(date.month() != m || disabled)
                                 .disabled(disabled)
                                 .today(date == s.today())
+                                .marked(s.is_marked(&date))
+                                .with_date(date)
                         };
                         let mut item = CalendarItem::new(
                             format!("calendar-{date}-{offset}-{week_index}"),
@@ -827,6 +896,9 @@ impl RenderOnce for Calendar {
                         )
                         .with_label((self.label)(st.kind(), date.day() as i32))
                         .aria_label(date.to_string());
+                        if st.is_marked() {
+                            item = item.aria_description(self.marked_description.clone());
+                        }
                         if !st.is_disabled() {
                             let entity = self.state.clone();
                             item = item.on_click(move |_, _, cx| {
@@ -969,6 +1041,56 @@ mod tests {
                 }
             });
         }
+    }
+
+    #[gpui::test]
+    fn marked_days_carry_state_and_description(cx: &mut gpui::TestAppContext) {
+        use gpui::{Element as _, accesskit};
+        type Seen = Rc<RefCell<Vec<(String, bool, Option<String>)>>>;
+        struct Marks {
+            calendar: Entity<CalendarState>,
+            seen: Seen,
+        }
+        impl Render for Marks {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let seen = self.seen.clone();
+                seen.borrow_mut().clear();
+                Calendar::new("marked-calendar", &self.calendar).item(move |item, state, _, _| {
+                    if state.kind() == CalendarItemKind::Day {
+                        let mut node = accesskit::Node::new(accesskit::Role::Button);
+                        item.base.write_a11y_info(&mut node);
+                        seen.borrow_mut().push((
+                            node.label().unwrap_or("").to_string(),
+                            state.is_marked(),
+                            node.description().map(str::to_string),
+                        ));
+                    }
+                    item.into_any_element()
+                })
+            }
+        }
+        let marked = NaiveDate::from_ymd_opt(2026, 9, 18).unwrap();
+        let (view, cx) = cx.add_window_view(|window, cx| Marks {
+            calendar: cx.new(|cx| CalendarState::new(window, cx).marked_dates([marked])),
+            seen: Rc::new(RefCell::new(Vec::new())),
+        });
+        cx.update(|window, cx| {
+            view.read(cx).calendar.clone().update(cx, |state, cx| {
+                state.apply_date(Date::Single(Some(
+                    NaiveDate::from_ymd_opt(2026, 9, 7).unwrap(),
+                )));
+                assert!(!state.apply_marked_dates([marked]));
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+            let seen = view.read(cx).seen.borrow();
+            let day = |label: &str| seen.iter().find(|(l, _, _)| l == label).unwrap().clone();
+            assert_eq!(
+                day("2026-09-18"),
+                ("2026-09-18".into(), true, Some("Has entries".into()))
+            );
+            assert_eq!(day("2026-09-17"), ("2026-09-17".into(), false, None));
+        });
     }
 
     struct EventHarness {

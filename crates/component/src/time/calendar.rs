@@ -1,7 +1,7 @@
 use chrono::Weekday;
 use gpui::{
     App, ElementId, Entity, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    SharedString, StyleRefinement, Styled, Window, prelude::FluentBuilder as _, px,
+    SharedString, StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _, px,
 };
 use rust_i18n::t;
 
@@ -31,6 +31,32 @@ fn month_name(month: i32) -> SharedString {
 
 fn uses_compact_text(kind: CalendarItemKind) -> bool {
     kind == CalendarItemKind::Month
+}
+
+/// The dot drawn under a marked day's number.
+fn mark_dot(color: gpui::Hsla, size: Size, date: Option<chrono::NaiveDate>) -> impl IntoElement {
+    let bottom = match size {
+        Size::Small => px(2.),
+        Size::Large => px(4.),
+        _ => px(3.),
+    };
+    div()
+        .absolute()
+        .left_0()
+        .right_0()
+        .bottom(bottom)
+        .flex()
+        .justify_center()
+        .child(
+            div()
+                .debug_selector(move || match date {
+                    Some(date) => format!("calendar-mark-{date}"),
+                    None => "calendar-mark".into(),
+                })
+                .size(px(4.))
+                .rounded_full()
+                .bg(color),
+        )
 }
 
 /// Styled facade for the complete behavior and structure in `gpui-base`.
@@ -92,6 +118,7 @@ impl RenderOnce for Calendar {
             .disabled(self.disabled)
             .number_of_months(self.number_of_months)
             .first_day_of_week(self.first_day_of_week)
+            .marked_description(t!("Calendar.has_entries"))
             .label(|kind, value| match kind {
                 CalendarItemKind::Previous => "‹".into(),
                 CalendarItemKind::Next => "›".into(),
@@ -203,6 +230,17 @@ impl RenderOnce for Calendar {
                         .text_color(cx.theme().accent_foreground)
                 })
                 .when(is_focused, |this| this.focus_ring_style(window, cx))
+                .when(state.is_marked(), |this| {
+                    this.relative().child(mark_dot(
+                        if state.is_active() {
+                            cx.theme().primary_foreground
+                        } else {
+                            cx.theme().primary
+                        },
+                        size,
+                        state.date(),
+                    ))
+                })
                 .into_any_element()
             })
             .border_1()
@@ -221,8 +259,39 @@ impl RenderOnce for Calendar {
 
 #[cfg(test)]
 mod tests {
-    use super::{CalendarItemKind, Date, uses_compact_text};
+    use super::{Calendar, CalendarItemKind, CalendarState, Date, uses_compact_text};
     use chrono::NaiveDate;
+    use gpui::{AppContext as _, Context, Entity, IntoElement, Render, TestAppContext, Window};
+
+    struct Marked(Entity<CalendarState>);
+    impl Render for Marked {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            Calendar::new(&self.0)
+        }
+    }
+
+    #[gpui::test]
+    fn a_marked_day_draws_a_dot_under_its_number(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let day = |d| NaiveDate::from_ymd_opt(2026, 9, d).unwrap();
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            Marked(cx.new(|cx| {
+                let mut state = CalendarState::new(window, cx).marked_dates([day(18)]);
+                state.apply_date(Date::Single(Some(day(7))));
+                state
+            }))
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let dot = cx.debug_bounds("calendar-mark-2026-09-18").unwrap();
+        assert!(dot.size.width > gpui::px(0.) && dot.size.width <= gpui::px(6.));
+        assert!(cx.debug_bounds("calendar-mark-2026-09-17").is_none());
+        // The selected day keeps its dot, drawn in the foreground of its fill.
+        let state = cx.read(|cx| view.read(cx).0.clone());
+        state.update(cx, |state, cx| state.set_marked_dates([day(7)], cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("calendar-mark-2026-09-07").is_some());
+        assert!(cx.debug_bounds("calendar-mark-2026-09-18").is_none());
+    }
 
     #[test]
     fn date_display_is_stable() {
