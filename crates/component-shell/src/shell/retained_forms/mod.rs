@@ -277,6 +277,7 @@ enum FormOp {
     Label(String),
     AccessibilityLabel(String),
     Months(usize),
+    MarkedDates(Vec<chrono::NaiveDate>),
     OnChange(ComponentArgument),
     OnSubmit(ComponentArgument),
     OnComplete(ComponentArgument),
@@ -458,6 +459,29 @@ fn date_value(arguments: &[ComponentArgument]) -> Result<Date, String> {
         let day = day(value)?.ok_or("use null to clear a date")?;
         Ok(Date::Single(Some(day)))
     }
+}
+
+/// Parses the `YYYY-MM-DD` strings of `Calendar.marked_dates`.
+fn marked_dates(arguments: &[ComponentArgument]) -> Result<Vec<chrono::NaiveDate>, String> {
+    let [ComponentArgument::Array(values)] = arguments else {
+        return Err("Calendar.marked_dates expects an array of YYYY-MM-DD strings".into());
+    };
+    values
+        .iter()
+        .map(|value| match value {
+            ComponentArgument::String(text)
+                if text.len() == 10 && text.as_bytes()[4] == b'-' && text.as_bytes()[7] == b'-' =>
+            {
+                text.parse().map_err(|_| {
+                    format!("Calendar.marked_dates expects valid YYYY-MM-DD dates, got {text:?}")
+                })
+            }
+            ComponentArgument::String(text) => Err(format!(
+                "Calendar.marked_dates expects YYYY-MM-DD dates, got {text:?}"
+            )),
+            _ => Err("Calendar.marked_dates expects an array of YYYY-MM-DD strings".into()),
+        })
+        .collect()
 }
 
 fn color_value(arguments: &[ComponentArgument]) -> Result<Option<gpui::Hsla>, String> {
@@ -937,6 +961,18 @@ impl RenderOnce for BoundCalendar {
                     .update(cx, |state, cx| state.set_date(*value, window, cx));
             }
         }
+        // Omitting marked_dates clears the marks, like a controlled prop.
+        let marked = self
+            .ops
+            .iter()
+            .rev()
+            .find_map(|op| match op {
+                FormOp::MarkedDates(dates) => Some(dates.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        self.state
+            .update(cx, |state, cx| state.set_marked_dates(marked, cx));
         let state = event_host::install(
             host_key("shell-calendar-host", &self.state),
             self.state,
@@ -1465,6 +1501,18 @@ pub fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryError> {
                 },
             )
             .with_documentation("Sets the positive number of adjacent months to display."),
+            MethodDescriptor::new(
+                "marked_dates",
+                vec![ArgumentDescriptor::new(
+                    "dates",
+                    ArgumentSchema::Array(Box::new(ArgumentSchema::String)),
+                )],
+                |arguments| {
+                    marked_dates(arguments)
+                        .map(|dates| ComponentPayload::new(FormOp::MarkedDates(dates)))
+                },
+            )
+            .with_documentation("Marks days that have entries with a dot under the day number and an accessible description. Dates use YYYY-MM-DD; marks do not select or disable a day, and omitting the call clears them."),
             disabled_method("Calendar"),
             picker_value_method("Calendar"),
             on_change_method("Calendar", "(value: string, cx: Context) => void"),

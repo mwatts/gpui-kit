@@ -1,6 +1,7 @@
 import { div } from 'gpui-kit';
 import { Spinner, Empty, EmptyHeader, EmptyMedia } from 'gpui-component';
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput, TextareaState } from 'gpui-component';
+import { Calendar, CalendarState } from 'gpui-component';
 
 // @ts-expect-error Group sizing uses the standard control tiers.
 new InputGroup('group').size('icon-small');
@@ -62,3 +63,8 @@ new Spinner().p(4).role('status');
 new Spinner().transition('opacity', 120);
 // @ts-expect-error Styling must not restore unsupported transitions.
 new Spinner().p(4).transition('opacity', 120);
+
+// @ts-expect-error Marked dates are YYYY-MM-DD strings in an array.
+new Calendar(CalendarState()).marked_dates('2026-09-18');
+// @ts-expect-error Marked dates are strings, not numbers.
+new Calendar(CalendarState()).marked_dates([20260918]);
