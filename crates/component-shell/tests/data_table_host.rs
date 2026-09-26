@@ -300,3 +300,65 @@ export default class App extends View {
     });
     assert!(error.contains("on_sort"), "{error}");
 }
+
+/// `sort_indicator("active")` leaves unsorted headers without an icon, so a click
+/// on the header text itself must sort; `stretch_last_column` and `row_height`
+/// are accepted alongside it.
+#[gpui::test]
+fn active_sort_indicator_sorts_from_a_header_click(cx: &mut TestAppContext) {
+    data_table::test_probe::reset();
+    let source = r#"
+import { View, div } from "gpui-kit";
+import { DataTableState, DataTable } from "gpui-component";
+export default class App extends View {
+  render() {
+    return div().size_full().child(new DataTable(
+      DataTableState(["name", "status"]),
+      () => [{id: "ada", name: "Ada", status: "Ready"}],
+      (row, column) => div().child(row[column])
+    ).column_widths([160, 120]).column_movable(false).column_selectable(false)
+      .sortable_columns(["status"]).sort_indicator("active")
+      .stretch_last_column(true).row_height(48)
+      .on_sort((key, direction, cx) => cx.notify())
+      .absolute().left(0).top(0).size_full());
+  }
+}
+"#;
+    let (mut context, view, _app) = mount(cx, source);
+    draw(&mut context);
+    draw(&mut context);
+    context.update(|_, cx| assert_eq!(view.read(cx).build_error(), None));
+    data_table::test_probe::take_sorts();
+    // The start of the status header's label; a row is 48 px tall.
+    context.simulate_click(point(px(180.), px(24.)), Modifiers::default());
+    draw(&mut context);
+    let sorts = data_table::test_probe::take_sorts();
+    assert_eq!(sorts, [("status".into(), "descending".into())], "{sorts:?}");
+    // The name column is not sortable, so its header click does nothing.
+    context.simulate_click(point(px(40.), px(24.)), Modifiers::default());
+    draw(&mut context);
+    assert!(data_table::test_probe::take_sorts().is_empty());
+}
+
+#[gpui::test]
+fn row_height_and_sort_indicator_reject_bad_values(cx: &mut TestAppContext) {
+    for (call, needle) in [
+        ("row_height(4)", "row_height"),
+        ("sort_indicator(\"none\")", "sort_indicator"),
+    ] {
+        let source = format!(
+            r#"
+import {{ View, div }} from "gpui-kit";
+import {{ DataTableState, DataTable }} from "gpui-component";
+export default class App extends View {{ render() {{ return new DataTable(
+  DataTableState(["name"]), () => [{{name: "Ada"}}], (row, column) => div().child(row[column])
+).{call}; }} }}
+"#
+        );
+        let (mut context, view, _app) = mount(cx, &source);
+        draw(&mut context);
+        let error = context.update(|_, cx| view.read(cx).build_error().map(str::to_owned));
+        let error = error.expect("a bad value must fail");
+        assert!(error.contains(needle), "{error}");
+    }
+}
