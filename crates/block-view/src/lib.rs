@@ -5,6 +5,7 @@
 
 mod block_renderer;
 mod chart;
+mod custom_block;
 mod highlight;
 pub mod icons;
 mod image_resolve;
@@ -16,6 +17,10 @@ mod types;
 mod typography;
 
 pub use block_renderer::{BlockRenderer, set_block_renderer};
+pub use custom_block::{
+    CustomBlockComposer, is_custom_block_registered, register_custom_block,
+    unregister_custom_block,
+};
 pub use chart::{
     LANGUAGE as CHART_LANGUAGE, fence_renderer as chart_fence_renderer, install as install_chart,
     parse_rows as parse_chart_rows, render as render_chart,
