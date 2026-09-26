@@ -114,6 +114,12 @@ Calendar:
     zh-HK: 十二月
     zh-TW: 十二月
     it: Dicembre
+  has_entries:
+    en: Has entries
+    zh-CN: 有条目
+    zh-HK: 有條目
+    zh-TW: 有條目
+    it: Ha voci
 DatePicker:
   placeholder:
     en: "Select date"
