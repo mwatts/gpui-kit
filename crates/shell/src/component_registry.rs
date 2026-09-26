@@ -179,7 +179,7 @@ impl ComponentElementFactory {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct ComponentId(u32);
+pub struct ComponentId(pub(crate) u32);
 
 impl ComponentId {
     pub fn as_u32(self) -> u32 {
@@ -187,28 +187,56 @@ impl ComponentId {
     }
 }
 
+/// The value a registered constructor or method produced.
+///
+/// The value is opaque to the shell. A constructor may attach a short
+/// human-readable `debug` string (a label's text, say) that the script debug
+/// snapshot prints beside the component's name.
 #[derive(Clone)]
-pub struct ComponentPayload(Arc<dyn Any + Send + Sync>);
+pub struct ComponentPayload {
+    value: Arc<dyn Any + Send + Sync>,
+    debug: Option<Arc<str>>,
+}
 
 impl ComponentPayload {
     pub fn new<T: Any + Send + Sync>(value: T) -> Self {
-        Self(Arc::new(value))
+        Self {
+            value: Arc::new(value),
+            debug: None,
+        }
+    }
+
+    /// A payload that also carries the text the debug snapshot prints for it.
+    pub fn with_debug<T: Any + Send + Sync>(value: T, debug: impl Into<Arc<str>>) -> Self {
+        Self {
+            value: Arc::new(value),
+            debug: Some(debug.into()),
+        }
     }
 
     pub fn downcast_ref<T: Any>(&self) -> Option<&T> {
-        self.0.downcast_ref()
+        self.value.downcast_ref()
+    }
+
+    /// The text the debug snapshot prints for this payload, if any.
+    pub fn debug_text(&self) -> Option<&str> {
+        self.debug.as_deref()
     }
 }
 
 impl fmt::Debug for ComponentPayload {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_tuple("ComponentPayload").finish()
+        let mut tuple = formatter.debug_tuple("ComponentPayload");
+        if let Some(debug) = &self.debug {
+            tuple.field(debug);
+        }
+        tuple.finish()
     }
 }
 
 impl PartialEq for ComponentPayload {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+        Arc::ptr_eq(&self.value, &other.value)
     }
 }
 
