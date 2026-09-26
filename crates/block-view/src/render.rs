@@ -392,14 +392,17 @@ fn tight(previous: &BlockSnapshot, next: &BlockSnapshot) -> bool {
 }
 
 fn is_opaque(block: &BlockSnapshot) -> bool {
-    matches!(
-        block.block_type,
+    match &block.block_type {
         BlockType::Rule
-            | BlockType::Image
-            | BlockType::Bookmark
-            | BlockType::Code
-            | BlockType::Table
-    )
+        | BlockType::Image
+        | BlockType::Bookmark
+        | BlockType::Code
+        | BlockType::Table => true,
+        // Text-shaped customs (toggle/callout) flow like paragraphs; host leaves
+        // and unknown customs keep a solid block box for outside composition.
+        BlockType::Custom(name) => !matches!(name.as_str(), "toggle" | "callout"),
+        _ => false,
+    }
 }
 
 fn block_element(
@@ -531,26 +534,31 @@ fn block_element(
             .w_full()
             .bg(palette.border)
             .into_any_element(),
-        BlockType::Custom(name) => div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(palette.text_muted)
-                    .child(SharedString::from(name.as_str())),
-            )
-            .child(text_element(
-                &block.plain,
-                &block.runs,
-                typography.body.size(),
-                typography.body.line_height(),
-                FontWeight::NORMAL,
-                body,
-                palette,
-            ))
-            .into_any_element(),
+        BlockType::Custom(name) => {
+            if let Some(hosted) = crate::custom_block::compose(name, block, window, cx) {
+                return hosted;
+            }
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(palette.text_muted)
+                        .child(SharedString::from(name.as_str())),
+                )
+                .child(text_element(
+                    &block.plain,
+                    &block.runs,
+                    typography.body.size(),
+                    typography.body.line_height(),
+                    FontWeight::NORMAL,
+                    body,
+                    palette,
+                ))
+                .into_any_element()
+        }
     }
 }
 
