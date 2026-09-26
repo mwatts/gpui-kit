@@ -6,7 +6,7 @@ import {
   InputState, TextareaState, InputGroup, InputGroupInput, InputGroupTextarea,
   InputGroupAddon, InputGroupButton, InputGroupText,
 } from 'gpui-component';
-import { Button, Input, Textarea, TimeField, TimeFieldState } from 'gpui-component';
+import { Button, Calendar, CalendarState, Input, Textarea, TimeField, TimeFieldState } from 'gpui-component';
 
 function padded(element: Element): Element {
   return element.p(2).when(true, current => current.p(4));
@@ -16,11 +16,13 @@ export default class FluentContracts extends View {
   query!: ReturnType<typeof InputState>;
   message!: ReturnType<typeof TextareaState>;
   time!: ReturnType<typeof TimeFieldState>;
+  calendar!: ReturnType<typeof CalendarState>;
 
   init() {
     this.query = InputState('Search');
     this.message = TextareaState();
     this.time = TimeFieldState('09:30');
+    this.calendar = CalendarState('2026-09-07');
   }
 
   render(_cx: Context): Element {
@@ -70,6 +72,7 @@ export default class FluentContracts extends View {
         .on_submit((_value, _cx, modifiers) => { const send: boolean = modifiers.secondary && !modifiers.shift; void send; }),
       new Textarea(this.message).on_submit((_value, _cx) => {}),
       new TimeField(this.time).value('10:00').on_change((_value: string, _cx) => {}),
+      new Calendar(this.calendar).marked_dates(['2026-09-18', '2026-09-21']).p(2),
     ]);
   }
 }
