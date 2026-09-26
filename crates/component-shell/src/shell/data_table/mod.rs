@@ -2,7 +2,10 @@
 
 use super::support::bool_method;
 
-use gpui_component::table::{Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState};
+use gpui_component::{
+    Sizable as _,
+    table::{Column, ColumnSort, DataTable, SortIndicator, TableDelegate, TableEvent, TableState},
+};
 use gpui_shell::{
     ArgumentDescriptor, ArgumentSchema, ComponentArgument, ComponentCallback,
     ComponentCallbackArgument, ComponentDataValue, ComponentDelegateSnapshot, ComponentDescriptor,
@@ -257,6 +260,9 @@ enum Op {
     Selected(String),
     Sorted(String, String),
     SortableColumns(Vec<String>),
+    SortIndicator(SortIndicator),
+    StretchLastColumn(bool),
+    RowHeight(f32),
 }
 
 struct Materializer;
@@ -555,6 +561,8 @@ impl RenderOnce for DataTableHost {
             state.delegate_mut().header_bg = None;
             state.delegate_mut().header_fg = None;
             state.delegate_mut().header_text_size = None;
+            state.sort_indicator = SortIndicator::All;
+            state.stretch_last_column = false;
             for op in &self.ops {
                 match op {
                     Op::HeaderBg(color) => state.delegate_mut().header_bg = Some(*color),
@@ -572,6 +580,8 @@ impl RenderOnce for DataTableHost {
                     Op::Sortable(value) => state.sortable = *value,
                     Op::ColResizable(value) => state.col_resizable = *value,
                     Op::ColMovable(value) => state.col_movable = *value,
+                    Op::SortIndicator(value) => state.sort_indicator = *value,
+                    Op::StretchLastColumn(value) => state.stretch_last_column = *value,
                     _ => {}
                 }
             }
@@ -617,6 +627,9 @@ impl RenderOnce for DataTableHost {
                 Op::Stripe(value) => table.stripe(*value),
                 Op::Bordered(value) => table.bordered(*value),
                 Op::Scrollbars(value, h) => table.scrollbar_visible(*value, *h),
+                Op::RowHeight(height) => {
+                    table.with_size(gpui_component::Size::Size(gpui::px(*height)))
+                }
                 _ => table,
             };
         }
@@ -690,6 +703,29 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
             .with_documentation(
                 "Sets the header text size: `xs` (0.75rem), `sm` (0.875rem), `base` (1rem), or `lg` (1.125rem).",
             ),
+            MethodDescriptor::new(
+                "sort_indicator",
+                vec![ArgumentDescriptor::new(
+                    "mode",
+                    ArgumentSchema::Enum(&["all", "active"]),
+                )],
+                |args| match args {
+                    [ComponentArgument::Enum(mode)] => match mode.as_str() {
+                        "all" => Ok(ComponentPayload::new(Op::SortIndicator(SortIndicator::All))),
+                        "active" => Ok(ComponentPayload::new(Op::SortIndicator(SortIndicator::ActiveOnly))),
+                        _ => Err(format!("unsupported DataTable sort indicator `{mode}`")),
+                    },
+                    _ => Err("DataTable.sort_indicator expects `all` or `active`".into()),
+                },
+            )
+            .with_documentation(
+                "Chooses which sortable headers show a sort icon: `all` (default; unsorted columns show a neutral icon) or `active` (only the sorted column shows its direction, and a click anywhere on a sortable header sorts).",
+            ),
+            bool_method("DataTable", "stretch_last_column", "Widens the last column to fill the table, never below its declared width, so no empty column follows it.", Op::StretchLastColumn),
+            MethodDescriptor::new("row_height", vec![ArgumentDescriptor::new("height", ArgumentSchema::Number)], |args| match args {
+                [ComponentArgument::Number(height)] if height.is_finite() && (16. ..=200.).contains(height) => Ok(ComponentPayload::new(Op::RowHeight(*height as f32))),
+                _ => Err("DataTable.row_height expects pixels from 16 to 200".into()),
+            }).with_documentation("Sets the height of the header and of every row, in pixels (default 32)."),
             MethodDescriptor::new("column_widths",vec![ArgumentDescriptor::new("widths",ArgumentSchema::Array(Box::new(ArgumentSchema::Number)))],|args|match args{[ComponentArgument::Array(widths)]=>{
                 let widths=widths.iter().map(|v|match v{ComponentArgument::Number(n) if n.is_finite() && *n>0. && *n<100_000.=>Ok(*n as f32),_=>Err("column widths must be finite positive pixels".to_string())}).collect::<Result<Vec<_>,_>>()?;
                 Ok(ComponentPayload::new(Op::ColumnWidths(widths)))

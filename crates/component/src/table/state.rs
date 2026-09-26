@@ -32,6 +32,17 @@ const HANDLE_SIZE: Pixels = px(2.);
 /// `crates/base/src/resizable/resize_handle.rs`.
 const HANDLE_PADDING: Pixels = px(4.);
 
+/// Which sortable column headers show a sort icon.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum SortIndicator {
+    /// Every sortable header shows an icon; unsorted columns show a neutral one.
+    #[default]
+    All,
+    /// Only the sorted column shows its direction. A click anywhere on a
+    /// sortable header sorts, since unsorted headers have no icon to click.
+    ActiveOnly,
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum SelectionMode {
     Column,
@@ -252,6 +263,11 @@ pub struct TableState<D: TableDelegate> {
     pub col_movable: bool,
     /// Enable/disable fixed columns feature.
     pub col_fixed: bool,
+    /// Which sortable headers show a sort icon.
+    pub sort_indicator: SortIndicator,
+    /// Widen the last column to fill the table, so no empty area follows it.
+    /// The column never shrinks below its declared width.
+    pub stretch_last_column: bool,
 
     pub vertical_scroll_handle: UniformListScrollHandle,
     pub horizontal_scroll_handle: VirtualListScrollHandle,
@@ -312,6 +328,8 @@ where
             col_movable: true,
             col_resizable: true,
             col_fixed: true,
+            sort_indicator: SortIndicator::All,
+            stretch_last_column: false,
             _load_more_task: Task::ready(()),
             _measure: Vec::new(),
         };
@@ -703,6 +721,29 @@ where
         self.update_header_layout(cx);
     }
 
+    /// With `stretch_last_column`, widen the last column to the table's
+    /// measured width, never below the width its delegate declares.
+    fn stretch_last_column_to_bounds(&mut self, cx: &mut Context<Self>) {
+        if !self.stretch_last_column || self.bounds.size.width <= px(0.) {
+            return;
+        }
+        let Some(last_ix) = self.col_groups.len().checked_sub(1) else {
+            return;
+        };
+        let declared = self.delegate.column(last_ix, cx).width;
+        let others: Pixels = self.col_groups[..last_ix].iter().map(|g| g.width).sum();
+        // The trailing empty column and, with cell selection, the row header.
+        let mut reserved = px(12.) + px(1.);
+        if self.cell_selectable && self.row_header {
+            reserved += px(13.);
+        }
+        let width = (self.bounds.size.width - others - reserved).max(declared);
+        if self.col_groups[last_ix].width != width {
+            self.col_groups[last_ix].width = width;
+            self.update_header_layout(cx);
+        }
+    }
+
     fn update_header_layout(&mut self, cx: &mut Context<Self>) {
         let group_rows = self.delegate.group_headers(cx);
 
@@ -819,7 +860,15 @@ where
         }
     }
 
-    fn on_col_head_click(&mut self, col_ix: usize, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_col_head_click(&mut self, col_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sort_indicator == SortIndicator::ActiveOnly
+            && self
+                .col_groups
+                .get(col_ix)
+                .is_some_and(|group| group.column.sort.is_some())
+        {
+            self.perform_sort(col_ix, window, cx);
+        }
         if !self.col_selectable {
             return;
         }
@@ -1606,6 +1655,9 @@ where
         let (icon, is_on) = match sort {
             ColumnSort::Ascending => (IconName::SortAscending, true),
             ColumnSort::Descending => (IconName::SortDescending, true),
+            ColumnSort::Default if self.sort_indicator == SortIndicator::ActiveOnly => {
+                return None;
+            }
             ColumnSort::Default => (IconName::ChevronsUpDown, false),
         };
 
@@ -1620,9 +1672,10 @@ where
                 })
                 .hover(|this| this.bg(cx.theme().tokens.secondary).opacity(7.))
                 .active(|this| this.bg(cx.theme().tokens.secondary_active).opacity(1.))
-                .on_click(
-                    cx.listener(move |table, _, window, cx| table.perform_sort(col_ix, window, cx)),
-                )
+                .on_click(cx.listener(move |table, _, window, cx| {
+                    cx.stop_propagation();
+                    table.perform_sort(col_ix, window, cx)
+                }))
                 .child(
                     Icon::new(icon)
                         .size_3()
@@ -2418,6 +2471,7 @@ where
 {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.measure(window, cx);
+        self.stretch_last_column_to_bounds(cx);
 
         let columns_count = self.delegate.columns_count(cx);
         let left_columns_count = self
@@ -2596,7 +2650,15 @@ where
             })
             .on_prepaint({
                 let state = cx.entity();
-                move |bounds, _, cx| state.update(cx, |state, _| state.bounds = bounds)
+                move |bounds, _, cx| {
+                    state.update(cx, |state, cx| {
+                        let resized = state.bounds.size.width != bounds.size.width;
+                        state.bounds = bounds;
+                        if resized && state.stretch_last_column {
+                            cx.notify();
+                        }
+                    })
+                }
             })
             .when(!window.is_inspector_picking(cx), |this| {
                 this.child(
@@ -2613,5 +2675,155 @@ where
                         ),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod header_option_tests {
+    use super::*;
+    use crate::{Sizable as _, Size};
+    use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext, point};
+
+    struct Delegate {
+        sorts: Vec<(usize, ColumnSort)>,
+    }
+
+    impl TableDelegate for Delegate {
+        fn columns_count(&self, _: &App) -> usize {
+            2
+        }
+        fn rows_count(&self, _: &App) -> usize {
+            3
+        }
+        fn column(&self, col_ix: usize, _: &App) -> Column {
+            let column =
+                Column::new(format!("c{col_ix}"), format!("Column {col_ix}")).width(px(160.));
+            column.sortable()
+        }
+        fn perform_sort(
+            &mut self,
+            col_ix: usize,
+            sort: ColumnSort,
+            _: &mut Window,
+            _: &mut Context<TableState<Self>>,
+        ) {
+            self.sorts.push((col_ix, sort));
+        }
+        fn render_td(
+            &mut self,
+            row_ix: usize,
+            col_ix: usize,
+            _: &mut Window,
+            _: &mut Context<TableState<Self>>,
+        ) -> impl IntoElement {
+            format!("{row_ix}:{col_ix}")
+        }
+    }
+
+    struct Host {
+        state: Entity<TableState<Delegate>>,
+        row_height: Option<Pixels>,
+    }
+
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let table = DataTable::new(&self.state).bordered(false);
+            let table = match self.row_height {
+                Some(height) => table.with_size(Size::Size(height)),
+                None => table,
+            };
+            div().w(px(600.)).h(px(300.)).child(table)
+        }
+    }
+
+    fn mount(
+        cx: &mut TestAppContext,
+        row_height: Option<Pixels>,
+        configure: impl FnOnce(&mut TableState<Delegate>) + 'static,
+    ) -> (VisualTestContext, Entity<TableState<Delegate>>) {
+        cx.update(crate::init);
+        let slot = Rc::new(std::cell::RefCell::new(None));
+        let captured = slot.clone();
+        let window = cx.add_window(move |window, cx| {
+            let state = cx.new(|cx| {
+                let mut state = TableState::new(Delegate { sorts: Vec::new() }, window, cx);
+                state.col_selectable = false;
+                state.col_movable = false;
+                configure(&mut state);
+                state
+            });
+            *captured.borrow_mut() = Some(state.clone());
+            Host { state, row_height }
+        });
+        let mut context = VisualTestContext::from_window(*window, cx);
+        for _ in 0..3 {
+            context.run_until_parked();
+            context.update(|window, cx| window.draw(cx).clear(cx));
+        }
+        let state = slot.borrow().clone().unwrap();
+        (context, state)
+    }
+
+    #[gpui::test]
+    fn active_only_hides_the_neutral_icon_and_a_header_click_sorts(cx: &mut TestAppContext) {
+        let (mut context, state) = mount(cx, None, |state| {
+            state.sort_indicator = SortIndicator::ActiveOnly;
+        });
+        context.update(|window, cx| {
+            state.update(cx, |state, cx| {
+                let group = state.col_groups[1].clone();
+                assert!(state.render_sort_icon(1, &group, window, cx).is_none());
+            })
+        });
+        // The middle of the second header, away from where an icon would sit.
+        context.simulate_click(point(px(240.), px(14.)), Modifiers::default());
+        context.run_until_parked();
+        context.update(|window, cx| {
+            state.update(cx, |state, cx| {
+                assert_eq!(state.delegate().sorts, [(1, ColumnSort::Descending)]);
+                let active = state.col_groups[1].clone();
+                assert!(state.render_sort_icon(1, &active, window, cx).is_some());
+                let other = state.col_groups[0].clone();
+                assert!(state.render_sort_icon(0, &other, window, cx).is_none());
+            })
+        });
+    }
+
+    #[gpui::test]
+    fn all_keeps_the_neutral_icon_on_every_sortable_header(cx: &mut TestAppContext) {
+        let (mut context, state) = mount(cx, None, |_| {});
+        context.update(|window, cx| {
+            state.update(cx, |state, cx| {
+                let group = state.col_groups[1].clone();
+                assert!(state.render_sort_icon(1, &group, window, cx).is_some());
+            })
+        });
+    }
+
+    #[gpui::test]
+    fn stretch_last_column_fills_the_table_width(cx: &mut TestAppContext) {
+        let (mut context, state) = mount(cx, None, |state| state.stretch_last_column = true);
+        context.update(|_, cx| {
+            let state = state.read(cx);
+            assert_eq!(state.col_groups[0].width, px(160.));
+            // 600 wide, less the first column and the 13 px trailing gutter.
+            assert_eq!(state.col_groups[1].width, px(600. - 160. - 13.));
+        });
+        let (mut context, state) = mount(cx, None, |_| {});
+        context.update(|_, cx| assert_eq!(state.read(cx).col_groups[1].width, px(160.)));
+    }
+
+    #[gpui::test]
+    fn a_pixel_size_sets_header_and_row_height(cx: &mut TestAppContext) {
+        let (mut context, state) = mount(cx, Some(px(48.)), |_| {});
+        context.update(|_, cx| {
+            let header = state.read(cx).col_groups[0].bounds;
+            // The header row is 48 px; its 1 px bottom border sits under the cells.
+            assert_eq!(header.size.height, px(47.));
+        });
+        let (mut context, state) = mount(cx, None, |_| {});
+        context.update(|_, cx| {
+            assert_eq!(state.read(cx).col_groups[0].bounds.size.height, px(31.));
+        });
     }
 }
