@@ -1013,6 +1013,16 @@ pub struct SpecArena {
     structure: u64,
 }
 
+/// The debug snapshot keeps a registered component's text to one short token:
+/// at most 60 characters, with an ellipsis when it was cut.
+fn truncate_debug_text(text: &str) -> std::borrow::Cow<'_, str> {
+    const LIMIT: usize = 60;
+    match text.char_indices().nth(LIMIT) {
+        None => std::borrow::Cow::Borrowed(text),
+        Some((end, _)) => std::borrow::Cow::Owned(format!("{}\u{2026}", &text[..end])),
+    }
+}
+
 impl SpecArena {
     pub fn new() -> Self {
         Self::default()
@@ -1358,6 +1368,14 @@ impl SpecArena {
             | Component::SliderTrack(handle)
             | Component::SliderIndicator(handle)
             | Component::SliderThumb(handle) => out.push_str(&format!(" #{handle}")),
+            // A registered component's payload is opaque; the constructor may
+            // attach its text (a label's string) so tests can assert on it.
+            // It follows the name, so tools reading the first token still work.
+            Component::Registered(spec) => {
+                if let Some(text) = spec.payload().debug_text() {
+                    out.push_str(&format!(" {:?}", truncate_debug_text(text)))
+                }
+            }
             Component::Input(handle)
             | Component::Textarea(handle)
             | Component::NumberInput(handle)
@@ -1563,6 +1581,39 @@ mod tests {
         arena.attach(root, label).unwrap();
 
         assert_eq!(arena.debug_tree(root), "v_flex\n  text \"Save\"\n");
+    }
+
+    #[test]
+    fn a_registered_component_dumps_its_debug_text_after_its_name() {
+        let id = crate::ComponentId(7);
+        let mut arena = SpecArena::new();
+        let root = arena.push(Component::VFlex);
+        let plain = arena.push(Component::Registered(RegisteredComponentSpec::new(
+            id,
+            "Separator",
+            crate::ComponentPayload::new(()),
+        )));
+        let label = arena.push(Component::Registered(RegisteredComponentSpec::new(
+            id,
+            "Label",
+            crate::ComponentPayload::with_debug((), "Save \"all\""),
+        )));
+        let long = arena.push(Component::Registered(RegisteredComponentSpec::new(
+            id,
+            "Label",
+            crate::ComponentPayload::with_debug((), "x".repeat(61)),
+        )));
+        for child in [plain, label, long] {
+            arena.attach(root, child).unwrap();
+        }
+
+        assert_eq!(
+            arena.debug_tree(root),
+            format!(
+                "v_flex\n  Separator\n  Label \"Save \\\"all\\\"\"\n  Label \"{}\u{2026}\"\n",
+                "x".repeat(60)
+            )
+        );
     }
 
     #[test]
