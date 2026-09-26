@@ -302,3 +302,79 @@ export default class App extends View {
         "{error:?}"
     );
 }
+
+/// Mounts `source` on the complete styled host, whose retained forms own
+/// Calendar.
+fn mount_full(
+    cx: &mut TestAppContext,
+    source: &str,
+) -> (VisualTestContext, Entity<gpui_shell::ScriptView>, TempApp) {
+    cx.update(gpui_component_shell::init);
+    let app = TempApp::new(source);
+    let runtime = gpui_component_shell::new_isolated_runtime().unwrap();
+    let loaded = runtime.load_application(&app.0, "main.js").unwrap();
+    let mounted = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let slot = mounted.clone();
+    let window = cx.add_window(move |window, cx| {
+        let view = runtime.mount_application(&loaded, window, cx).unwrap();
+        *slot.borrow_mut() = Some(view.clone());
+        gpui_component::Root::new(view, window, cx)
+    });
+    let context = VisualTestContext::from_window(*window.deref(), cx);
+    let view = mounted.borrow().clone().unwrap();
+    (context, view, app)
+}
+
+fn calendar_source(marks: &str) -> String {
+    format!(
+        r#"
+import {{ View, div }} from "gpui-kit";
+import {{ Calendar, CalendarState }} from "gpui-component";
+export default class App extends View {{
+  init() {{ this.state = CalendarState("2026-09-07"); this.marks = {marks}; }}
+  render() {{
+    return div().size_full()
+      .child(new Calendar(this.state).marked_dates(this.marks))
+      .child(div().absolute().left(400).top(0).w(80).h(40).child("clear")
+        .on_click((_, cx) => {{ this.marks = []; cx.notify(); }}));
+  }}
+}}
+"#
+    )
+}
+
+#[gpui::test]
+fn calendar_marked_dates_draw_a_dot_on_each_marked_day(cx: &mut TestAppContext) {
+    let (mut context, view, _app) =
+        mount_full(cx, &calendar_source(r#"["2026-09-18", "2026-09-03"]"#));
+    draw(&mut context);
+    context.update(|_, cx| assert_eq!(view.read(cx).build_error(), None));
+    assert!(context.debug_bounds("calendar-mark-2026-09-18").is_some());
+    assert!(context.debug_bounds("calendar-mark-2026-09-03").is_some());
+    assert!(context.debug_bounds("calendar-mark-2026-09-17").is_none());
+
+    context.simulate_click(point(px(420.), px(20.)), Modifiers::none());
+    draw(&mut context);
+    context.update(|_, cx| assert_eq!(view.read(cx).build_error(), None));
+    assert!(context.debug_bounds("calendar-mark-2026-09-18").is_none());
+}
+
+#[gpui::test]
+fn calendar_marked_dates_refuses_a_malformed_date(cx: &mut TestAppContext) {
+    for (marks, expected) in [
+        (r#"["2026-9-18"]"#, "expects YYYY-MM-DD dates"),
+        (r#"["2026-02-30"]"#, "expects valid YYYY-MM-DD dates"),
+        (r#"[20260918]"#, ""),
+    ] {
+        let (mut context, view, _app) = mount_full(cx, &calendar_source(marks));
+        draw(&mut context);
+        let error =
+            context.update(|_, cx| view.read(cx).build_error().map(|error| error.to_string()));
+        assert!(
+            error
+                .as_deref()
+                .is_some_and(|error| error.contains("marked_dates") && error.contains(expected)),
+            "{marks}: {error:?}"
+        );
+    }
+}
