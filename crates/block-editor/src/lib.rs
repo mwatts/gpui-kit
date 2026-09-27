@@ -26,7 +26,7 @@ pub use backspace::backspace_at_start;
 pub use composition::{
     CHILD_TYPE, ChildOccurrence, CompositionDraft, CompositionObject, CompositionRead,
     CompositionSession, EditorGate, IdSource, MutationReadSet, ObjectVersion, PlaceIntent,
-    RelationMutation, encode_block,
+    RelationMutation, ReloadError, encode_block,
 };
 pub use document::BlockDocument;
 pub use editor::{CommentThread, Editor, EditorEvent};

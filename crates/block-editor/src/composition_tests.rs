@@ -861,3 +861,228 @@ fn structural_save_updates_expected_collection_versions() {
         Some(&ObjectVersion("col-2".into()))
     );
 }
+
+fn insert(session: &mut CompositionSession, block: &str, child: &str, offset: usize, text: &str) {
+    session.apply(
+        BlockOp::InsertText {
+            id: BlockId(block.into()),
+            offset,
+            text: text.into(),
+        },
+        Some(&occ(child)),
+    );
+}
+
+/// A structure commit on `block`, so it is its own step in that object's
+/// document history rather than merging into recent typing.
+fn to_paragraph(session: &mut CompositionSession, block: &str, child: &str) {
+    session.apply(
+        BlockOp::SetType {
+            id: BlockId(block.into()),
+            kind: BlockType::Paragraph,
+        },
+        Some(&occ(child)),
+    );
+}
+
+fn kind_of(session: &CompositionSession, index: usize) -> BlockType {
+    session.snapshots()[index].block_type.clone()
+}
+
+fn plains(session: &CompositionSession) -> Vec<String> {
+    session.snapshots().iter().map(|s| s.plain.clone()).collect()
+}
+
+#[test]
+fn reload_object_replaces_bytes_and_version_and_keeps_other_undo_in_order() {
+    let mut session = open_fixture();
+    insert(&mut session, BLOCK_A, CHILD_A1, 5, "1");
+    insert(&mut session, BLOCK_B, CHILD_B1, 5, "1");
+    insert(&mut session, BLOCK_A, CHILD_A1, 6, "2");
+    to_paragraph(&mut session, BLOCK_B, CHILD_B1);
+    assert_eq!(plains(&session), ["alpha12", "bravo1", "alpha12"]);
+    assert_eq!(kind_of(&session, 1), BlockType::Paragraph);
+    session.acknowledge_save(BTreeMap::new());
+
+    let merged = encode_block(BLOCK_A, BlockType::Paragraph, "alpha merged");
+    session
+        .reload_object(BLOCK_A, merged.clone(), ObjectVersion("v2".into()))
+        .unwrap();
+    assert_eq!(plains(&session), ["alpha merged", "bravo1", "alpha merged"]);
+    assert_eq!(session.object_bytes(BLOCK_A), Some(merged));
+    assert_eq!(
+        session.object_version(BLOCK_A),
+        Some(&ObjectVersion("v2".into()))
+    );
+    assert!(!session.is_object_dirty(BLOCK_A));
+    assert!(session.draft().content.is_empty());
+
+    // B's interleaved entries remain, newest first; A's are gone.
+    assert!(session.undo());
+    assert_eq!(kind_of(&session, 1), BlockType::Heading { level: 1 });
+    assert_eq!(plains(&session), ["alpha merged", "bravo1", "alpha merged"]);
+    assert!(session.undo());
+    assert_eq!(plains(&session), ["alpha merged", "bravo", "alpha merged"]);
+    assert!(!session.can_undo());
+    assert!(session.redo());
+    assert!(session.redo());
+    assert_eq!(plains(&session), ["alpha merged", "bravo1", "alpha merged"]);
+    assert_eq!(kind_of(&session, 1), BlockType::Paragraph);
+    assert!(!session.can_redo());
+
+    // The next edit of A expects the reloaded version.
+    insert(&mut session, BLOCK_A, CHILD_A1, 0, ">");
+    let draft = session.draft();
+    assert_eq!(
+        draft.read_set.objects.get(BLOCK_A),
+        Some(&ObjectVersion("v2".into()))
+    );
+    assert!(session.undo());
+    assert_eq!(plains(&session)[0], "alpha merged");
+}
+
+#[test]
+fn reload_object_keeps_other_objects_dirty_state() {
+    let mut session = open_fixture();
+    insert(&mut session, BLOCK_B, CHILD_B1, 5, "!");
+    assert!(session.is_object_dirty(BLOCK_B));
+    session
+        .reload_object(
+            BLOCK_A,
+            encode_block(BLOCK_A, BlockType::Paragraph, "merged"),
+            ObjectVersion("v2".into()),
+        )
+        .unwrap();
+    assert!(session.is_object_dirty(BLOCK_B));
+    let draft = session.draft();
+    assert_eq!(draft.content.len(), 1);
+    assert!(draft.content.contains_key(BLOCK_B));
+    assert_eq!(
+        draft.read_set.objects.get(BLOCK_B),
+        Some(&ObjectVersion("v1".into()))
+    );
+    assert!(session.undo());
+    assert_eq!(plains(&session), ["merged", "bravo", "merged"]);
+}
+
+#[test]
+fn reload_object_refuses_dirty_and_unknown_objects() {
+    let mut session = open_fixture();
+    insert(&mut session, BLOCK_A, CHILD_A1, 5, "!");
+    let before = session.object_bytes(BLOCK_A);
+    assert_eq!(
+        session.reload_object(
+            BLOCK_A,
+            encode_block(BLOCK_A, BlockType::Paragraph, "merged"),
+            ObjectVersion("v2".into()),
+        ),
+        Err(ReloadError::Dirty(BLOCK_A.into()))
+    );
+    assert_eq!(session.object_bytes(BLOCK_A), before);
+    assert_eq!(
+        session.object_version(BLOCK_A),
+        Some(&ObjectVersion("v1".into()))
+    );
+    assert!(session.undo());
+    assert_eq!(plains(&session)[0], "alpha");
+
+    let missing = "ashlar/block/opaque/n00blk00000000000000000zz";
+    assert_eq!(
+        session.reload_object(missing, Vec::new(), ObjectVersion("v2".into())),
+        Err(ReloadError::UnknownObject(missing.into()))
+    );
+    assert!(!session.has_object(missing));
+}
+
+#[test]
+fn reload_object_drops_only_its_redo_entries() {
+    let mut session = open_fixture();
+    insert(&mut session, BLOCK_A, CHILD_A1, 5, "1");
+    insert(&mut session, BLOCK_B, CHILD_B1, 5, "1");
+    assert!(session.undo());
+    assert!(session.undo());
+    assert_eq!(plains(&session), ["alpha", "bravo", "alpha"]);
+    session.acknowledge_save(BTreeMap::new());
+    session
+        .reload_object(
+            BLOCK_A,
+            encode_block(BLOCK_A, BlockType::Paragraph, "merged"),
+            ObjectVersion("v2".into()),
+        )
+        .unwrap();
+    assert!(!session.can_undo());
+    assert!(session.redo());
+    assert_eq!(plains(&session), ["merged", "bravo1", "merged"]);
+    assert!(!session.can_redo());
+}
+
+#[test]
+fn reload_after_split_drops_the_split_and_older_structure_but_keeps_newer_edits() {
+    let mut session = CompositionSession::open(
+        fixture(),
+        EditorGate::Notes,
+        ids(&[SUFFIX_BLOCK], &[SUFFIX_CHILD]),
+    );
+    insert(&mut session, BLOCK_B, CHILD_B1, 5, "0");
+    session.apply(
+        BlockOp::SplitBlock {
+            id: BlockId(BLOCK_A.into()),
+            offset: 2,
+        },
+        Some(&occ(CHILD_A1)),
+    );
+    to_paragraph(&mut session, BLOCK_B, CHILD_B1);
+    insert(&mut session, SUFFIX_BLOCK, SUFFIX_CHILD, 3, "!");
+    assert_eq!(plains(&session), ["al", "pha!", "bravo0", "al"]);
+    session.acknowledge_save(BTreeMap::new());
+
+    session
+        .reload_object(
+            BLOCK_A,
+            encode_block(BLOCK_A, BlockType::Paragraph, "AL"),
+            ObjectVersion("v2".into()),
+        )
+        .unwrap();
+    assert_eq!(plains(&session), ["AL", "pha!", "bravo0", "AL"]);
+    // Entries recorded after the split stay undoable in order.
+    assert!(session.undo());
+    assert_eq!(plains(&session), ["AL", "pha", "bravo0", "AL"]);
+    assert_eq!(kind_of(&session, 2), BlockType::Paragraph);
+    assert!(session.undo());
+    assert_eq!(kind_of(&session, 2), BlockType::Heading { level: 1 });
+    // Content entries older than the split, for objects the split did not
+    // edit, remain; the split itself is gone.
+    assert!(session.undo());
+    assert_eq!(plains(&session), ["AL", "pha", "bravo", "AL"]);
+    assert!(!session.can_undo());
+    assert_eq!(session.occurrences().len(), 4);
+}
+
+#[test]
+fn reload_of_a_join_survivor_drops_the_join_but_keeps_the_source_edits() {
+    let mut session = open_fixture();
+    insert(&mut session, BLOCK_B, CHILD_B1, 5, "x");
+    session.apply(
+        BlockOp::MergeWithPrevious {
+            id: BlockId(BLOCK_B.into()),
+        },
+        Some(&occ(CHILD_B1)),
+    );
+    assert_eq!(plains(&session), ["alphabravox", "alphabravox"]);
+    session.acknowledge_save(BTreeMap::new());
+
+    session
+        .reload_object(
+            BLOCK_A,
+            encode_block(BLOCK_A, BlockType::Paragraph, "merged"),
+            ObjectVersion("v2".into()),
+        )
+        .unwrap();
+    assert_eq!(plains(&session), ["merged", "merged"]);
+    // The join is gone, so B stays unlinked; B's own edit still reverses.
+    assert!(session.undo());
+    assert_eq!(session.occurrences().len(), 2);
+    assert!(session.has_object(BLOCK_B));
+    assert!(session.is_object_dirty(BLOCK_B));
+    assert!(!session.can_undo());
+}

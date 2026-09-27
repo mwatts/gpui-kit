@@ -713,6 +713,85 @@ fn activating_a_reference_emits_open_reference(cx: &mut TestAppContext) {
     assert_eq!(opened.borrow().len(), 3);
 }
 
+#[gpui::test]
+fn reload_object_repaints_one_object_and_clamps_the_caret(cx: &mut TestAppContext) {
+    use std::collections::BTreeMap;
+
+    use crate::{
+        ChildOccurrence, CompositionObject, CompositionRead, CompositionSession, EditorGate,
+        IdSource, ObjectVersion, ReloadError, encode_block,
+    };
+
+    const A: &str = "block-a";
+    const B: &str = "block-b";
+    let object = |id: &str, text: &str| CompositionObject {
+        id: id.into(),
+        version: ObjectVersion("v1".into()),
+        bytes: encode_block(id, BlockType::Paragraph, text),
+        kind_hint: Some(BlockType::Paragraph),
+    };
+    let child = |relation: &str, target: &str| ChildOccurrence {
+        relation_id: relation.into(),
+        parent: "note".into(),
+        child: target.into(),
+        slot: "body".into(),
+        position: relation.into(),
+        child_missing: false,
+        cycle_unresolved: false,
+    };
+    let read = CompositionRead {
+        root: "note".into(),
+        root_type: "ashlar.Note".into(),
+        version_tip: "tip".into(),
+        objects: BTreeMap::from([
+            (A.into(), object(A, "alpha")),
+            (B.into(), object(B, "bravo")),
+        ]),
+        children: vec![child("c-a", A), child("c-b", B)],
+        collection_versions: BTreeMap::new(),
+    };
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init(cx);
+    });
+    let (root, cx) = cx.add_window_view(|window, cx| {
+        let session = CompositionSession::open(read, EditorGate::Notes, IdSource::default());
+        let editor = cx.new(|cx| Editor::from_composition(session, cx));
+        Root::new(editor, window, cx)
+    });
+    let editor = root.read_with(cx, |root, _| {
+        root.view().clone().downcast::<Editor>().unwrap()
+    });
+    let cx: &mut VisualTestContext = cx;
+    editor.update(cx, |editor, cx| {
+        editor.select(
+            Selection::caret(
+                Cursor::new(crate::BlockId(A.into()), Part::Body, 5)
+                    .with_occurrence(crate::BlockId("c-a".into())),
+            ),
+            cx,
+        );
+        editor
+            .reload_object(
+                A,
+                encode_block(A, BlockType::Paragraph, "al"),
+                ObjectVersion("v2".into()),
+                cx,
+            )
+            .unwrap();
+        let plains: Vec<_> = editor.snapshots().iter().map(|s| s.plain.clone()).collect();
+        assert_eq!(plains, ["al", "bravo"]);
+        assert_eq!(editor.selection().head().offset, 2);
+        assert_eq!(
+            editor.reload_object("missing", Vec::new(), ObjectVersion("v2".into()), cx),
+            Err(ReloadError::UnknownObject("missing".into()))
+        );
+    });
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+}
+
 #[test]
 fn reference_in_prefers_the_mention_target() {
     let attrs = [(

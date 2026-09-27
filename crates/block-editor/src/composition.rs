@@ -5,7 +5,8 @@
 //! assembles those objects for paint and decomposes [`BlockOp`] edits into
 //! draft-shaped change sets. The assembled view is not an authority document.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fmt;
 
 use block_markdown::{
     BlockId, BlockType, blocks_list, configure_text_styles, ensure_content, find_block,
@@ -185,6 +186,27 @@ pub struct CompositionDraft {
     pub new_images: BTreeMap<String, Vec<u8>>,
 }
 
+/// Why [`CompositionSession::reload_object`] refused to reload an object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReloadError {
+    /// The object is not part of this composition.
+    UnknownObject(ObjectId),
+    /// The object has local changes that are not acknowledged as saved.
+    /// The caller decides whether to save, merge, or discard them first.
+    Dirty(ObjectId),
+}
+
+impl fmt::Display for ReloadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownObject(id) => write!(f, "object {id} is not in this composition"),
+            Self::Dirty(id) => write!(f, "object {id} has unsaved local changes"),
+        }
+    }
+}
+
+impl std::error::Error for ReloadError {}
+
 /// How new Block and Child identities are allocated.
 #[derive(Debug, Clone, Default)]
 pub enum IdSource {
@@ -325,6 +347,61 @@ enum StructureUndo {
         new_index: usize,
         subtree_len: usize,
     },
+}
+
+impl StructureUndo {
+    /// The content object whose own document history this entry also
+    /// reverses, if any.
+    fn content_object(&self) -> Option<&str> {
+        match self {
+            Self::Split { prefix, .. } => Some(prefix),
+            Self::Join { survivor, .. } => Some(survivor),
+            Self::Move { .. }
+            | Self::Create { .. }
+            | Self::Unlink { .. }
+            | Self::Reparent { .. } => None,
+        }
+    }
+}
+
+/// Drop the entries a reload of `id` makes incompatible, walking `log` in
+/// pop order (last element first).
+///
+/// `Content(id)` entries go. A structural entry that also reverses `id`'s
+/// document (a split of `id`, or a join into `id`) cannot be replayed on the
+/// reloaded document, so it goes too, and so does every structural entry
+/// popped after it, because those were recorded against the structure it
+/// produced. When such a dropped entry also reversed another object's
+/// document, that object's later-popped content entries go as well, so its
+/// remaining entries still line up with its own document history. Entries
+/// popped before the first dropped structural entry, and content entries of
+/// untouched objects, keep their order.
+fn prune_reloaded(log: &mut Vec<UndoEntry>, id: &str) {
+    let mut barrier = false;
+    let mut desynced: HashSet<ObjectId> = HashSet::new();
+    let mut kept: Vec<UndoEntry> = Vec::with_capacity(log.len());
+    for entry in log.drain(..).rev() {
+        let keep = match &entry {
+            UndoEntry::Content(object) => object != id && !desynced.contains(object),
+            UndoEntry::Structure(change) => {
+                let object = change.content_object();
+                if barrier || object == Some(id) {
+                    barrier = true;
+                    if let Some(object) = object {
+                        desynced.insert(object.to_string());
+                    }
+                    false
+                } else {
+                    true
+                }
+            }
+        };
+        if keep {
+            kept.push(entry);
+        }
+    }
+    kept.reverse();
+    *log = kept;
 }
 
 struct Resolved {
@@ -776,6 +853,60 @@ impl CompositionSession {
             .iter()
             .map(|child| (child.relation_id.clone(), child.clone()))
             .collect();
+    }
+
+    /// Replace one content object's bytes and acknowledged version, for
+    /// example after a cross-device merge, without reopening the composition.
+    ///
+    /// Only that object's undo and redo history is dropped (see the pruning
+    /// rule on structural entries that also edited its document). Other
+    /// objects keep their history, dirty state, and expected versions, and
+    /// every occurrence of the object repaints from the new bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`ReloadError::UnknownObject`] when `id` is not in this composition,
+    /// and [`ReloadError::Dirty`] when the object has unacknowledged local
+    /// changes; nothing changes in either case.
+    pub fn reload_object(
+        &mut self,
+        id: &str,
+        bytes: Vec<u8>,
+        version: ObjectVersion,
+    ) -> Result<(), ReloadError> {
+        let Some(current) = self.objects.get(id) else {
+            return Err(ReloadError::UnknownObject(id.to_string()));
+        };
+        if current.dirty() {
+            return Err(ReloadError::Dirty(id.to_string()));
+        }
+        let kind_hint = current.document.as_ref().map(|_| current.kind());
+        let session = load_object(
+            CompositionObject {
+                id: id.to_string(),
+                version,
+                bytes,
+                kind_hint,
+            },
+            self.gate,
+        );
+        self.objects.insert(id.to_string(), session);
+        prune_reloaded(&mut self.undo_log, id);
+        prune_reloaded(&mut self.redo_log, id);
+        self.reproject();
+        Ok(())
+    }
+
+    /// The acknowledged version a draft expects for one content object.
+    #[must_use]
+    pub fn object_version(&self, id: &str) -> Option<&ObjectVersion> {
+        self.objects.get(id).map(|session| &session.version)
+    }
+
+    /// Whether one content object has unacknowledged local changes.
+    #[must_use]
+    pub fn is_object_dirty(&self, id: &str) -> bool {
+        self.objects.get(id).is_some_and(ContentSession::dirty)
     }
 
     fn resolve(
