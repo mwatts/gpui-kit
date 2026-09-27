@@ -322,6 +322,22 @@ pub fn current_generation() -> Option<u64> {
     STACK.with(|stack| stack.borrow().last().map(|frame| frame.generation))
 }
 
+/// The generation a script-authored closure closes over.
+///
+/// A layout frame that [`adopt`]s an earlier render answers for that render's
+/// `cx`. Callbacks the script registers from inside the frame — a List row
+/// built while a NavStack page is drawing — close over the adopted `cx`, not
+/// the layout frame's own generation. Recording the layout generation makes
+/// `cx.theme()` fail once the row runs in its own frame.
+pub(crate) fn script_generation() -> Option<u64> {
+    STACK.with(|stack| {
+        stack
+            .borrow()
+            .last()
+            .map(|frame| frame.adopted.unwrap_or(frame.generation))
+    })
+}
+
 /// The phase of the innermost scope, if any.
 pub fn current_phase() -> Option<ScopePhase> {
     STACK.with(|stack| stack.borrow().last().map(|frame| frame.phase))
