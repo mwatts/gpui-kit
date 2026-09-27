@@ -221,3 +221,82 @@ export default class App extends View {
 
     fs::remove_dir_all(PathBuf::from(root)).unwrap();
 }
+
+/// A row is a frame-owned subtree: a control in it registers its own click
+/// handler, and when it stops propagation the row does not also activate.
+/// A click on the rest of the row still activates it.
+#[gpui::test]
+fn row_controls_take_clicks_without_activating_the_row(cx: &mut TestAppContext) {
+    cx.update(gpui_component_shell::init);
+    let root =
+        std::env::temp_dir().join(format!("delegate-list-row-control-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("main.js"),
+        r#"import { View, div } from "gpui-kit";
+import { List } from "gpui-component";
+export default class App extends View {
+  init() { this.pressed = "none"; this.activated = "none"; }
+  render() {
+    const list = new List("rows", () => [{id: "alpha", label: "Alpha"}], row => div().flex().h(32)
+        .child(div().w(60).h(32).child("press").on_click((_e, cx) => {
+          cx.stop_propagation();
+          this.pressed = row.id;
+          cx.notify();
+        }))
+        .child(div().w(120).child(row.label)))
+      .on_activate((id, cx) => { this.activated = id; cx.notify(); });
+    return div().size_full()
+      .child(`pressed:${this.pressed} activated:${this.activated}`)
+      .child(list.absolute().left(0).top(24).w(280).h(160));
+  }
+}"#,
+    )
+    .unwrap();
+    let mut registry = gpui_shell::ComponentRegistry::new(
+        gpui_shell::COMPONENT_REGISTRY_API_VERSION,
+        gpui_shell::DEFAULT_COMPONENT_MODULE,
+    )
+    .unwrap();
+    delegate_collections::register(&mut registry).unwrap();
+    let runtime =
+        gpui_shell::ShellRuntime::new_isolated_with_components(registry.freeze().unwrap()).unwrap();
+    let loaded = runtime.load_application(&root, "main.js").unwrap();
+    let mounted = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let capture = mounted.clone();
+    let window = cx.add_window(move |window, cx| {
+        let view = runtime.mount_application(&loaded, window, cx).unwrap();
+        *capture.borrow_mut() = Some(view.clone());
+        gpui_component::Root::new(view, window, cx)
+    });
+    let mut context = VisualTestContext::from_window(*window.deref(), cx);
+    let view = mounted.borrow().clone().unwrap();
+    draw(&mut context);
+    draw(&mut context);
+    let tree = |context: &mut VisualTestContext| {
+        context.update(|_, cx| {
+            assert_eq!(view.read(cx).build_error(), None);
+            view.read(cx).snapshot().unwrap().debug_tree()
+        })
+    };
+
+    // The row starts at y = 24; its control spans the first 60px (after the
+    // item's own padding).
+    context.simulate_click(point(px(30.), px(40.)), Modifiers::default());
+    draw(&mut context);
+    let pressed = tree(&mut context);
+    assert!(
+        pressed.contains("pressed:alpha activated:none"),
+        "row control click: {pressed}"
+    );
+
+    context.simulate_click(point(px(200.), px(40.)), Modifiers::default());
+    draw(&mut context);
+    let activated = tree(&mut context);
+    assert!(
+        activated.contains("activated:alpha"),
+        "row click still activates: {activated}"
+    );
+
+    fs::remove_dir_all(PathBuf::from(root)).unwrap();
+}
