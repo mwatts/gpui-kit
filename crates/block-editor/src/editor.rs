@@ -25,7 +25,7 @@ use loro::{LoroDoc, LoroError};
 
 use crate::accessibility::AccessibilityText;
 use crate::backspace::backspace_at_start;
-use crate::composition::{CompositionDraft, CompositionSession, ObjectVersion};
+use crate::composition::{CompositionDraft, CompositionSession, ObjectVersion, ReloadError};
 use crate::document::BlockDocument;
 use crate::image::{self, Prompt};
 use crate::keys::{
@@ -340,6 +340,43 @@ impl Editor {
         if let Some(session) = &mut self.bridge {
             session.acknowledge_save_with_collections(versions, collections);
         }
+    }
+
+    /// Reload one content object of the open composition and repaint it.
+    /// See [`CompositionSession::reload_object`]; only that object's undo
+    /// and redo history is dropped. Selections are clamped to the new text,
+    /// and an IME composition or code leaf on the object is discarded. A
+    /// reload is not a local edit, so it does not emit
+    /// [`EditorEvent::Changed`].
+    ///
+    /// # Errors
+    ///
+    /// [`ReloadError::UnknownObject`] when the editor has no composition or
+    /// the object is not in it, and [`ReloadError::Dirty`] when the object
+    /// has unsaved local changes.
+    pub fn reload_object(
+        &mut self,
+        id: &str,
+        bytes: Vec<u8>,
+        version: ObjectVersion,
+        cx: &mut Context<Self>,
+    ) -> Result<(), ReloadError> {
+        let Some(session) = &mut self.bridge else {
+            return Err(ReloadError::UnknownObject(id.to_string()));
+        };
+        session.reload_object(id, bytes, version)?;
+        if self.selection.head().id.0 == id {
+            self.composition = None;
+        }
+        self.code_leaves.remove(&BlockId(id.to_string()));
+        self.selection = self.clamp_selection(self.selection.clone());
+        self.extra_selections = std::mem::take(&mut self.extra_selections)
+            .into_iter()
+            .map(|selection| self.clamp_selection(selection))
+            .collect();
+        self.refresh_annotations();
+        cx.notify();
+        Ok(())
     }
 
     #[must_use]
