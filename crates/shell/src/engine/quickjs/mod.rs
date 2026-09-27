@@ -8468,7 +8468,7 @@ impl ShellRuntime {
                     value: saved,
                     view: scope::current_view().map(|view| view.downgrade()),
                     application: scope::current_application_generation(),
-                    registered_in: scope::current_generation(),
+                    registered_in: scope::script_generation(),
                 });
                 self.push_op_checked(
                     ctx,
@@ -8531,7 +8531,7 @@ impl ShellRuntime {
                     value: saved,
                     view: scope::current_view().map(|view| view.downgrade()),
                     application: scope::current_application_generation(),
-                    registered_in: scope::current_generation(),
+                    registered_in: scope::script_generation(),
                 });
                 self.push_op_checked(ctx, self.push_op(id, SpecOp::Callback(name, callback)))
             }
@@ -8592,7 +8592,7 @@ impl ShellRuntime {
                     value: saved,
                     view: scope::current_view().map(|view| view.downgrade()),
                     application: scope::current_application_generation(),
-                    registered_in: scope::current_generation(),
+                    registered_in: scope::script_generation(),
                 });
                 let name = callback_op_name(method).expect("this arm's own list");
                 self.push_op_checked(ctx, self.push_op(id, SpecOp::Callback(name, callback)))
@@ -9158,7 +9158,7 @@ impl ShellRuntime {
                     value: handler.clone(),
                     view: scope::current_view().map(|view| view.downgrade()),
                     application: scope::current_application_generation(),
-                    registered_in: scope::current_generation(),
+                    registered_in: scope::script_generation(),
                 });
                 Some(ComponentArgument::Callback(callback))
             }
@@ -9388,7 +9388,7 @@ fn register_item_callbacks(
             value,
             view: scope::current_view().map(|view| view.downgrade()),
             application: scope::current_application_generation(),
-            registered_in: scope::current_generation(),
+            registered_in: scope::script_generation(),
         })
     };
     (entry(get_key.0), entry(render.0))

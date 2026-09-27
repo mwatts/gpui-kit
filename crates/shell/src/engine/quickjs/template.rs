@@ -368,7 +368,7 @@ impl ShellRuntime {
             value: handler,
             view: scope::current_view().map(|view| view.downgrade()),
             application: scope::current_application_generation(),
-            registered_in: scope::current_generation(),
+            registered_in: scope::script_generation(),
         })
     }
 
