@@ -31,11 +31,7 @@ fn registry(cx: &mut App) -> &mut CustomBlockRegistry {
 }
 
 /// Register (or replace) the outside composer for `BlockType::Custom(name)`.
-pub fn register_custom_block(
-    cx: &mut App,
-    name: impl Into<String>,
-    composer: CustomBlockComposer,
-) {
+pub fn register_custom_block(cx: &mut App, name: impl Into<String>, composer: CustomBlockComposer) {
     registry(cx).composers.insert(name.into(), composer);
 }
 
@@ -78,11 +74,7 @@ mod tests {
     #[gpui::test]
     fn registered_composer_is_queryable(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            register_custom_block(
-                cx,
-                "spreadsheet",
-                Arc::new(|_, _, _| None),
-            );
+            register_custom_block(cx, "spreadsheet", Arc::new(|_, _, _| None));
             assert!(is_custom_block_registered(cx, "spreadsheet"));
             assert!(!is_custom_block_registered(cx, "callout"));
             unregister_custom_block(cx, "spreadsheet");
