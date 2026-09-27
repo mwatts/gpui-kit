@@ -42,9 +42,11 @@ impl Render for Page {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         #[cfg(test)]
         test_probe::page(self.data.clone());
+        // A page is a frame-owned subtree: the controls it draws register
+        // their handlers and focus handles for this frame.
         match self
             .render
-            .build_data_with(&[self.data.clone()], window, cx)
+            .build_interactive_data_with(&[self.data.clone()], window, cx)
         {
             Ok(Some(element)) => element,
             Ok(None) => gpui::div().into_any_element(),

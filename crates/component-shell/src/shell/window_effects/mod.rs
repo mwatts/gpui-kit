@@ -20,7 +20,9 @@ use gpui_shell::{
     ComponentCallbackArgument, ComponentDescriptor, ComponentMaterializer, ComponentPayload,
     ComponentRegistry, ConstructorDescriptor, MaterializeRequest, MethodDescriptor, RegistryError,
     anyhow,
-    gpui::{self, IntoElement as _, ParentElement as _, Refineable as _, Styled as _},
+    gpui::{
+        self, AppContext as _, IntoElement as _, ParentElement as _, Refineable as _, Styled as _,
+    },
 };
 
 #[derive(Clone)]
@@ -119,6 +121,96 @@ fn report_factory_error(
     message
 }
 
+/// The newest content of one Dialog or Sheet trigger. Every materialize of
+/// the trigger replaces it, so an overlay that is already open draws from the
+/// current surface model rather than the one it opened with.
+struct LatestContent {
+    factory: gpui_shell::ComponentElementFactory,
+    title: Option<String>,
+}
+
+/// The content entity of each open Dialog or Sheet, by window and trigger id.
+/// Entries are weak: an overlay that closed drops its content, and the entry
+/// is pruned the next time one is recorded.
+#[derive(Default)]
+struct OpenContents(
+    std::collections::HashMap<(gpui::WindowId, String), gpui::WeakEntity<LatestContent>>,
+);
+
+impl gpui::Global for OpenContents {}
+
+/// Records the content of an overlay that `id` is opening in `window`.
+fn open_content(
+    window: &gpui::Window,
+    id: &str,
+    factory: gpui_shell::ComponentElementFactory,
+    title: Option<String>,
+    cx: &mut gpui::App,
+) -> gpui::Entity<LatestContent> {
+    let latest = cx.new(|_| LatestContent { factory, title });
+    let contents = cx.default_global::<OpenContents>();
+    contents.0.retain(|_, content| content.upgrade().is_some());
+    contents.0.insert(
+        (window.window_handle().window_id(), id.to_string()),
+        latest.downgrade(),
+    );
+    latest
+}
+
+/// Hands a newly materialized trigger's content to its open overlay, if one
+/// is open. Without the render authority (a materialize outside a window
+/// render) there is no open overlay to update.
+fn refresh_open_content(
+    request: &mut MaterializeRequest<'_>,
+    id: &str,
+    factory: &gpui_shell::ComponentElementFactory,
+    title: &Option<String>,
+) {
+    let _ = request.with_window_app(|window, cx| {
+        let key = (window.window_handle().window_id(), id.to_string());
+        let open = cx
+            .try_global::<OpenContents>()
+            .and_then(|contents| contents.0.get(&key))
+            .and_then(|content| content.upgrade());
+        if let Some(latest) = open {
+            latest.update(cx, |latest, _| {
+                latest.factory = factory.clone();
+                latest.title = title.clone();
+            });
+        }
+        Ok(())
+    });
+}
+
+/// The body of an open Dialog or Sheet. It builds from the newest factory on
+/// every draw; the surface draws first in the frame, so the body follows it.
+struct OverlayContent {
+    latest: gpui::Entity<LatestContent>,
+    reporter: ComponentCallback,
+    surface: &'static str,
+    reported: Rc<Cell<bool>>,
+}
+
+impl gpui::Render for OverlayContent {
+    fn render(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        let factory = self.latest.read(cx).factory.clone();
+        match factory.build(window, cx) {
+            Ok(element) => element,
+            Err(error) => {
+                let message = format!("Failed to render {} content: {error:#}", self.surface);
+                if !self.reported.replace(true) {
+                    report_factory_error(&self.reporter, self.surface, &error, window, cx);
+                }
+                gpui::div().child(message).into_any_element()
+            }
+        }
+    }
+}
+
 impl ComponentMaterializer for Materializer {
     fn materialize(&self, mut request: MaterializeRequest<'_>) -> anyhow::Result<gpui::AnyElement> {
         let trigger = request
@@ -175,7 +267,19 @@ impl ComponentMaterializer for Materializer {
                     &["trigger", "header", "footer"],
                     "Dialog and Sheet accept only the content named slot",
                 )?;
-                Some(take_content_factory(&mut request)?)
+                let factory = take_content_factory(&mut request)?;
+                let title = operations
+                    .iter()
+                    .filter_map(|op| {
+                        if let Op::Title(value) = op {
+                            Some(value.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .last();
+                refresh_open_content(&mut request, &trigger.id, &factory, &title);
+                Some((factory, title))
             }
             Kind::AlertDialog | Kind::Notification => {
                 reject_named_slots(
@@ -206,44 +310,22 @@ impl ComponentMaterializer for Materializer {
                             let factory_error_reported = Rc::new(Cell::new(false));
                             match kind {
                                 Kind::Dialog => {
-                                    let factory =
+                                    let (factory, title) =
                                         content.clone().expect("validated dialog content");
-                                    let title = operations
-                                        .iter()
-                                        .filter_map(|op| {
-                                            if let Op::Title(value) = op {
-                                                Some(value.clone())
-                                            } else {
-                                                None
-                                            }
-                                        })
-                                        .last();
-                                    window.open_dialog(cx, move |mut dialog, _window, _cx| {
-                                        if let Some(title) = title.clone() {
+                                    let latest = open_content(window, &id, factory, title, cx);
+                                    let body = cx.new(|_| OverlayContent {
+                                        latest: latest.clone(),
+                                        reporter: factory_reporter.clone(),
+                                        surface: "Dialog",
+                                        reported: factory_error_reported.clone(),
+                                    });
+                                    window.open_dialog(cx, move |mut dialog, _window, cx| {
+                                        if let Some(title) = latest.read(cx).title.clone() {
                                             dialog = dialog.title(title);
                                         }
-                                        let factory = factory.clone();
-                                        let factory_reporter = factory_reporter.clone();
-                                        let factory_error_reported = factory_error_reported.clone();
-                                        dialog = dialog.content(move |content, window, cx| {
-                                            match factory.build(window, cx) {
-                                                Ok(element) => content.child(element),
-                                                Err(error) => {
-                                                    let message = format!(
-                                                        "Failed to render Dialog content: {error:#}"
-                                                    );
-                                                    if !factory_error_reported.replace(true) {
-                                                        report_factory_error(
-                                                            &factory_reporter,
-                                                            "Dialog",
-                                                            &error,
-                                                            window,
-                                                            cx,
-                                                        );
-                                                    }
-                                                    content.child(gpui::div().child(message))
-                                                }
-                                            }
+                                        let body = body.clone();
+                                        dialog = dialog.content(move |content, _, _| {
+                                            content.child(body.clone())
                                         });
                                         let ok = on_ok.clone();
                                         let cancel = on_cancel.clone();
@@ -353,17 +435,15 @@ impl ComponentMaterializer for Materializer {
                                     });
                                 }
                                 Kind::Sheet => {
-                                    let factory = content.clone().expect("validated sheet content");
-                                    let title = operations
-                                        .iter()
-                                        .filter_map(|op| {
-                                            if let Op::Title(value) = op {
-                                                Some(value.clone())
-                                            } else {
-                                                None
-                                            }
-                                        })
-                                        .last();
+                                    let (factory, title) =
+                                        content.clone().expect("validated sheet content");
+                                    let latest = open_content(window, &id, factory, title, cx);
+                                    let body = cx.new(|_| OverlayContent {
+                                        latest: latest.clone(),
+                                        reporter: factory_reporter.clone(),
+                                        surface: "Sheet",
+                                        reported: factory_error_reported.clone(),
+                                    });
                                     let placement = operations
                                         .iter()
                                         .filter_map(|op| {
@@ -378,28 +458,11 @@ impl ComponentMaterializer for Materializer {
                                     window.open_sheet_at(
                                         placement,
                                         cx,
-                                        move |mut sheet, window, cx| {
-                                            if let Some(title) = title.clone() {
+                                        move |mut sheet, _window, cx| {
+                                            if let Some(title) = latest.read(cx).title.clone() {
                                                 sheet = sheet.title(title);
                                             }
-                                            match factory.build(window, cx) {
-                                                Ok(element) => sheet = sheet.child(element),
-                                                Err(error) => {
-                                                    let message = format!(
-                                                        "Failed to render Sheet content: {error:#}"
-                                                    );
-                                                    if !factory_error_reported.replace(true) {
-                                                        report_factory_error(
-                                                            &factory_reporter,
-                                                            "Sheet",
-                                                            &error,
-                                                            window,
-                                                            cx,
-                                                        );
-                                                    }
-                                                    sheet = sheet.child(gpui::div().child(message))
-                                                }
-                                            }
+                                            sheet = sheet.child(body.clone());
                                             let close = on_close.clone();
                                             sheet.on_close(move |_, window, cx| {
                                                 invoke(

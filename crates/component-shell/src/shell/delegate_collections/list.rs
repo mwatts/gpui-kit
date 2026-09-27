@@ -106,7 +106,12 @@ impl ListDelegate for Delegate {
         let label = object_string_field(&row, "accessibility_label").map(SharedString::from);
         #[cfg(test)]
         test_probe::label(label.as_ref().map(ToString::to_string));
-        let child = match self.render_row.build_data_with(&[row], window, cx) {
+        // Rows are frame-owned subtrees, so a control in a row (a Button, an
+        // Input) registers handlers that retire with the frame that drew it.
+        let child = match self
+            .render_row
+            .build_interactive_data_with(&[row], window, cx)
+        {
             Ok(Some(element)) => {
                 #[cfg(test)]
                 test_probe::row(id.to_string());

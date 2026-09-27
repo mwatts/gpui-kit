@@ -115,3 +115,34 @@ export default class App extends View {
         }
     }
 }
+
+/// A page is a frame-owned subtree: a control it draws takes clicks, and a
+/// `size_full` page still fills the stack (the lease wrapper adds no box).
+#[gpui::test]
+fn page_controls_take_clicks_and_fill_the_stack(cx: &mut TestAppContext) {
+    let (mut context, view, _app) = mount(
+        cx,
+        r#"
+import { View, div } from "gpui-kit";
+import { NavStack } from "gpui-component";
+export default class App extends View {
+ init() { this.clicks = 0; }
+ render() { return div().size_full()
+  .child(new NavStack("nav", () => [{id:"root"}], () => div().size_full().flex().flex_col().justify_end()
+    .child(div().h(40).w(100).child("press").on_click((_e,cx) => { this.clicks++; cx.notify(); })))
+   .path(["root"]).w(400).h(200))
+  .child(`clicks:${this.clicks}`); }
+}
+"#,
+    );
+    draw(&mut context);
+    draw(&mut context);
+    // The control sits at the bottom of a page that fills the 200px stack.
+    context.simulate_click(point(px(20.), px(180.)), Modifiers::default());
+    draw(&mut context);
+    let tree = context.update(|_, cx| {
+        assert_eq!(view.read(cx).build_error(), None);
+        view.read(cx).snapshot().unwrap().debug_tree()
+    });
+    assert!(tree.contains("clicks:1"), "page click: {tree}");
+}

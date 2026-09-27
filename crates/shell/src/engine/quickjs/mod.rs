@@ -5231,15 +5231,14 @@ impl ShellRuntime {
                             window,
                             cx,
                         )?;
-                        use gpui::{InteractiveElement as _, IntoElement as _, ParentElement as _};
+                        use gpui::IntoElement as _;
                         // The frame's event table holds the lease until the next frame replaces it.
                         Ok(Some(
-                            gpui::div()
-                                .child(element)
-                                .on_mouse_move(move |_, _, _| {
-                                    let _ = &snapshot;
-                                })
-                                .into_any_element(),
+                            FrameLease {
+                                child: element,
+                                lease: Some(snapshot),
+                            }
+                            .into_any_element(),
                         ))
                     } else {
                         crate::materialize::try_materialize_subtree(self, &arena, root, window, cx)
@@ -9578,6 +9577,77 @@ struct ComponentDataBudget {
     nodes: usize,
     string_bytes: usize,
     keys: usize,
+}
+
+/// Lays out, prepaints and paints its one child as if it were not there, so a
+/// frame-owned subtree keeps the size its parent gives it (a `size_full` page
+/// or list still fills). At paint it hands its snapshot to the frame's mouse
+/// listeners, which hold it, and with it the subtree's callbacks, until the
+/// next frame replaces them.
+struct FrameLease {
+    child: gpui::AnyElement,
+    lease: Option<RenderSnapshot>,
+}
+
+impl gpui::IntoElement for FrameLease {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl gpui::Element for FrameLease {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (gpui::LayoutId, ()) {
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<gpui::Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<gpui::Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.paint(window, cx);
+        if let Some(snapshot) = self.lease.take() {
+            window.on_mouse_event(move |_: &gpui::MouseMoveEvent, _, _, _| {
+                let _ = &snapshot;
+            });
+        }
+    }
 }
 
 struct TemporarySpecArena {
