@@ -9,11 +9,11 @@ use std::{
 };
 
 use gpui::{
-    App, BorderStyle, Bounds, ClickEvent, CursorStyle, Edges, Element, ElementId, GlobalElementId,
-    Half, HighlightStyle, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
-    MouseButton, MouseClickEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    SharedString, StyledText, TextAlign, TextLayout, TextRun, TextStyle, Window, point, px, quad,
-    size,
+    App, BorderStyle, Bounds, ClickEvent, CursorStyle, Edges, Element, ElementId, FontFeatures,
+    GlobalElementId, Half, HighlightStyle, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
+    IntoElement, LayoutId, MouseButton, MouseClickEvent, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, SharedString, StyledText, TextAlign, TextLayout, TextRun,
+    TextStyle, Window, point, px, quad, size,
 };
 
 use crate::{
@@ -153,6 +153,7 @@ pub(super) fn text_runs(
             .to_run(range.len());
         if let Some(family) = &highlight.font_family {
             run.font.family = family.clone();
+            run.font.features = literal_font_features();
         }
         runs.push(run);
         ix = range.end;
@@ -161,6 +162,19 @@ pub(super) fn text_runs(
         runs.push(default_style.to_run(text_len - ix));
     }
     runs
+}
+
+/// OpenType features for a span set in its own family (inline code): no
+/// ligatures or contextual alternates, so each character keeps its own glyph
+/// and cell. A code font such as Geist Mono otherwise draws `--` as one
+/// ligature glyph one cell wide, which pulls the rest of the span left over
+/// the space before it and clips a leading `-` at a paragraph edge.
+pub(super) fn literal_font_features() -> FontFeatures {
+    FontFeatures(Arc::new(vec![
+        ("calt".into(), 0),
+        ("liga".into(), 0),
+        ("dlig".into(), 0),
+    ]))
 }
 
 /// Splits text into contiguous ranges sharing one font size. GPUI runs can
@@ -1976,6 +1990,41 @@ mod tests {
             .map(|run| (run.len, run.font.family.as_ref()))
             .collect::<Vec<_>>();
         assert_eq!(families, vec![(4, "Body"), (4, "Mono"), (4, "Body")]);
+    }
+
+    /// `run `--root` now`: the code run turns ligatures and contextual
+    /// alternates off, so a code font cannot fold `--` into one cell and
+    /// pull the span over the space before it; the body runs keep the
+    /// style's own features.
+    #[test]
+    fn text_runs_shape_inline_code_without_ligatures() {
+        let style = TextStyle {
+            font_family: SharedString::from("Body"),
+            ..Default::default()
+        };
+        let text = "run --root now";
+        let code = text.find("--root").unwrap();
+        let highlights = vec![(code..code + 6, mono(HighlightStyle::default()))];
+
+        let runs = text_runs(text.len(), &style, &highlights);
+
+        assert_eq!(
+            runs.iter().map(|run| run.len).collect::<Vec<_>>(),
+            vec![4, 6, 4],
+            "the space before the code span stays in the body run"
+        );
+        let disabled = |run: &gpui::TextRun, tag: &str| {
+            run.font
+                .features
+                .tag_value_list()
+                .iter()
+                .any(|(name, value)| name == tag && *value == 0)
+        };
+        for tag in ["calt", "liga"] {
+            assert!(disabled(&runs[1], tag), "code run keeps {tag} on");
+            assert!(!disabled(&runs[0], tag), "body run lost {tag}");
+            assert!(!disabled(&runs[2], tag), "body run lost {tag}");
+        }
     }
 
     #[test]

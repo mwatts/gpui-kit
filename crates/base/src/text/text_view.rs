@@ -140,6 +140,7 @@ pub struct TextView {
     reveal_handler: Option<Rc<RevealHandlerFn>>,
     markdown_extensions: Arc<MarkdownExtensions>,
     motion: Option<TextViewMotion>,
+    heading: Option<SharedString>,
 }
 
 /// A plugin that can configure a [`TextView`].
@@ -187,6 +188,7 @@ impl TextView {
             reveal_handler: None,
             markdown_extensions: Arc::default(),
             motion: None,
+            heading: None,
         }
     }
 
@@ -211,6 +213,7 @@ impl TextView {
             reveal_handler: None,
             markdown_extensions: Arc::default(),
             motion: None,
+            heading: None,
         }
     }
 
@@ -235,6 +238,7 @@ impl TextView {
             reveal_handler: None,
             markdown_extensions: Arc::default(),
             motion: None,
+            heading: None,
         }
     }
 
@@ -286,6 +290,19 @@ impl TextView {
     /// This mode is suitable for small content, such as a few lines of text, a label, etc.
     pub fn scrollable(mut self, scrollable: bool) -> Self {
         self.scrollable = scrollable;
+        self
+    }
+
+    /// Scroll a [`scrollable`](Self::scrollable) view to the top-level
+    /// heading whose slug is `slug` (see [`heading_slug`](crate::text::heading_slug) and
+    /// [`TextViewState::heading_slugs`]), e.g. the fragment of a
+    /// `page#some-heading` link.
+    ///
+    /// The view scrolls once per distinct request, when the document has the
+    /// heading; handing over the same slug again on later frames leaves the
+    /// scroll position to the user. `None` makes no request.
+    pub fn scroll_to_heading(mut self, slug: Option<impl Into<SharedString>>) -> Self {
+        self.heading = slug.map(Into::into);
         self
     }
 
@@ -656,6 +673,12 @@ impl Element for TextView {
 
             if let Some(text) = &self.text {
                 state.set_element_text(text, cx);
+            }
+            if state.element_heading != self.heading {
+                state.element_heading = self.heading.clone();
+                if let Some(slug) = &self.heading {
+                    state.scroll_to_heading(slug, cx);
+                }
             }
         });
 
@@ -1308,6 +1331,92 @@ mod tests {
                 .overflow_hidden()
                 .child(TextView::new(&self.text_view).scrollable(true))
         }
+    }
+
+    /// A scrollable view asked for one heading, as a `page#slug` link would.
+    struct HeadingTestRoot {
+        text_view: Entity<TextViewState>,
+        heading: Option<&'static str>,
+    }
+
+    impl Render for HeadingTestRoot {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().w(px(400.)).h(px(200.)).overflow_hidden().child(
+                TextView::new(&self.text_view)
+                    .scrollable(true)
+                    .scroll_to_heading(self.heading),
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn scroll_to_heading_scrolls_once_to_the_named_heading(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let body = "lorem ipsum dolor ".repeat(40);
+        let doc = format!(
+            "# Guide\n\n{body}\n\n## Open the box\n\n{body}\n\n## `--root` and more!\n\n{body}\n\n## Open the box\n\n{body}"
+        );
+        let (root, cx) = cx.add_window_view(|_, cx| HeadingTestRoot {
+            text_view: cx.new(|cx| TextViewState::markdown(&doc, cx)),
+            heading: Some("--root-and-more"),
+        });
+        let cx: &mut VisualTestContext = cx;
+        let settle = |cx: &mut VisualTestContext| {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        settle(cx);
+
+        let top = |cx: &mut VisualTestContext| {
+            root.read_with(cx, |root, cx| {
+                root.text_view
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top()
+                    .item_ix
+            })
+        };
+        let slugs = root.read_with(cx, |root, cx| root.text_view.read(cx).heading_slugs());
+        assert_eq!(
+            slugs,
+            ["guide", "open-the-box", "--root-and-more", "open-the-box-1"]
+        );
+        // Blocks: 0 `# Guide`, 1 body, 2 `## Open the box`, 3 body, 4 `## --root…`.
+        assert_eq!(top(cx), 4);
+
+        // The same request on later frames leaves the user's scroll alone.
+        root.update(cx, |root, cx| {
+            root.text_view.update(cx, |state, _| {
+                state.list_state().scroll_to(gpui::ListOffset::default())
+            })
+        });
+        settle(cx);
+        assert_eq!(top(cx), 0);
+
+        // A new request scrolls again, and a repeated slug names its later heading.
+        root.update(cx, |root, cx| {
+            root.heading = Some("open-the-box-1");
+            cx.notify();
+        });
+        settle(cx);
+        assert_eq!(top(cx), 6);
+    }
+
+    #[test]
+    fn heading_slugs_follow_github_style() {
+        use crate::text::heading_slug;
+        assert_eq!(heading_slug("Open the capture box"), "open-the-capture-box");
+        assert_eq!(
+            heading_slug("How `ashlar --capture` behaves"),
+            "how-ashlar---capture-behaves"
+        );
+        assert_eq!(heading_slug("  The MCP port  "), "the-mcp-port");
+        assert_eq!(
+            heading_slug("Boards & calendars (beta)"),
+            "boards--calendars-beta"
+        );
     }
 
     /// `count` paragraphs, each `words` words long, so two documents can share

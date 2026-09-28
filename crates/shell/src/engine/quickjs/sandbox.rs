@@ -433,13 +433,30 @@ struct Budgets {
     detached: Duration,
 }
 
-impl Default for Budgets {
-    fn default() -> Self {
+/// How much longer the call budgets are in a debug build.
+///
+/// A dev profile compiles the QuickJS C engine without optimization, so the
+/// same script runs several times slower there, and a render that fits the
+/// release budget can be cut off in a dev run. The budgets still bound a
+/// runaway script in debug builds; release builds keep the tight numbers.
+const DEBUG_BUDGET_SCALE: u32 = 4;
+
+impl Budgets {
+    /// The budgets for a release build, or scaled by [`DEBUG_BUDGET_SCALE`]
+    /// for a debug build.
+    fn for_build(debug: bool) -> Self {
+        let scale = if debug { DEBUG_BUDGET_SCALE } else { 1 };
         Self {
-            render: Duration::from_millis(50),
-            event: Duration::from_millis(500),
+            render: Duration::from_millis(50) * scale,
+            event: Duration::from_millis(500) * scale,
             detached: Duration::from_secs(5),
         }
+    }
+}
+
+impl Default for Budgets {
+    fn default() -> Self {
+        Self::for_build(cfg!(debug_assertions))
     }
 }
 
@@ -834,8 +851,53 @@ mod tests {
 
     #[test]
     fn the_render_budget_is_tighter_than_the_event_budget() {
-        let budgets = Budgets::default();
-        assert!(budgets.render < budgets.event);
-        assert!(budgets.event < budgets.detached);
+        for budgets in [
+            Budgets::default(),
+            Budgets::for_build(false),
+            Budgets::for_build(true),
+        ] {
+            assert!(budgets.render < budgets.event);
+            assert!(budgets.event < budgets.detached);
+        }
+    }
+
+    #[test]
+    fn a_debug_build_scales_the_call_budgets_and_release_keeps_them() {
+        let release = Budgets::for_build(false);
+        assert_eq!(release.render, Duration::from_millis(50));
+        assert_eq!(release.event, Duration::from_millis(500));
+        assert_eq!(release.detached, Duration::from_secs(5));
+
+        let debug = Budgets::for_build(true);
+        assert_eq!(debug.render, Duration::from_millis(200));
+        assert_eq!(debug.event, Duration::from_millis(2000));
+        assert_eq!(debug.detached, Duration::from_secs(5));
+
+        let current = Budgets::default();
+        let expected = Budgets::for_build(cfg!(debug_assertions));
+        assert_eq!(current.render, expected.render);
+        assert_eq!(current.event, expected.event);
+    }
+
+    /// An evaluation longer than the 50 ms release render budget finishes
+    /// under the debug one.
+    #[test]
+    fn a_debug_render_budget_lets_an_unoptimized_render_finish() {
+        let runtime = JsRuntime::new().unwrap();
+        let debug = Budgets::for_build(true);
+        runtime.set_interrupt_handler(Some(Box::new(deadline(Budgets {
+            render: debug.render,
+            event: debug.render,
+            detached: debug.render,
+        }))));
+        let context = JsContext::full(&runtime).unwrap();
+        begin_host_execution();
+        context
+            .with(|ctx| {
+                ctx.eval::<(), _>(
+                    "{ const until = Date.now() + 80; while (Date.now() < until) {} }",
+                )
+            })
+            .expect("an 80 ms evaluation fits the debug render budget");
     }
 }
