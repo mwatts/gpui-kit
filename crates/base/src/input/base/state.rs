@@ -3011,7 +3011,9 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// Non-empty ranges expand to character boundaries. Empty ranges remain empty and are
     /// clipped to the preceding character boundary.
     pub fn set_selected_range(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
-        let range = self.normalize_token_range(range);
+        let reversed = range.start > range.end;
+        let range =
+            self.normalize_token_range(range.start.min(range.end)..range.start.max(range.end));
         let end_bias = if range.start == range.end {
             Bias::Left
         } else {
@@ -3019,6 +3021,7 @@ impl<M: InputModeKind> InputBaseState<M> {
         };
         let start = self.text.clip_offset(range.start, Bias::Left);
         let end = self.text.clip_offset(range.end, end_bias);
+        let (start, end) = if reversed { (end, start) } else { (start, end) };
 
         self.move_to(start, None, cx);
         self.active_selection_mut().reversed = false;
