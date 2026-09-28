@@ -264,6 +264,9 @@ fn shell_fps_monitor_never_requests_a_frame(cx: &mut TestAppContext) {
     });
 
     context.update(|window, cx| window.draw(cx).clear(cx));
+    // The shell completes its first-frame receipt on the following frame.
+    context.update(|window, cx| window.simulate_next_frame(cx));
+    context.update(|window, cx| window.draw(cx).clear(cx));
     let requested = context.update(|window, cx| window.simulate_next_frame(cx));
 
     assert_eq!(
@@ -349,6 +352,8 @@ export default class Indicator extends View {
 "#;
     let (runtime, mut context, view) = script_view(cx, source);
     render_once(&mut context, &view);
+    // Complete the initial-frame receipt before measuring spring demand.
+    context.update(|window, cx| window.simulate_next_frame(cx));
     let callback = click_target(&mut context, &view);
     context.update(|window, cx| runtime.dispatch_change(callback, true, window, cx));
     render_once(&mut context, &view);

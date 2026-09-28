@@ -677,11 +677,12 @@ mod component_callback_value_tests {
                 .contains("superseded render")
         );
         application.retire();
-        let retired_error = match context.update(|window, cx| retired.build_with(&[], window, cx)) {
-            Ok(_) => panic!("retired element callback must fail"),
-            Err(error) => error,
-        };
-        assert!(retired_error.to_string().contains("retired application"));
+        assert!(
+            context
+                .update(|window, cx| retired.build_with(&[], window, cx))
+                .expect("retired element callbacks are inactive, not script failures")
+                .is_none()
+        );
         let snapshot =
             crate::ComponentDelegateSnapshot::new(vec![ComponentDataValue::String("row".into())]);
         assert_eq!(snapshot.len(), 1);
