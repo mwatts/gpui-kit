@@ -1284,22 +1284,24 @@ mod tests {
             ) -> impl IntoElement {
                 let state = self.state.clone();
                 let emitted = self.emitted.clone();
-                div().child(Input::new(&state)).on_prepaint(move |_, window, cx| {
-                    let input = Input::new(&state)
-                        .aria_label("Search commands")
-                        .render(window, cx)
-                        .into_element();
-                    let mut node = gpui::accesskit::Node::new(Role::TextInput);
-                    input.write_a11y_info(&mut node);
-                    *emitted.lock().unwrap() = Some((
-                        input.a11y_role(),
-                        node.label().map(ToOwned::to_owned),
-                        node.value().map(ToOwned::to_owned),
-                        node.supports_action(AccessibleAction::Focus),
-                        node.supports_action(AccessibleAction::SetValue),
-                        node.supports_action(AccessibleAction::SetTextSelection),
-                    ));
-                })
+                div()
+                    .child(Input::new(&state))
+                    .on_prepaint(move |_, window, cx| {
+                        let input = Input::new(&state)
+                            .aria_label("Search commands")
+                            .render(window, cx)
+                            .into_element();
+                        let mut node = gpui::accesskit::Node::new(Role::TextInput);
+                        input.write_a11y_info(&mut node);
+                        *emitted.lock().unwrap() = Some((
+                            input.a11y_role(),
+                            node.label().map(ToOwned::to_owned),
+                            node.value().map(ToOwned::to_owned),
+                            node.supports_action(AccessibleAction::Focus),
+                            node.supports_action(AccessibleAction::SetValue),
+                            node.supports_action(AccessibleAction::SetTextSelection),
+                        ));
+                    })
             }
         }
 
@@ -1313,14 +1315,14 @@ mod tests {
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
-        // No assistive technology is attached in tests, so the value stays
-        // unmaterialized while `SetValue` is still advertised.
+        // Test support materializes the same value that assistive technology
+        // receives; normal builds avoid it until a client attaches.
         assert_eq!(
             *captured.lock().unwrap(),
             Some((
                 Some(Role::TextInput),
                 Some("Search commands".into()),
-                None,
+                cfg!(feature = "test-support").then(|| "initial".into()),
                 true,
                 true,
                 true,
@@ -1382,7 +1384,17 @@ mod tests {
             window.draw(cx).clear(cx);
         });
         assert_eq!(state.read_with(cx, |state, _| state.value()), "updated🦀");
-        assert_eq!(*captured.lock().unwrap(), Some((None, true)));
+        assert_eq!(
+            *captured.lock().unwrap(),
+            Some((
+                Some(Role::TextInput),
+                Some("Search commands".into()),
+                None,
+                true,
+                true,
+                true
+            ))
+        );
     }
 
     #[gpui::test]
