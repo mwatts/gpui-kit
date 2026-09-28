@@ -152,6 +152,11 @@ pub struct TextViewState {
     compatible_layout_update: bool,
     layout_text_style: Option<(gpui::TextStyle, Pixels)>,
     parsed_error: Option<SharedString>,
+    /// A heading slug to scroll to once the parsed document has it.
+    pending_heading: Option<String>,
+    /// The last heading request a `TextView` element handed over, so a
+    /// request repeated every frame scrolls only once.
+    pub(super) element_heading: Option<SharedString>,
     tx: Sender<UpdateOptions>,
     _parse_task: Task<()>,
     _receive_task: Task<()>,
@@ -276,6 +281,8 @@ impl TextViewState {
             selection_revision: 0,
             compatible_layout_update: false,
             layout_text_style: None,
+            pending_heading: None,
+            element_heading: None,
             tx,
             _parse_task,
             _receive_task,
@@ -390,6 +397,81 @@ impl TextViewState {
         self.stream_fade.note_extend(self.text.len());
         self.text.push_str(new_text);
         self.increment_update(new_text, true, cx);
+    }
+
+    /// The slugs of the document's top-level headings, in document order.
+    ///
+    /// Each slug is [`heading_slug`] of the heading's text; a slug already
+    /// taken by an earlier heading gets `-1`, `-2`, … appended, the way
+    /// GitHub names repeated headings.
+    pub fn heading_slugs(&self) -> Vec<String> {
+        self.heading_blocks()
+            .into_iter()
+            .map(|(_, slug)| slug)
+            .collect()
+    }
+
+    /// The top-level block index and slug of every heading.
+    fn heading_blocks(&self) -> Vec<(usize, String)> {
+        let mut taken: Vec<(usize, String)> = Vec::new();
+        for (ix, block) in self.parsed_content.document.blocks.iter().enumerate() {
+            let node::BlockNode::Heading { children, .. } = block else {
+                continue;
+            };
+            let base = heading_slug(&children.text());
+            let mut slug = base.clone();
+            let mut n = 0;
+            while taken.iter().any(|(_, taken)| *taken == slug) {
+                n += 1;
+                slug = format!("{base}-{n}");
+            }
+            taken.push((ix, slug));
+        }
+        taken
+    }
+
+    /// Scroll a [`scrollable`](Self::scrollable) view so the top-level
+    /// heading named `slug` (see [`Self::heading_slugs`]) is at the top.
+    ///
+    /// The request is kept until the document has that heading, so it can be
+    /// made right after the text is set, before the parse finishes. A later
+    /// request replaces it. Returns whether the current document already has
+    /// the heading. A view that is not scrollable does not scroll itself, so
+    /// the request waits until it is.
+    pub fn scroll_to_heading(&mut self, slug: &str, cx: &mut Context<Self>) -> bool {
+        let found = self
+            .heading_blocks()
+            .iter()
+            .any(|(_, heading)| heading == slug);
+        self.pending_heading = Some(slug.to_owned());
+        cx.notify();
+        found
+    }
+
+    /// Apply a pending [`Self::scroll_to_heading`] once the list holds the
+    /// document's blocks.
+    fn apply_pending_heading(&mut self) {
+        if !self.scrollable {
+            return;
+        }
+        let Some(slug) = self.pending_heading.as_deref() else {
+            return;
+        };
+        let Some(ix) = self
+            .heading_blocks()
+            .into_iter()
+            .find_map(|(ix, heading)| (heading == slug).then_some(ix))
+        else {
+            return;
+        };
+        if self.list_state.item_count() != self.parsed_content.document.blocks.len() {
+            return;
+        }
+        self.list_state.scroll_to(gpui::ListOffset {
+            item_ix: ix,
+            offset_in_item: px(0.),
+        });
+        self.pending_heading = None;
     }
 
     /// Set the motion policy; see [`TextViewMotion`].
@@ -1106,8 +1188,25 @@ impl Render for TextViewState {
         if let Some(block_ix) = reveal_block {
             self.list_state.scroll_to_reveal_item(block_ix);
         }
+        self.apply_pending_heading();
         content
     }
+}
+
+/// The anchor slug of a heading with `text`, GitHub style: lowercased, with
+/// letters, digits, hyphens and underscores kept, each space turned into a
+/// hyphen, and everything else dropped. `Open the capture box` becomes
+/// `open-the-capture-box`.
+pub fn heading_slug(text: &str) -> String {
+    text.trim()
+        .to_lowercase()
+        .chars()
+        .filter_map(|c| match c {
+            ' ' => Some('-'),
+            c if c.is_alphanumeric() || c == '-' || c == '_' => Some(c),
+            _ => None,
+        })
+        .collect()
 }
 
 #[derive(Clone, PartialEq, Default)]
