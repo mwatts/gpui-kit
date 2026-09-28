@@ -362,3 +362,45 @@ export default class App extends View {{ render() {{ return new DataTable(
         assert!(error.contains(needle), "{error}");
     }
 }
+
+/// `selected_row(id)` reaches `DataTableHost` as the table's selected row;
+/// `selected(id)` does not, because the bridge takes `selected` as the
+/// common boolean behavior.
+#[gpui::test]
+fn selected_row_selects_the_row_with_that_id(cx: &mut TestAppContext) {
+    for (call, expected) in [
+        (r#".selected_row("lin")"#, Some(1)),
+        (r#".selected("lin")"#, None),
+    ] {
+        data_table::test_probe::reset();
+        let source = format!(
+            r#"
+import {{ View, div }} from "gpui-kit";
+import {{ DataTableState, DataTable }} from "gpui-component";
+export default class App extends View {{
+  init() {{ this.state = DataTableState(["name"]); }}
+  render() {{
+    return div().size_full().child(new DataTable(
+      this.state,
+      () => [{{id: "ada", name: "Ada"}}, {{id: "lin", name: "Lin"}}],
+      (row, column) => div().child(row[column])
+    ).row_selectable(true).row_height(48).on_select((id, cx) => cx.notify()){call}
+      .absolute().left(0).top(0).size_full());
+  }}
+}}
+"#
+        );
+        let (mut context, view, _app) = mount(cx, &source);
+        draw(&mut context);
+        draw(&mut context);
+        context.update(|_, cx| assert_eq!(view.read(cx).build_error(), None));
+        let rows = data_table::test_probe::take_selected_rows();
+        assert_eq!(rows.last().copied().flatten(), expected, "{call}: {rows:?}");
+        // The host's own selection fires no `on_select`.
+        assert!(data_table::test_probe::take_selects().is_empty(), "{call}");
+        // A click still does: rows are 48 px under a 48 px header, so y 72 is `ada`.
+        context.simulate_click(point(px(40.), px(72.)), Modifiers::default());
+        draw(&mut context);
+        assert_eq!(data_table::test_probe::take_selects(), ["ada"], "{call}");
+    }
+}

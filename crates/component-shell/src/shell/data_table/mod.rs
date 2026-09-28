@@ -402,7 +402,10 @@ struct TableHost {
     callback: Rc<RefCell<TableCallbacks>>,
     ids: Rc<RefCell<Vec<String>>>,
     last_id: Rc<RefCell<Option<String>>>,
-    suppress: Rc<Cell<bool>>,
+    /// The row the host itself selected. `TableState` emits `SelectRow` as
+    /// a deferred effect, so a flag set around `set_selected_row` is already
+    /// cleared when the event arrives; the event names this row instead.
+    suppress: Rc<Cell<Option<usize>>>,
     cleared: Rc<Cell<bool>>,
     _subscription: Subscription,
 }
@@ -464,7 +467,7 @@ impl RenderOnce for DataTableHost {
                     let callback = Rc::new(RefCell::new(event_callbacks));
                     let ids = Rc::new(RefCell::new(Vec::<String>::new()));
                     let last_id = Rc::new(RefCell::new(None::<String>));
-                    let suppress = Rc::new(Cell::new(false));
+                    let suppress = Rc::new(Cell::new(None::<usize>));
                     let cleared = Rc::new(Cell::new(false));
                     let event_callback = callback.clone();
                     let event_ids = ids.clone();
@@ -472,7 +475,10 @@ impl RenderOnce for DataTableHost {
                     let event_suppress = suppress.clone();
                     let subscription =
                         window.subscribe(&state, cx, move |_, event: &TableEvent, window, cx| {
-                            if event_suppress.get() {
+                            if let TableEvent::SelectRow(index) = event
+                                && event_suppress.get() == Some(*index)
+                            {
+                                event_suppress.set(None);
                                 return;
                             }
                             match event {
@@ -483,7 +489,7 @@ impl RenderOnce for DataTableHost {
                                     };
                                     drop(ids);
                                     *event_last.borrow_mut() = Some(id.clone());
-                                    event_suppress.set(false);
+                                    event_suppress.set(None);
                                     #[cfg(test)]
                                     test_probe::select(id.clone());
                                     if let Some(callback) =
@@ -594,16 +600,15 @@ impl RenderOnce for DataTableHost {
                     Some(index) => {
                         cleared.set(false);
                         if state.selected_row() != Some(index) {
-                            suppress.set(true);
+                            suppress.set(Some(index));
                             state.set_selected_row(index, cx);
-                            suppress.set(false);
                         }
                         *last_id.borrow_mut() = Some(id);
                     }
                     None => {
-                        suppress.set(true);
+                        // `ClearSelection` fires no callback here.
+                        suppress.set(None);
                         state.clear_selection(cx);
-                        suppress.set(false);
                         *last_id.borrow_mut() = None;
                         if !cleared.replace(true) {
                             #[cfg(test)]
@@ -620,6 +625,8 @@ impl RenderOnce for DataTableHost {
                     }
                 }
             }
+            #[cfg(test)]
+            test_probe::selected_row(state.selected_row());
         });
         let mut table = DataTable::new(&self.state);
         for op in &self.ops {
@@ -739,7 +746,7 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
             MethodDescriptor::new("sorted", vec![ArgumentDescriptor::new("key", ArgumentSchema::String), ArgumentDescriptor::new("direction", ArgumentSchema::String)], |args| match args { [ComponentArgument::String(key), ComponentArgument::String(direction)] => Ok(ComponentPayload::new(Op::Sorted(key.clone(), direction.clone()))), _ => Err("DataTable.sorted expects column key and direction strings".into()) }).with_documentation("Sets the controlled sort indicator to match the script snapshot."),
             MethodDescriptor::new("on_select", vec![ArgumentDescriptor::new("on_select", ArgumentSchema::Callback("(id: string, cx: Context) => void"))], |args| match args { [argument @ ComponentArgument::Callback(_)] => Ok(ComponentPayload::new(Op::OnSelect(argument.clone()))), _ => Err("DataTable.on_select expects one callback".into()) }).with_documentation("Reports the stable row id after a row is selected."),
             MethodDescriptor::new("on_activate", vec![ArgumentDescriptor::new("on_activate", ArgumentSchema::Callback("(id: string, cx: Context) => void"))], |args| match args { [argument @ ComponentArgument::Callback(_)] => Ok(ComponentPayload::new(Op::OnActivate(argument.clone()))), _ => Err("DataTable.on_activate expects one callback".into()) }).with_documentation("Reports the stable row id after a row is activated."),
-            MethodDescriptor::new("selected", vec![ArgumentDescriptor::new("id", ArgumentSchema::String)], |args| match args { [ComponentArgument::String(id)] if !id.is_empty() => Ok(ComponentPayload::new(Op::Selected(id.clone()))), _ => Err("DataTable.selected expects a non-empty row id".into()) }).with_documentation("Controls the selected row by stable id."),
+            MethodDescriptor::new("selected", vec![ArgumentDescriptor::new("id", ArgumentSchema::String)], |args| match args { [ComponentArgument::String(id)] if !id.is_empty() => Ok(ComponentPayload::new(Op::Selected(id.clone()))), _ => Err("DataTable.selected expects a non-empty row id".into()) }).with_documentation("Controls the selected row by stable id."), MethodDescriptor::new("selected_row", vec![ArgumentDescriptor::new("id", ArgumentSchema::String)], |args| match args { [ComponentArgument::String(id)] if !id.is_empty() => Ok(ComponentPayload::new(Op::Selected(id.clone()))), _ => Err("DataTable.selected_row expects a non-empty row id".into()) }).with_documentation("Controls the selected row by stable id. Use this rather than `selected`, which the script bridge takes as the common boolean behavior."),
         ])
 .with_documentation("A real retained native DataTable. Rows are captured as an immutable plain-data snapshot and visible cells are built lazily from (row, column). A row object may provide an `accessibility_label` string that names the row for assistive technology. Style applies to the full-size table host."))?;
     Ok(())
@@ -770,6 +777,7 @@ pub(crate) mod test_probe {
         static SORTS: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
         static SELECTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
         static CLEARS: Cell<usize> = const { Cell::new(0) };
+        static SELECTED_ROWS: RefCell<Vec<Option<usize>>> = const { RefCell::new(Vec::new()) };
         static LABELS: RefCell<Vec<(usize, Option<String>)>> = const { RefCell::new(Vec::new()) };
         static HEADER_SIZES: RefCell<Vec<(usize, Option<gpui::AbsoluteLength>)>> = const { RefCell::new(Vec::new()) };
     }
@@ -800,6 +808,12 @@ pub(crate) mod test_probe {
     pub(super) fn select(id: String) {
         SELECTS.with(|values| values.borrow_mut().push(id));
     }
+    pub(super) fn selected_row(row: Option<usize>) {
+        SELECTED_ROWS.with(|values| values.borrow_mut().push(row));
+    }
+    pub(crate) fn take_selected_rows() -> Vec<Option<usize>> {
+        SELECTED_ROWS.with(|values| std::mem::take(&mut *values.borrow_mut()))
+    }
     pub(super) fn clear() {
         CLEARS.with(|value| value.set(value.get() + 1));
     }
@@ -810,6 +824,7 @@ pub(crate) mod test_probe {
         SORTS.with(|values| values.borrow_mut().clear());
         SELECTS.with(|values| values.borrow_mut().clear());
         CLEARS.with(|value| value.set(0));
+        SELECTED_ROWS.with(|values| values.borrow_mut().clear());
         LABELS.with(|values| values.borrow_mut().clear());
         HEADER_SIZES.with(|values| values.borrow_mut().clear());
     }
