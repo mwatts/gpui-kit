@@ -106,6 +106,12 @@ impl TextView {
         self.inner = self.inner.scrollable(value);
         self
     }
+    /// Scrolls a scrollable view once to the top-level heading with this
+    /// slug; see [`gpui_base::text::TextView::scroll_to_heading`].
+    pub fn scroll_to_heading(mut self, slug: Option<impl Into<SharedString>>) -> Self {
+        self.inner = self.inner.scroll_to_heading(slug);
+        self
+    }
     /// Fades streamed text in the way Claude reveals a reply: the words a `set_text` or
     /// `push_str` adds start transparent and light up one after another, each reaching full
     /// color over 280 ms. A chunk far larger than one keystroke burst -- a backfill, a replay --
