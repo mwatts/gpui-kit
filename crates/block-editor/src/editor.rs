@@ -1637,8 +1637,9 @@ impl Editor {
             return;
         };
         self.selection = Selection::new(
-            Cursor::new(first.id.clone(), Part::Body, 0),
-            Cursor::new(last.id.clone(), Part::Body, last.plain.len()),
+            Cursor::new(first.id.clone(), Part::Body, 0).with_occurrence(first.paint_id().clone()),
+            Cursor::new(last.id.clone(), Part::Body, last.plain.len())
+                .with_occurrence(last.paint_id().clone()),
         );
         cx.notify();
     }
@@ -1722,6 +1723,40 @@ impl Editor {
     }
 
     fn selected_plain(&self) -> Option<String> {
+        if self.bridge.is_some() {
+            let selection = self.displayed_selection();
+            if selection.is_collapsed() {
+                return None;
+            }
+            let snapshots = self.snapshots();
+            let a = snapshots
+                .iter()
+                .position(|s| s.paint_id() == selection.anchor.paint_id())?;
+            let b = snapshots
+                .iter()
+                .position(|s| s.paint_id() == selection.focus.paint_id())?;
+            let (first, start, last, end) =
+                if (a, selection.anchor.offset) <= (b, selection.focus.offset) {
+                    (a, selection.anchor.offset, b, selection.focus.offset)
+                } else {
+                    (b, selection.focus.offset, a, selection.anchor.offset)
+                };
+            let mut parts = Vec::new();
+            for (index, snapshot) in snapshots.iter().enumerate().take(last + 1).skip(first) {
+                let from = if index == first {
+                    start.min(snapshot.plain.len())
+                } else {
+                    0
+                };
+                let to = if index == last {
+                    end.min(snapshot.plain.len())
+                } else {
+                    snapshot.plain.len()
+                };
+                parts.push(snapshot.plain.get(from..to)?);
+            }
+            return Some(parts.join("\n"));
+        }
         if self.selection.is_collapsed() {
             return None;
         }
