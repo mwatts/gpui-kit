@@ -821,3 +821,98 @@ fn reference_in_prefers_the_mention_target() {
 fn interaction_tests_collect() {
     assert!(true);
 }
+
+#[gpui::test]
+fn composition_copy_reads_the_selected_occurrences_not_the_empty_page(cx: &mut TestAppContext) {
+    use crate::{
+        ChildOccurrence, CompositionObject, CompositionRead, CompositionSession, EditorGate,
+        IdSource, ObjectVersion, encode_block,
+    };
+    use std::collections::BTreeMap;
+    let objects = ["z-first", "a-second"]
+        .into_iter()
+        .zip(["alpha", "bravo"])
+        .map(|(id, text)| {
+            (
+                id.into(),
+                CompositionObject {
+                    id: id.into(),
+                    version: ObjectVersion("v1".into()),
+                    bytes: encode_block(id, BlockType::Paragraph, text),
+                    kind_hint: Some(BlockType::Paragraph),
+                },
+            )
+        })
+        .collect();
+    let children = ["z-first", "a-second", "z-first"]
+        .into_iter()
+        .enumerate()
+        .map(|(i, id)| ChildOccurrence {
+            relation_id: format!("occ-{i}"),
+            parent: "note".into(),
+            child: id.into(),
+            slot: "body".into(),
+            position: format!("a{i}"),
+            child_missing: false,
+            cycle_unresolved: false,
+        })
+        .collect();
+    let session = CompositionSession::open(
+        CompositionRead {
+            root: "note".into(),
+            root_type: "Note".into(),
+            version_tip: "tip".into(),
+            objects,
+            children,
+            collection_versions: BTreeMap::new(),
+        },
+        EditorGate::Notes,
+        IdSource::default(),
+    );
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init(cx);
+    });
+    let (root, cx) = cx.add_window_view(|window, cx| {
+        let editor = cx.new(|cx| Editor::from_composition(session, cx));
+        editor.update(cx, |editor, cx| editor.focus_handle(cx).focus(window, cx));
+        Root::new(editor, window, cx)
+    });
+    let editor = root.read_with(cx, |root, _| {
+        root.view().clone().downcast::<Editor>().unwrap()
+    });
+    for reverse in [false, true] {
+        editor.update(cx, |editor, cx| {
+            let a = Cursor::new("z-first".into(), Part::Body, 2).with_occurrence("occ-0");
+            let b = Cursor::new("a-second".into(), Part::Body, 3).with_occurrence("occ-1");
+            editor.select(
+                if reverse {
+                    Selection::new(b, a)
+                } else {
+                    Selection::new(a, b)
+                },
+                cx,
+            );
+        });
+        #[cfg(target_os = "macos")]
+        cx.simulate_keystrokes("cmd-c");
+        #[cfg(not(target_os = "macos"))]
+        cx.simulate_keystrokes("ctrl-c");
+        let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()));
+        assert_eq!(
+            copied.as_deref(),
+            Some("pha\nbra"),
+            "Copy must read selected occurrence text in page order, including reverse selections"
+        );
+    }
+    #[cfg(target_os = "macos")]
+    cx.simulate_keystrokes("cmd-a cmd-c");
+    #[cfg(not(target_os = "macos"))]
+    cx.simulate_keystrokes("ctrl-a ctrl-c");
+    let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    assert_eq!(
+        copied.as_deref(),
+        Some("alpha\nbravo\nalpha"),
+        "Select All retains repeated Child occurrences in page order"
+    );
+}
