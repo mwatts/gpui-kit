@@ -36,11 +36,15 @@ impl Editor {
         self.composition.as_ref().map_or_else(
             || self.selection.head().clone(),
             |composition| {
-                Cursor::new(
+                let cursor = Cursor::new(
                     composition.id().clone(),
                     composition.part(),
                     composition.range().start,
-                )
+                );
+                match composition.occurrence() {
+                    Some(occurrence) => cursor.with_occurrence(occurrence.clone()),
+                    None => cursor,
+                }
             },
         )
     }
@@ -281,11 +285,13 @@ impl EntityInputHandler for Editor {
             .map(|range| Self::range_from_utf16(text, range))
             .unwrap_or(text.len()..text.len());
         self.extra_selections.clear();
-        self.composition = Some(
-            Composition::new(target.id, target.part, range)
-                .with_text(text)
-                .with_selection(selection),
-        );
+        let mut composition = Composition::new(target.id, target.part, range)
+            .with_text(text)
+            .with_selection(selection);
+        if let Some(occurrence) = target.occurrence {
+            composition = composition.with_occurrence(occurrence);
+        }
+        self.composition = Some(composition);
         cx.notify();
     }
 

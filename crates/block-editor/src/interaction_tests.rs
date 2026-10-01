@@ -916,3 +916,226 @@ fn composition_copy_reads_the_selected_occurrences_not_the_empty_page(cx: &mut T
         "Select All retains repeated Child occurrences in page order"
     );
 }
+
+#[gpui::test]
+fn shift_selection_keeps_the_child_occurrence(cx: &mut TestAppContext) {
+    use crate::{
+        ChildOccurrence, CompositionObject, CompositionRead, CompositionSession, EditorGate,
+        IdSource, ObjectVersion, encode_block,
+    };
+    use std::collections::BTreeMap;
+    let session = CompositionSession::open(
+        CompositionRead {
+            root: "note".into(),
+            root_type: "Note".into(),
+            version_tip: "tip".into(),
+            objects: BTreeMap::from([(
+                "z-first".into(),
+                CompositionObject {
+                    id: "z-first".into(),
+                    version: ObjectVersion("v1".into()),
+                    bytes: encode_block("z-first", BlockType::Paragraph, "alpha"),
+                    kind_hint: Some(BlockType::Paragraph),
+                },
+            )]),
+            children: vec![ChildOccurrence {
+                relation_id: "occ-0".into(),
+                parent: "note".into(),
+                child: "z-first".into(),
+                slot: "body".into(),
+                position: "a0".into(),
+                child_missing: false,
+                cycle_unresolved: false,
+            }],
+            collection_versions: BTreeMap::new(),
+        },
+        EditorGate::Notes,
+        IdSource::default(),
+    );
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init(cx);
+    });
+    let (root, cx) = cx.add_window_view(|window, cx| {
+        let editor = cx.new(|cx| Editor::from_composition(session, cx));
+        editor.update(cx, |editor, cx| editor.focus_handle(cx).focus(window, cx));
+        Root::new(editor, window, cx)
+    });
+    let editor = root.read_with(cx, |root, _| {
+        root.view().clone().downcast::<Editor>().unwrap()
+    });
+    cx.simulate_keystrokes("shift-right shift-right");
+    editor.read_with(cx, |editor, _| {
+        let selection = editor.selection();
+        assert_eq!(selection.anchor.paint_id().0, "occ-0");
+        assert_eq!(selection.focus.paint_id().0, "occ-0");
+        assert!(!selection.is_collapsed());
+    });
+    #[cfg(target_os = "macos")]
+    cx.simulate_keystrokes("cmd-c");
+    #[cfg(not(target_os = "macos"))]
+    cx.simulate_keystrokes("ctrl-c");
+    let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    assert_eq!(copied.as_deref(), Some("al"));
+
+    cx.simulate_keystrokes("right");
+    cx.simulate_input("Z");
+    cx.simulate_keystrokes("shift-left");
+    editor.read_with(cx, |editor, _| {
+        let selection = editor.selection();
+        assert_eq!(
+            selection.anchor.paint_id().0,
+            "occ-0",
+            "typing must not drop the Child occurrence"
+        );
+        assert_eq!(selection.focus.paint_id().0, "occ-0");
+    });
+    #[cfg(target_os = "macos")]
+    cx.simulate_keystrokes("cmd-c");
+    #[cfg(not(target_os = "macos"))]
+    cx.simulate_keystrokes("ctrl-c");
+    let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    assert_eq!(copied.as_deref(), Some("Z"));
+}
+
+#[gpui::test]
+#[cfg(target_os = "macos")]
+fn composition_line_delete_and_cross_block_undo_use_occurrences(cx: &mut TestAppContext) {
+    use crate::{
+        ChildOccurrence, CompositionObject, CompositionRead, CompositionSession, EditorGate,
+        IdSource, ObjectVersion, encode_block,
+    };
+    use std::collections::BTreeMap;
+    let session = CompositionSession::open(
+        CompositionRead {
+            root: "note".into(),
+            root_type: "Note".into(),
+            version_tip: "tip".into(),
+            objects: [("first", "alpha"), ("second", "beta")]
+                .into_iter()
+                .map(|(id, text)| {
+                    (
+                        id.into(),
+                        CompositionObject {
+                            id: id.into(),
+                            version: ObjectVersion("v1".into()),
+                            bytes: encode_block(id, BlockType::Paragraph, text),
+                            kind_hint: Some(BlockType::Paragraph),
+                        },
+                    )
+                })
+                .collect(),
+            children: [("first", "occ-0", "a0"), ("second", "occ-1", "a1")]
+                .into_iter()
+                .map(|(child, relation, position)| ChildOccurrence {
+                    relation_id: relation.into(),
+                    parent: "note".into(),
+                    child: child.into(),
+                    slot: "body".into(),
+                    position: position.into(),
+                    child_missing: false,
+                    cycle_unresolved: false,
+                })
+                .collect(),
+            collection_versions: BTreeMap::new(),
+        },
+        EditorGate::Notes,
+        IdSource::default(),
+    );
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init(cx);
+    });
+    let (root, cx) = cx.add_window_view(|window, cx| {
+        let editor = cx.new(|cx| Editor::from_composition(session, cx));
+        editor.update(cx, |e, cx| e.focus_handle(cx).focus(window, cx));
+        Root::new(editor, window, cx)
+    });
+    let editor = root.read_with(cx, |root, _| {
+        root.view().clone().downcast::<Editor>().unwrap()
+    });
+    cx.simulate_keystrokes("cmd-right cmd-shift-left cmd-c");
+    let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    assert_eq!(
+        copied.as_deref(),
+        Some("alpha"),
+        "line selection must copy the active Child"
+    );
+    cx.simulate_keystrokes("right cmd-backspace");
+    editor.read_with(cx, |e, _| {
+        assert_eq!(
+            e.snapshots()[0].plain,
+            "",
+            "Cmd-Backspace deletes the active line"
+        );
+        assert_eq!(e.selection().head().paint_id().0, "occ-0");
+    });
+    cx.simulate_keystrokes("cmd-z");
+    editor.read_with(cx, |e, _| assert_eq!(e.snapshots()[0].plain, "alpha"));
+    editor.update(cx, |e, cx| {
+        e.select(
+            Selection::new(
+                Cursor::new("first".into(), Part::Body, 2).with_occurrence("occ-0"),
+                Cursor::new("second".into(), Part::Body, 2).with_occurrence("occ-1"),
+            ),
+            cx,
+        )
+    });
+    cx.simulate_keystrokes("cmd-c");
+    let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    assert_eq!(copied.as_deref(), Some("pha\nbe"));
+    cx.simulate_keystrokes("backspace");
+    editor.read_with(cx, |e, _| {
+        let text: Vec<_> = e.snapshots().iter().map(|s| s.plain.as_str()).collect();
+        assert_eq!(
+            text,
+            vec!["alta"],
+            "range deletion must join the selected occurrences"
+        );
+    });
+    cx.simulate_keystrokes("cmd-z");
+    editor.read_with(cx, |e, _| {
+        let text: Vec<_> = e.snapshots().iter().map(|s| s.plain.as_str()).collect();
+        assert_eq!(
+            text,
+            vec!["alpha", "beta"],
+            "undo must restore both Child occurrences"
+        );
+    });
+    editor.update(cx, |e, cx| {
+        e.select(
+            Selection::new(
+                Cursor::new("first".into(), Part::Body, 2).with_occurrence("occ-0"),
+                Cursor::new("second".into(), Part::Body, 2).with_occurrence("occ-1"),
+            ),
+            cx,
+        )
+    });
+    cx.simulate_input("X");
+    editor.read_with(cx, |e, _| {
+        let text: Vec<_> = e.snapshots().iter().map(|s| s.plain.as_str()).collect();
+        assert_eq!(
+            text,
+            vec!["alXta"],
+            "typing must replace the selected range"
+        );
+    });
+    cx.simulate_keystrokes("cmd-z");
+    editor.read_with(cx, |e, _| {
+        let text: Vec<_> = e.snapshots().iter().map(|s| s.plain.as_str()).collect();
+        assert_eq!(
+            text,
+            vec!["alpha", "beta"],
+            "one undo restores a replacement"
+        );
+    });
+    cx.simulate_keystrokes("cmd-shift-z");
+    editor.read_with(cx, |e, _| {
+        let text: Vec<_> = e.snapshots().iter().map(|s| s.plain.as_str()).collect();
+        assert_eq!(
+            text,
+            vec!["alXta"],
+            "redo must replay the replacement atomically"
+        );
+    });
+}
