@@ -3,9 +3,9 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AccessibleAction, AnyElement, App, DefiniteLength, Edges, ElementId, Entity, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement as _, Rems, RenderOnce, Role, SharedString,
-    StatefulInteractiveElement as _, StyleRefinement, Styled, TextAlign, TouchPhase, Window, div,
-    px, relative,
+    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Rems, RenderOnce, Role,
+    SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled, TextAlign, TouchPhase,
+    Window, div, px, relative,
 };
 
 use crate::button::{Button, ButtonRounded, ButtonVariants as _};
@@ -23,107 +23,6 @@ use rust_i18n::t;
 use super::state::{TextInputState, sync_focused_input_registry};
 use super::{InputContentType, InputState, sync_native_content_type};
 use crate::ThemeStyled as _;
-
-/// Registers a focus-within scope without changing its child's layout or
-/// becoming a pointer focus target. The child keeps ownership of accessible
-/// and keyboard focus.
-struct FocusWithin<E> {
-    focus_handle: gpui::FocusHandle,
-    child: E,
-}
-
-impl<E> FocusWithin<E> {
-    fn new(focus_handle: gpui::FocusHandle, child: E) -> Self {
-        Self {
-            focus_handle,
-            child,
-        }
-    }
-}
-
-impl<E: gpui::Element> IntoElement for FocusWithin<E> {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
-impl<E: gpui::Element> gpui::Element for FocusWithin<E> {
-    type RequestLayoutState = E::RequestLayoutState;
-    type PrepaintState = E::PrepaintState;
-
-    fn id(&self) -> Option<gpui::ElementId> {
-        self.child.id()
-    }
-
-    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
-        self.child.source_location()
-    }
-
-    fn a11y_role(&self) -> Option<Role> {
-        self.child.a11y_role()
-    }
-
-    fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
-        self.child.write_a11y_info(node);
-    }
-
-    fn a11y_synthetic_children(
-        &mut self,
-        prepaint: &mut Self::PrepaintState,
-        builder: &mut gpui::A11ySubtreeBuilder<'_>,
-    ) {
-        self.child.a11y_synthetic_children(prepaint, builder);
-    }
-
-    fn request_layout(
-        &mut self,
-        id: Option<&gpui::GlobalElementId>,
-        inspector_id: Option<&gpui::InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (gpui::LayoutId, Self::RequestLayoutState) {
-        self.child.request_layout(id, inspector_id, window, cx)
-    }
-
-    fn prepaint(
-        &mut self,
-        id: Option<&gpui::GlobalElementId>,
-        inspector_id: Option<&gpui::InspectorElementId>,
-        bounds: gpui::Bounds<gpui::Pixels>,
-        request_layout: &mut Self::RequestLayoutState,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Self::PrepaintState {
-        let prepaint = self
-            .child
-            .prepaint(id, inspector_id, bounds, request_layout, window, cx);
-        window.set_focus_handle(&self.focus_handle, cx);
-        prepaint
-    }
-
-    fn paint(
-        &mut self,
-        id: Option<&gpui::GlobalElementId>,
-        inspector_id: Option<&gpui::InspectorElementId>,
-        bounds: gpui::Bounds<gpui::Pixels>,
-        request_layout: &mut Self::RequestLayoutState,
-        prepaint: &mut Self::PrepaintState,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        self.child.paint(
-            id,
-            inspector_id,
-            bounds,
-            request_layout,
-            prepaint,
-            window,
-            cx,
-        );
-    }
-}
 
 #[derive(Clone, Debug)]
 struct AccessibilityText {
@@ -874,8 +773,8 @@ impl RenderOnce for Input {
         let accessibility_value = accessibility
             .as_ref()
             .map(|accessibility| accessibility.text.clone());
-        let input_focus_handle = presentation.focus_handle().clone();
-        let input_focused = input_focus_handle.is_focused(window) && !presentation.is_disabled();
+        let input_focused =
+            presentation.focus_handle().is_focused(window) && !presentation.is_disabled();
         if input_focused {
             sync_native_content_type(window, content_type, presentation.is_editable());
         }
@@ -928,12 +827,25 @@ impl RenderOnce for Input {
         let id = self
             .id
             .unwrap_or_else(|| ("input", state.entity_id()).into());
-        let input = BaseInput::new(id)
+        BaseInput::new(id)
             .focused(focused)
             .disabled(disabled)
-            .track_focus(&input_focus_handle)
+            .track_focus(&frame_focus_handle)
             .when(disabled, |this| {
                 this.capture_any_mouse_down(|_, _, cx| cx.stop_propagation())
+            })
+            // A press on the frame (padding or passive addons) focuses the
+            // editing state, which owns keyboard and IME input. Runs before
+            // the frame's own focus transfer; a focusable addon that already
+            // took focus prevents default and keeps it.
+            .when(!disabled, |this| {
+                let state = state.clone();
+                this.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    if !window.default_prevented() {
+                        state.focus(window, cx);
+                        window.prevent_default();
+                    }
+                })
             })
             .styles(|styles| {
                 styles.focused(|style| {
@@ -1049,9 +961,6 @@ impl RenderOnce for Input {
                 })
             })
             .render(window, cx)
-            .into_element();
-
-        FocusWithin::new(frame_focus_handle, input)
     }
 }
 
