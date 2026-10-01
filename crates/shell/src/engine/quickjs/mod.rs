@@ -3608,6 +3608,14 @@ impl ShellRuntime {
         scope::adopt(entry.registered_in);
 
         let outer = std::mem::take(&mut *self.arena.borrow_mut());
+        // Rows may register handlers. They go into a callback generation of
+        // their own, owned by the visible range and retired with the frame
+        // that painted it, so nothing outlives the rows on screen. Inside an
+        // open build there is no second generation to open, and the rows stay
+        // handler-free as before.
+        let interactive = !self.callbacks.borrow().is_building();
+        let callback_generation = interactive.then(|| self.callbacks.borrow_mut().begin());
+        let mut callbacks = CallbackGuard::enter(self, interactive);
         let described = self.with_js(|ctx| {
             let handler = entry.value.clone().restore(ctx)?;
             let key_handler = key_entry.value.clone().restore(ctx)?;
@@ -3646,12 +3654,44 @@ impl ShellRuntime {
         let arena = std::mem::replace(&mut *self.arena.borrow_mut(), outer);
 
         match described {
-            Ok((roots, keys)) => Some(crate::spec::ItemSpecs::new(arena, roots, keys)),
+            Ok((roots, keys)) => Some(match callback_generation {
+                Some(generation) => {
+                    self.callbacks.borrow_mut().commit();
+                    callbacks.active = false;
+                    crate::spec::ItemSpecs::leased(
+                        RenderSnapshot::new(
+                            self,
+                            generation,
+                            0,
+                            arena,
+                            entry.application.clone(),
+                            entry.view.clone(),
+                        ),
+                        roots,
+                        keys,
+                    )
+                }
+                None => crate::spec::ItemSpecs::new(arena, roots, keys),
+            }),
             Err(error) => {
                 self.report_anyhow(error);
                 None
             }
         }
+    }
+
+    /// Holds `lease`, and with it the handlers its rows registered, until the
+    /// frame that paints `element` is replaced.
+    pub(crate) fn hold_for_frame(
+        element: gpui::AnyElement,
+        lease: RenderSnapshot,
+    ) -> gpui::AnyElement {
+        use gpui::IntoElement as _;
+        FrameLease {
+            child: element,
+            lease: Some(lease),
+        }
+        .into_any_element()
     }
 
     /// Draws one piece of a dock's chrome.
@@ -5179,24 +5219,7 @@ impl ShellRuntime {
             } else {
                 None
             };
-            struct CallbackGuard<'a> {
-                runtime: &'a ShellRuntime,
-                previous: bool,
-                active: bool,
-            }
-            impl Drop for CallbackGuard<'_> {
-                fn drop(&mut self) {
-                    self.runtime.interactive_inline_layout.set(self.previous);
-                    if self.active {
-                        self.runtime.callbacks.borrow_mut().abort();
-                    }
-                }
-            }
-            let mut callbacks = CallbackGuard {
-                runtime: self,
-                previous: self.interactive_inline_layout.replace(interactive),
-                active: interactive,
-            };
+            let mut callbacks = CallbackGuard::enter(self, interactive);
             let described = self.with_js(|ctx| {
                 let handler = entry.value.clone().restore(ctx)?;
                 let mut args = JsArgs::new(ctx.clone(), arguments.len() + 1);
@@ -9578,6 +9601,34 @@ struct ComponentDataBudget {
     nodes: usize,
     string_bytes: usize,
     keys: usize,
+}
+
+/// Marks layout as frame-owned interactive for its lifetime: handlers may be
+/// registered, into a callback generation the caller commits or this guard
+/// aborts.
+struct CallbackGuard<'a> {
+    runtime: &'a ShellRuntime,
+    previous: bool,
+    active: bool,
+}
+
+impl<'a> CallbackGuard<'a> {
+    fn enter(runtime: &'a ShellRuntime, interactive: bool) -> Self {
+        Self {
+            runtime,
+            previous: runtime.interactive_inline_layout.replace(interactive),
+            active: interactive,
+        }
+    }
+}
+
+impl Drop for CallbackGuard<'_> {
+    fn drop(&mut self) {
+        self.runtime.interactive_inline_layout.set(self.previous);
+        if self.active {
+            self.runtime.callbacks.borrow_mut().abort();
+        }
+    }
 }
 
 /// Lays out, prepaints and paints its one child as if it were not there, so a
