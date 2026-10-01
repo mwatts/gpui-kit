@@ -854,6 +854,11 @@ impl SpecNode {
     }
 }
 
+enum ItemArena {
+    Owned(SpecArena),
+    Leased(crate::snapshot::RenderSnapshot),
+}
+
 /// The descriptions one call to a virtualized list's item renderer produced.
 ///
 /// A batch of rows is described into an arena of its own rather than into the
@@ -863,18 +868,48 @@ impl SpecNode {
 /// outlives the frame that drew it — and two batches cannot see each other's
 /// nodes.
 pub struct ItemSpecs {
-    arena: SpecArena,
+    arena: ItemArena,
     roots: SmallVec<[SpecId; 16]>,
     keys: Vec<String>,
 }
 
 impl ItemSpecs {
     pub(crate) fn new(arena: SpecArena, roots: SmallVec<[SpecId; 16]>, keys: Vec<String>) -> Self {
-        Self { arena, roots, keys }
+        Self {
+            arena: ItemArena::Owned(arena),
+            roots,
+            keys,
+        }
+    }
+
+    /// Rows that registered handlers: the snapshot owns the arena and, until it
+    /// is dropped, those handlers.
+    pub(crate) fn leased(
+        snapshot: crate::snapshot::RenderSnapshot,
+        roots: SmallVec<[SpecId; 16]>,
+        keys: Vec<String>,
+    ) -> Self {
+        Self {
+            arena: ItemArena::Leased(snapshot),
+            roots,
+            keys,
+        }
+    }
+
+    /// The snapshot holding this range's handlers, if rows could register any.
+    /// Whoever paints the rows keeps it for the frame.
+    pub(crate) fn lease(&self) -> Option<crate::snapshot::RenderSnapshot> {
+        match &self.arena {
+            ItemArena::Leased(snapshot) => Some(snapshot.clone()),
+            ItemArena::Owned(_) => None,
+        }
     }
 
     pub fn arena(&self) -> &SpecArena {
-        &self.arena
+        match &self.arena {
+            ItemArena::Owned(arena) => arena,
+            ItemArena::Leased(snapshot) => snapshot.arena(),
+        }
     }
 
     /// One root per item, in the order the script returned them.

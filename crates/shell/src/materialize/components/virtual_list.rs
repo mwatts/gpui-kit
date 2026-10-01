@@ -260,16 +260,23 @@ pub(in crate::materialize) fn render_range(
             );
         }
 
+        // Handlers the rows registered live as long as the frame that paints
+        // them; the first row carries the lease.
+        let mut lease = described.lease();
         described
             .roots()
             .iter()
             .zip(described.keys())
             .map(|(root, key)| {
                 let item = materialize_subtree(&runtime, described.arena(), *root, window, cx);
-                if handlers.is_empty() {
+                let item = if handlers.is_empty() {
                     item
                 } else {
                     clickable(item, key.clone(), handlers, &runtime)
+                };
+                match lease.take() {
+                    Some(lease) => crate::ShellRuntime::hold_for_frame(item, lease),
+                    None => item,
                 }
             })
             .collect()
