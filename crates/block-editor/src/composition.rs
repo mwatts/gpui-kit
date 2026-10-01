@@ -310,6 +310,7 @@ impl ContentSession {
 
 #[derive(Clone)]
 enum UndoEntry {
+    Group(Vec<UndoEntry>),
     Content(ObjectId),
     Structure(StructureUndo),
 }
@@ -382,6 +383,38 @@ fn prune_reloaded(log: &mut Vec<UndoEntry>, id: &str) {
     let mut kept: Vec<UndoEntry> = Vec::with_capacity(log.len());
     for entry in log.drain(..).rev() {
         let keep = match &entry {
+            UndoEntry::Group(entries) => {
+                fn content(entry: &UndoEntry, ids: &mut HashSet<ObjectId>, structure: &mut bool) {
+                    match entry {
+                        UndoEntry::Content(id) => {
+                            ids.insert(id.clone());
+                        }
+                        UndoEntry::Structure(change) => {
+                            *structure = true;
+                            if let Some(id) = change.content_object() {
+                                ids.insert(id.to_owned());
+                            }
+                        }
+                        UndoEntry::Group(entries) => {
+                            for entry in entries {
+                                content(entry, ids, structure);
+                            }
+                        }
+                    }
+                }
+                let mut ids = HashSet::new();
+                let mut structure = false;
+                for entry in entries {
+                    content(entry, &mut ids, &mut structure);
+                }
+                let compatible =
+                    !ids.contains(id) && ids.is_disjoint(&desynced) && !(barrier && structure);
+                if !compatible {
+                    barrier |= structure;
+                    desynced.extend(ids);
+                }
+                compatible
+            }
             UndoEntry::Content(object) => object != id && !desynced.contains(object),
             UndoEntry::Structure(change) => {
                 let object = change.content_object();
@@ -654,21 +687,66 @@ impl CompositionSession {
         }
     }
 
-    pub fn undo(&mut self) -> bool {
-        let Some(entry) = self.undo_log.pop() else {
-            return false;
-        };
-        let did = match &entry {
+    /// Keep a single keyboard range operation atomic in per-object undo.
+    pub(crate) fn apply_group(&mut self, ops: &[(BlockOp, Option<BlockId>)]) -> ApplyResult {
+        let start = self.undo_checkpoint();
+        let mut result = ApplyResult::default();
+        for (op, occurrence) in ops {
+            result = self.apply(op.clone(), occurrence.as_ref());
+        }
+        self.group_since(start);
+        result
+    }
+
+    pub(crate) fn undo_checkpoint(&self) -> usize {
+        self.undo_log.len()
+    }
+
+    pub(crate) fn group_since(&mut self, start: usize) {
+        if self.undo_log.len() > start + 1 {
+            let entries = self.undo_log.drain(start..).collect();
+            self.undo_log.push(UndoEntry::Group(entries));
+        }
+    }
+
+    fn reverse_entry(&mut self, entry: &UndoEntry, redo: bool) -> bool {
+        match entry {
+            UndoEntry::Group(entries) => {
+                let mut did = false;
+                if redo {
+                    for entry in entries {
+                        did |= self.reverse_entry(entry, true);
+                    }
+                } else {
+                    for entry in entries.iter().rev() {
+                        did |= self.reverse_entry(entry, false);
+                    }
+                }
+                did
+            }
             UndoEntry::Content(id) => self
                 .objects
                 .get_mut(id)
                 .and_then(|session| session.document.as_mut())
-                .is_some_and(BlockDocument::undo),
+                .is_some_and(|document| {
+                    if redo {
+                        document.redo()
+                    } else {
+                        document.undo()
+                    }
+                }),
             UndoEntry::Structure(change) => {
-                self.reverse_structure(change, false);
+                self.reverse_structure(change, redo);
                 true
             }
+        }
+    }
+
+    pub fn undo(&mut self) -> bool {
+        let Some(entry) = self.undo_log.pop() else {
+            return false;
         };
+        let did = self.reverse_entry(&entry, false);
         if did {
             self.redo_log.push(entry);
             self.reproject();
@@ -680,17 +758,7 @@ impl CompositionSession {
         let Some(entry) = self.redo_log.pop() else {
             return false;
         };
-        let did = match &entry {
-            UndoEntry::Content(id) => self
-                .objects
-                .get_mut(id)
-                .and_then(|session| session.document.as_mut())
-                .is_some_and(BlockDocument::redo),
-            UndoEntry::Structure(change) => {
-                self.reverse_structure(change, true);
-                true
-            }
-        };
+        let did = self.reverse_entry(&entry, true);
         if did {
             self.undo_log.push(entry);
             self.reproject();

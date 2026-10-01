@@ -893,6 +893,14 @@ impl Editor {
         Selection::new(clamp(selection.anchor), clamp(selection.focus))
     }
 
+    fn place(&mut self, to: Cursor, extend: bool) {
+        if extend {
+            self.selection = self.selection.extend_to(to);
+        } else {
+            self.selection = Selection::caret(to);
+        }
+    }
+
     fn caret_moved(&mut self) {
         self.blink = None;
     }
@@ -931,9 +939,13 @@ impl Editor {
         if text.is_empty() || self.read_only {
             return;
         }
+        let checkpoint = self
+            .bridge
+            .as_ref()
+            .map(|session| session.undo_checkpoint());
         // Prefix shortcut: completing character must not be inserted.
         let head = self.selection.head().clone();
-        if head.part == Part::Body {
+        if self.selection.is_collapsed() && head.part == Part::Body {
             if let Some(snap) = self.snapshots().iter().find(|s| s.id == head.id) {
                 if let Some(ops) = try_prefix(head.id.clone(), &snap.plain, text) {
                     self.apply_many(&ops, cx);
@@ -944,17 +956,7 @@ impl Editor {
         }
 
         if !self.selection.is_collapsed() {
-            let (start, end) = self.selection.ordered();
-            if start.id == end.id {
-                self.apply(
-                    BlockOp::DeleteRange {
-                        id: start.id.clone(),
-                        start: start.offset.min(end.offset),
-                        end: start.offset.max(end.offset),
-                    },
-                    cx,
-                );
-            }
+            self.delete_back(cx);
         }
 
         let head = self.selection.head().clone();
@@ -1010,7 +1012,10 @@ impl Editor {
             .find(|s| s.id == head.id)
             .map(|s| s.plain.len())
             .unwrap_or(offset);
-        self.selection = Selection::caret(Cursor::new(head.id, head.part, offset.min(len)));
+        self.selection = Selection::caret(head.with_offset(offset.min(len)));
+        if let (Some(session), Some(checkpoint)) = (self.bridge.as_mut(), checkpoint) {
+            session.group_since(checkpoint);
+        }
         self.after_edit(text, cx);
     }
 
@@ -1031,10 +1036,7 @@ impl Editor {
                     .is_none_or(char::is_whitespace)
             });
             if let Some(slash) = opened.filter(|_| starts_word && at.part == Part::Body) {
-                self.slash = Some(Slash::open_in(
-                    Cursor::new(at.id.clone(), at.part, slash),
-                    cx,
-                ));
+                self.slash = Some(Slash::open_in(at.with_offset(slash), cx));
                 self.slash_scroll.set_offset(gpui::point(px(0.), px(0.)));
             }
             return;
@@ -1100,7 +1102,7 @@ impl Editor {
             }
         }
         self.apply_many(&ops, cx);
-        self.selection = Selection::caret(Cursor::new(at.id, Part::Body, at.offset));
+        self.selection = Selection::caret(at);
         true
     }
 
@@ -1199,33 +1201,83 @@ impl Editor {
             .find(|s| s.id == at.id)
             .is_some_and(|s| s.plain.is_empty() || s.plain == url);
         self.insert_text(&url, cx);
-        let at = Cursor::new(
-            at.id,
-            at.part,
-            self.selection.head().offset.saturating_sub(url.len()),
-        );
+        let at = at.with_offset(self.selection.head().offset.saturating_sub(url.len()));
         self.pasted = Some(link::Paste::open(at, url, alone));
         cx.notify();
     }
 
     fn delete_back(&mut self, cx: &mut Context<Self>) {
         if !self.selection.is_collapsed() {
-            let (start, end) = self.selection.ordered();
-            if start.id == end.id {
-                self.apply(
-                    BlockOp::DeleteRange {
-                        id: start.id.clone(),
-                        start: start.offset.min(end.offset),
-                        end: start.offset.max(end.offset),
+            let snapshots = self.snapshots();
+            let a = snapshots
+                .iter()
+                .position(|s| s.paint_id() == self.selection.anchor.paint_id());
+            let b = snapshots
+                .iter()
+                .position(|s| s.paint_id() == self.selection.focus.paint_id());
+            let (Some(a), Some(b)) = (a, b) else {
+                return;
+            };
+            let (first, start, last, end) =
+                if (a, self.selection.anchor.offset) <= (b, self.selection.focus.offset) {
+                    (
+                        a,
+                        self.selection.anchor.clone(),
+                        b,
+                        self.selection.focus.clone(),
+                    )
+                } else {
+                    (
+                        b,
+                        self.selection.focus.clone(),
+                        a,
+                        self.selection.anchor.clone(),
+                    )
+                };
+            let mut ops = vec![(
+                BlockOp::DeleteRange {
+                    id: start.id.clone(),
+                    start: start.offset,
+                    end: if first == last {
+                        end.offset
+                    } else {
+                        snapshots[first].plain.len()
                     },
-                    cx,
-                );
-                self.selection = Selection::caret(Cursor::new(
-                    start.id,
-                    start.part,
-                    start.offset.min(end.offset),
+                },
+                start.occurrence.clone(),
+            )];
+            if first != last {
+                ops.push((
+                    BlockOp::DeleteRange {
+                        id: end.id.clone(),
+                        start: 0,
+                        end: end.offset,
+                    },
+                    end.occurrence.clone(),
+                ));
+                for snapshot in &snapshots[first + 1..last] {
+                    ops.push((
+                        BlockOp::DeleteBlock {
+                            id: snapshot.id.clone(),
+                        },
+                        snapshot.occurrence_id.clone(),
+                    ));
+                }
+                ops.push((
+                    BlockOp::MergeWithPrevious { id: end.id.clone() },
+                    end.occurrence.clone(),
                 ));
             }
+            if let Some(session) = &mut self.bridge {
+                session.apply_group(&ops);
+            } else {
+                self.document
+                    .apply_many(&ops.iter().map(|(op, _)| op.clone()).collect::<Vec<_>>());
+            }
+            self.selection = Selection::caret(start);
+            self.refresh_annotations();
+            cx.emit(EditorEvent::Changed);
+            cx.notify();
             self.after_edit("", cx);
             return;
         }
@@ -1249,7 +1301,7 @@ impl Editor {
                 },
                 cx,
             );
-            self.selection = Selection::caret(Cursor::new(at.id, at.part, prev));
+            self.selection = Selection::caret(at.with_offset(prev));
             self.track_slash("", cx);
             self.after_edit("", cx);
             return;
@@ -1297,6 +1349,29 @@ impl Editor {
     }
 
     fn move_horizontal(&mut self, extend: bool, forward: bool, cx: &mut Context<Self>) {
+        if !extend && !self.selection.is_collapsed() {
+            let snapshots = self.snapshots();
+            let order = |cursor: &Cursor| {
+                (
+                    snapshots
+                        .iter()
+                        .position(|s| s.paint_id() == cursor.paint_id())
+                        .unwrap_or(0),
+                    cursor.offset,
+                )
+            };
+            let (a, b) = (&self.selection.anchor, &self.selection.focus);
+            let to = if (order(a) <= order(b)) == forward {
+                b
+            } else {
+                a
+            };
+            self.selection = Selection::caret(to.clone());
+            self.goal = None;
+            self.caret_moved();
+            cx.notify();
+            return;
+        }
         let at = self.selection.head().clone();
         let plain = self
             .snapshots()
@@ -1316,12 +1391,7 @@ impl Editor {
                 .and_then(|s| s.char_indices().next_back().map(|(i, _)| i))
                 .unwrap_or(0)
         };
-        let to = Cursor::new(at.id, at.part, next);
-        if extend {
-            self.selection = self.selection.extend_to(to);
-        } else {
-            self.selection = Selection::caret(to);
-        }
+        self.place(at.with_offset(next), extend);
         self.goal = None;
         self.caret_moved();
         cx.notify();
@@ -1344,12 +1414,7 @@ impl Editor {
         if next == at.offset {
             return self.move_horizontal(extend, forward, cx);
         }
-        let to = Cursor::new(at.id, at.part, next);
-        if extend {
-            self.selection = self.selection.extend_to(to);
-        } else {
-            self.selection = Selection::caret(to);
-        }
+        self.place(at.with_offset(next), extend);
         self.goal = None;
         self.caret_moved();
         cx.notify();
@@ -1395,7 +1460,7 @@ impl Editor {
             },
             cx,
         );
-        self.selection = Selection::caret(Cursor::new(at.id, at.part, start));
+        self.selection = Selection::caret(at.with_offset(start));
         self.after_edit("", cx);
     }
 
@@ -1448,12 +1513,7 @@ impl Editor {
             .map(|s| s.plain.as_str())
             .unwrap_or("");
         let offset = if end { plain.len() } else { 0 };
-        let to = Cursor::new(at.id, at.part, offset);
-        if extend {
-            self.selection = self.selection.extend_to(to);
-        } else {
-            self.selection = Selection::caret(to);
-        }
+        self.place(at.with_offset(offset), extend);
         self.goal = None;
         self.caret_moved();
         cx.notify();
@@ -1820,7 +1880,7 @@ impl Editor {
                 },
                 cx,
             );
-            self.selection = Selection::caret(Cursor::new(at.id, at.part, 0));
+            self.selection = Selection::caret(at.with_offset(0));
         }
     }
 
@@ -1924,10 +1984,15 @@ impl Editor {
                 // Replacing stored text must keep the active code selection.
                 this.selection =
                     if selection.head().id == block_id && selection.head().part == Part::Code {
-                        Selection::new(
-                            Cursor::new(block_id.clone(), Part::Code, anchor),
-                            Cursor::new(block_id.clone(), Part::Code, cursor),
-                        )
+                        let occurrence = selection.head().occurrence.clone();
+                        let end = |offset| {
+                            let cursor = Cursor::new(block_id.clone(), Part::Code, offset);
+                            match &occurrence {
+                                Some(occurrence) => cursor.with_occurrence(occurrence.clone()),
+                                None => cursor,
+                            }
+                        };
+                        Selection::new(end(anchor), end(cursor))
                     } else {
                         selection
                     };

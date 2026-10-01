@@ -69,6 +69,13 @@ impl Cursor {
         self
     }
 
+    /// Move within the same block and Child occurrence.
+    #[must_use]
+    pub fn with_offset(mut self, offset: usize) -> Self {
+        self.offset = offset;
+        self
+    }
+
     /// Row identity used for paint and hit-testing: occurrence, else content.
     #[must_use]
     pub fn paint_id(&self) -> &BlockId {
@@ -205,6 +212,7 @@ pub enum Caption {
 pub struct Composition {
     id: BlockId,
     part: Part,
+    occurrence: Option<BlockId>,
     range: Range<usize>,
     text: String,
     selection: Range<usize>,
@@ -217,10 +225,23 @@ impl Composition {
         Self {
             id,
             part,
+            occurrence: None,
             range,
             text: String::new(),
             selection: 0..0,
         }
+    }
+
+    /// Bind the preedit to the Child occurrence being edited.
+    #[must_use]
+    pub fn with_occurrence(mut self, occurrence: impl Into<BlockId>) -> Self {
+        self.occurrence = Some(occurrence.into());
+        self
+    }
+
+    #[must_use]
+    pub fn occurrence(&self) -> Option<&BlockId> {
+        self.occurrence.as_ref()
     }
 
     /// Sets the transient preedit text without changing the document.
@@ -271,17 +292,16 @@ impl Composition {
     /// Returns the preedit selection in projected UTF-8 text coordinates.
     #[must_use]
     pub fn projected_selection(&self) -> Selection {
+        let cursor = |offset| {
+            let cursor = Cursor::new(self.id.clone(), self.part, offset);
+            match &self.occurrence {
+                Some(occurrence) => cursor.with_occurrence(occurrence.clone()),
+                None => cursor,
+            }
+        };
         Selection::new(
-            Cursor::new(
-                self.id.clone(),
-                self.part,
-                self.range.start + self.selection.start,
-            ),
-            Cursor::new(
-                self.id.clone(),
-                self.part,
-                self.range.start + self.selection.end,
-            ),
+            cursor(self.range.start + self.selection.start),
+            cursor(self.range.start + self.selection.end),
         )
     }
 
