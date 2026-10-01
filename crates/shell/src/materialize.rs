@@ -41,9 +41,9 @@
 //! * **It is scoped.** Item rendering runs under [`ScopePhase::Layout`], which
 //!   forbids `cx.notify()` (a re-render requested from inside layout is a loop),
 //!   forbids creating retained state, and runs on the render-time budget.
-//! * **It registers nothing.** Callbacks cannot be registered from an item
-//!   renderer — see [`components::virtual_list`] for why, and for what a script
-//!   uses instead.
+//! * **Its handlers live one frame.** The visible rows' callbacks go into their
+//!   own generation, leased to the next frame and retired when it replaces them
+//!   — see [`components::virtual_list`].
 //! * **It owns no arena.** Each batch describes itself into a temporary
 //!   [`SpecArena`] that is materialized through [`materialize_subtree`] and
 //!   dropped before the call returns, so nothing a row described outlives the
