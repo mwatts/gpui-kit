@@ -30,6 +30,11 @@ struct Delegate {
     rows: ComponentDelegateSnapshot,
     render_cell: Option<ComponentElementCallback>,
     ids: Vec<String>,
+    /// Range-backed mode: the total row count. `rows` then holds only the
+    /// resident window, which starts at `window_start`.
+    row_count: Option<usize>,
+    window_start: usize,
+    on_range: Option<ComponentCallback>,
     on_sort: Option<ComponentCallback>,
     header_bg: Option<gpui::Hsla>,
     header_fg: Option<gpui::Hsla>,
@@ -46,10 +51,23 @@ impl Delegate {
             rows: ComponentDelegateSnapshot::new(Vec::new()),
             render_cell: None,
             ids: Vec::new(),
+            row_count: None,
+            window_start: 0,
+            on_range: None,
             on_sort: None,
             header_bg: None,
             header_fg: None,
             header_text_size: None,
+        }
+    }
+
+    /// The row painted at `ix`: in range-backed mode `None` outside the
+    /// resident window (a placeholder), in array mode `None` only out of bounds.
+    fn row_at(&self, ix: usize) -> Option<&ComponentDataValue> {
+        match self.row_count {
+            Some(count) if ix >= count => None,
+            Some(_) => self.rows.row(ix.checked_sub(self.window_start)?).ok(),
+            None => self.rows.row(ix).ok(),
         }
     }
 
@@ -82,7 +100,28 @@ impl TableDelegate for Delegate {
         self.columns.len()
     }
     fn rows_count(&self, _: &gpui::App) -> usize {
-        self.rows.len()
+        self.row_count.unwrap_or_else(|| self.rows.len())
+    }
+    fn visible_rows_changed(
+        &mut self,
+        visible_range: std::ops::Range<usize>,
+        window: &mut Window,
+        cx: &mut gpui::Context<TableState<Self>>,
+    ) {
+        #[cfg(test)]
+        test_probe::range(visible_range.start, visible_range.end);
+        let Some(callback) = self.on_range.clone() else {
+            return;
+        };
+        callback.invoke_and_report_with(
+            "DataTable.on_range",
+            &[
+                ComponentCallbackArgument::Number(visible_range.start as f64),
+                ComponentCallbackArgument::Number(visible_range.end as f64),
+            ],
+            window,
+            cx,
+        );
     }
     fn column(&self, col_ix: usize, _: &gpui::App) -> Column {
         self.columns[col_ix].clone()
@@ -129,12 +168,11 @@ impl TableDelegate for Delegate {
         _: &mut gpui::Window,
         _: &mut gpui::Context<TableState<Self>>,
     ) -> gpui::Stateful<gpui::Div> {
-        let label = self
-            .rows
-            .row(row_ix)
-            .ok()
-            .and_then(|row| object_string_field(row, "accessibility_label"))
-            .map(str::to_owned);
+        let label = match self.row_at(row_ix) {
+            Some(row) => object_string_field(row, "accessibility_label").map(str::to_owned),
+            None if self.row_count.is_some() => Some("Loading".to_owned()),
+            None => None,
+        };
         #[cfg(test)]
         test_probe::label(row_ix, label.clone());
         row_element(row_ix, label)
@@ -146,12 +184,19 @@ impl TableDelegate for Delegate {
         window: &mut gpui::Window,
         cx: &mut gpui::Context<TableState<Self>>,
     ) -> impl gpui::IntoElement {
+        if self.row_count.is_some() && self.row_at(row_ix).is_none() {
+            // A placeholder: the row is outside the resident window.
+            return gpui::div().into_any_element();
+        }
         let result = (|| {
             let callback = self
                 .render_cell
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("DataTable cell renderer is unavailable"))?;
-            let row = self.rows.row(row_ix)?.clone();
+            let row = self
+                .row_at(row_ix)
+                .ok_or_else(|| anyhow::anyhow!("DataTable row index {row_ix} is out of bounds"))?
+                .clone();
             let key = self
                 .columns
                 .get(col_ix)
@@ -183,7 +228,7 @@ impl TableDelegate for Delegate {
         let Some(column) = self.columns.get(col_ix) else {
             return String::new();
         };
-        let Ok(ComponentDataValue::Object(fields)) = self.rows.row(row_ix) else {
+        let Some(ComponentDataValue::Object(fields)) = self.row_at(row_ix) else {
             return String::new();
         };
         fields
@@ -254,6 +299,9 @@ enum Op {
     Sortable(bool),
     ColResizable(bool),
     ColMovable(bool),
+    RowCount(usize),
+    RowsWindow(usize, ComponentArgument),
+    OnRange(ComponentArgument),
     OnSort(ComponentArgument),
     OnSelect(ComponentArgument),
     OnActivate(ComponentArgument),
@@ -293,6 +341,21 @@ impl ComponentMaterializer for Materializer {
         if (sortable || sortable_columns.is_some()) && on_sort.is_none() {
             anyhow::bail!("DataTable.sortable requires an on_sort callback");
         }
+        let row_count = ops.iter().find_map(|op| match op {
+            Op::RowCount(count) => Some(*count),
+            _ => None,
+        });
+        let window_op = ops.iter().find_map(|op| match op {
+            Op::RowsWindow(start, argument) => Some((*start, argument.clone())),
+            _ => None,
+        });
+        let on_range = ops.iter().find_map(|op| match op {
+            Op::OnRange(argument) => Some(argument.clone()),
+            _ => None,
+        });
+        if (window_op.is_some() || on_range.is_some()) && row_count.is_none() {
+            anyhow::bail!("DataTable.rows_window and on_range require row_count");
+        }
         let on_select = ops.iter().find_map(|op| match op {
             Op::OnSelect(argument) => Some(argument.clone()),
             _ => None,
@@ -315,6 +378,16 @@ impl ComponentMaterializer for Materializer {
             request.with_state::<Entity<TableState<Delegate>>, _>(&payload.state, Clone::clone)?;
         let rows = request.resolve_data_callback(&payload.rows)?;
         let cell = request.resolve_element_callback(&payload.cell)?;
+        let window = window_op
+            .map(|(start, argument)| {
+                request
+                    .resolve_data_callback(&argument)
+                    .map(|rows| (start, rows))
+            })
+            .transpose()?;
+        let on_range = on_range
+            .map(|argument| request.resolve_callback(&argument))
+            .transpose()?;
         let on_sort = on_sort
             .map(|argument| request.resolve_callback(&argument))
             .transpose()?;
@@ -329,6 +402,9 @@ impl ComponentMaterializer for Materializer {
             state,
             rows,
             cell,
+            row_count,
+            window,
+            on_range,
             ops,
             on_sort,
             on_select,
@@ -401,6 +477,8 @@ struct TableHost {
     state: Entity<TableState<Delegate>>,
     callback: Rc<RefCell<TableCallbacks>>,
     ids: Rc<RefCell<Vec<String>>>,
+    /// The table index of `ids[0]`: the start of the resident window.
+    id_offset: Rc<Cell<usize>>,
     last_id: Rc<RefCell<Option<String>>>,
     /// The row the host itself selected. `TableState` emits `SelectRow` as
     /// a deferred effect, so a flag set around `set_selected_row` is already
@@ -415,6 +493,9 @@ struct DataTableHost {
     state: Entity<TableState<Delegate>>,
     rows: gpui_shell::ComponentDataCallback,
     cell: ComponentElementCallback,
+    row_count: Option<usize>,
+    window: Option<(usize, gpui_shell::ComponentDataCallback)>,
+    on_range: Option<ComponentCallback>,
     ops: Vec<Op>,
     on_sort: Option<ComponentCallback>,
     on_select: Option<ComponentCallback>,
@@ -427,7 +508,13 @@ struct DataTableHost {
 
 impl RenderOnce for DataTableHost {
     fn render(self, window: &mut gpui::Window, cx: &mut gpui::App) -> impl gpui::IntoElement {
-        let snapshot = match self.rows.snapshot_rows_with(&[], window, cx) {
+        // Range-backed mode snapshots only the resident window, and the id
+        // check below runs over those rows alone, never over `row_count`.
+        let (window_start, rows_source) = match &self.window {
+            Some((start, rows)) => (*start, rows),
+            None => (0, &self.rows),
+        };
+        let snapshot = match rows_source.snapshot_rows_with(&[], window, cx) {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 let message =
@@ -437,6 +524,8 @@ impl RenderOnce for DataTableHost {
                 return gpui::div().child(message).into_any_element();
             }
         };
+        #[cfg(test)]
+        test_probe::snapshot(snapshot.len(), self.row_count);
         let selection_used =
             self.on_select.is_some() || self.on_activate.is_some() || self.selected.is_some();
         let ids = if selection_used {
@@ -466,11 +555,13 @@ impl RenderOnce for DataTableHost {
                 move |window, cx| {
                     let callback = Rc::new(RefCell::new(event_callbacks));
                     let ids = Rc::new(RefCell::new(Vec::<String>::new()));
+                    let id_offset = Rc::new(Cell::new(0usize));
                     let last_id = Rc::new(RefCell::new(None::<String>));
                     let suppress = Rc::new(Cell::new(None::<usize>));
                     let cleared = Rc::new(Cell::new(false));
                     let event_callback = callback.clone();
                     let event_ids = ids.clone();
+                    let event_offset = id_offset.clone();
                     let event_last = last_id.clone();
                     let event_suppress = suppress.clone();
                     let subscription =
@@ -484,7 +575,10 @@ impl RenderOnce for DataTableHost {
                             match event {
                                 TableEvent::SelectRow(index) => {
                                     let ids = event_ids.borrow();
-                                    let Some(id) = ids.get(*index).cloned() else {
+                                    let Some(id) = index
+                                        .checked_sub(event_offset.get())
+                                        .and_then(|local| ids.get(local).cloned())
+                                    else {
                                         return;
                                     };
                                     drop(ids);
@@ -505,7 +599,10 @@ impl RenderOnce for DataTableHost {
                                 }
                                 TableEvent::DoubleClickedRow(index) => {
                                     let ids = event_ids.borrow();
-                                    let Some(id) = ids.get(*index).cloned() else {
+                                    let Some(id) = index
+                                        .checked_sub(event_offset.get())
+                                        .and_then(|local| ids.get(local).cloned())
+                                    else {
                                         return;
                                     };
                                     drop(ids);
@@ -530,6 +627,7 @@ impl RenderOnce for DataTableHost {
                         state,
                         callback,
                         ids,
+                        id_offset,
                         last_id,
                         suppress,
                         cleared,
@@ -538,10 +636,11 @@ impl RenderOnce for DataTableHost {
                 }
             },
         );
-        let (ids_cell, last_id, suppress, cleared, callback) = {
+        let (ids_cell, id_offset, last_id, suppress, cleared, callback) = {
             let host = host.read(cx);
             (
                 host.ids.clone(),
+                host.id_offset.clone(),
                 host.last_id.clone(),
                 host.suppress.clone(),
                 host.cleared.clone(),
@@ -553,9 +652,14 @@ impl RenderOnce for DataTableHost {
             on_activate: self.on_activate,
         };
         *ids_cell.borrow_mut() = ids.clone();
+        id_offset.set(window_start);
+        let windowed = self.row_count.is_some();
         let target = self.selected.clone().or_else(|| last_id.borrow().clone());
         self.state.update(cx, |state, cx| {
             state.delegate_mut().rows = snapshot;
+            state.delegate_mut().row_count = self.row_count;
+            state.delegate_mut().window_start = window_start;
+            state.delegate_mut().on_range = self.on_range;
             state.delegate_mut().render_cell = Some(self.cell);
             state.delegate_mut().ids = ids.clone();
             state.delegate_mut().on_sort = self.on_sort;
@@ -596,7 +700,9 @@ impl RenderOnce for DataTableHost {
             }
             state.refresh(cx);
             if let Some(id) = target {
-                match ids.iter().position(|row| row == &id) {
+                match ids.iter().position(|row| row == &id).map(|i| i + window_start) {
+                    // The selected row is scrolled out of the window: keep it.
+                    None if windowed => {}
                     Some(index) => {
                         cleared.set(false);
                         if state.selected_row() != Some(index) {
@@ -738,6 +844,15 @@ pub(super) fn register(registry: &mut ComponentRegistry) -> Result<(), RegistryE
                 Ok(ComponentPayload::new(Op::ColumnWidths(widths)))
             },_=>Err("column_widths requires numbers".into())}).with_documentation("Sets initial column widths in pixels, in column order."),
             bool_method("DataTable", "row_selectable", "Sets native DataTable behavior.", Op::RowSelectable), bool_method("DataTable", "column_selectable", "Sets native DataTable behavior.", Op::ColSelectable), bool_method("DataTable", "cell_selectable", "Sets native DataTable behavior.", Op::CellSelectable), bool_method("DataTable", "row_header", "Sets native DataTable behavior.", Op::RowHeader), bool_method("DataTable", "sortable", "Sets native DataTable behavior.", Op::Sortable), bool_method("DataTable", "column_resizable", "Sets native DataTable behavior.", Op::ColResizable), bool_method("DataTable", "column_movable", "Sets native DataTable behavior.", Op::ColMovable),
+            MethodDescriptor::new("row_count", vec![ArgumentDescriptor::new("count", ArgumentSchema::Number)], |args| match args {
+                [ComponentArgument::Number(count)] if count.is_finite() && *count >= 0. && count.fract() == 0. && *count <= 1e12 => Ok(ComponentPayload::new(Op::RowCount(*count as usize))),
+                _ => Err("DataTable.row_count expects a non-negative whole number".into()),
+            }).with_documentation("Range-backed mode: the table paints this many rows and only the window given by rows_window is real; other rows paint a placeholder. Without row_count the table is array-backed."),
+            MethodDescriptor::new("rows_window", vec![ArgumentDescriptor::new("start", ArgumentSchema::Number), ArgumentDescriptor::new("rows", ArgumentSchema::Callback("(cx: Context) => readonly unknown[]"))], |args| match args {
+                [ComponentArgument::Number(start), rows @ ComponentArgument::Callback(_)] if start.is_finite() && *start >= 0. && start.fract() == 0. && *start <= 1e12 => Ok(ComponentPayload::new(Op::RowsWindow(*start as usize, rows.clone()))),
+                _ => Err("DataTable.rows_window expects a whole-number start and a rows callback".into()),
+            }).with_documentation("Replaces the resident window: the rows callback returns rows start..start+len. Row ids are checked for uniqueness within the window only. Requires row_count."),
+            MethodDescriptor::new("on_range", vec![ArgumentDescriptor::new("on_range", ArgumentSchema::Callback("(start: number, end: number, cx: Context) => void"))], |args| match args { [argument @ ComponentArgument::Callback(_)] => Ok(ComponentPayload::new(Op::OnRange(argument.clone()))), _ => Err("DataTable.on_range expects one callback".into()) }).with_documentation("Reports the visible row range (end exclusive) whenever it changes. Requires row_count."),
             MethodDescriptor::new("on_sort", vec![ArgumentDescriptor::new("on_sort", ArgumentSchema::Callback("(key: string, direction: string, cx: Context) => void"))], |args| match args { [argument @ ComponentArgument::Callback(_)] => Ok(ComponentPayload::new(Op::OnSort(argument.clone()))), _ => Err("DataTable.on_sort expects one callback".into()) }).with_documentation("Reports a sort request; the delegate does not reorder rows."),
             MethodDescriptor::new("sortable_columns", vec![ArgumentDescriptor::new("keys", ArgumentSchema::Array(Box::new(ArgumentSchema::String)))], |args| match args { [ComponentArgument::Array(keys)] => {
                 let keys = keys.iter().map(|key| match key { ComponentArgument::String(key) if !key.is_empty() => Ok(key.clone()), _ => Err("DataTable.sortable_columns expects string keys") }).collect::<Result<Vec<_>, _>>()?;
@@ -779,6 +894,8 @@ pub(crate) mod test_probe {
         static CLEARS: Cell<usize> = const { Cell::new(0) };
         static SELECTED_ROWS: RefCell<Vec<Option<usize>>> = const { RefCell::new(Vec::new()) };
         static LABELS: RefCell<Vec<(usize, Option<String>)>> = const { RefCell::new(Vec::new()) };
+        static SNAPSHOTS: RefCell<Vec<(usize, Option<usize>)>> = const { RefCell::new(Vec::new()) };
+        static RANGES: RefCell<Vec<(usize, usize)>> = const { RefCell::new(Vec::new()) };
         static HEADER_SIZES: RefCell<Vec<(usize, Option<gpui::AbsoluteLength>)>> = const { RefCell::new(Vec::new()) };
     }
     pub(super) fn header_text_size(column: usize, size: Option<gpui::AbsoluteLength>) {
@@ -786,6 +903,18 @@ pub(crate) mod test_probe {
     }
     pub(crate) fn take_header_text_sizes() -> Vec<(usize, Option<gpui::AbsoluteLength>)> {
         HEADER_SIZES.with(|values| std::mem::take(&mut *values.borrow_mut()))
+    }
+    pub(super) fn snapshot(len: usize, row_count: Option<usize>) {
+        SNAPSHOTS.with(|values| values.borrow_mut().push((len, row_count)));
+    }
+    pub(crate) fn take_snapshots() -> Vec<(usize, Option<usize>)> {
+        SNAPSHOTS.with(|values| std::mem::take(&mut *values.borrow_mut()))
+    }
+    pub(super) fn range(start: usize, end: usize) {
+        RANGES.with(|values| values.borrow_mut().push((start, end)));
+    }
+    pub(crate) fn take_ranges() -> Vec<(usize, usize)> {
+        RANGES.with(|values| std::mem::take(&mut *values.borrow_mut()))
     }
     pub(super) fn label(row: usize, label: Option<String>) {
         LABELS.with(|values| values.borrow_mut().push((row, label)));
@@ -827,6 +956,8 @@ pub(crate) mod test_probe {
         SELECTED_ROWS.with(|values| values.borrow_mut().clear());
         LABELS.with(|values| values.borrow_mut().clear());
         HEADER_SIZES.with(|values| values.borrow_mut().clear());
+        RANGES.with(|values| values.borrow_mut().clear());
+        SNAPSHOTS.with(|values| values.borrow_mut().clear());
     }
     pub(crate) fn cell_builds() -> usize {
         BUILDS.with(Cell::get)

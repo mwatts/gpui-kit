@@ -404,3 +404,94 @@ export default class App extends View {{
         assert_eq!(data_table::test_probe::take_selects(), ["ada"], "{call}");
     }
 }
+
+/// A million-row list must cost one window, not the whole list: the binding
+/// snapshots and id-checks only the resident rows, and the host learns which
+/// rows to fetch next from the `range` event.
+#[gpui::test]
+fn range_backed_table_snapshots_only_its_window_and_reports_ranges(cx: &mut TestAppContext) {
+    data_table::test_probe::reset();
+    let source = r#"
+import { View, div } from "gpui-kit";
+import { DataTableState, DataTable } from "gpui-component";
+export default class App extends View {
+  init() { this.start = 0; this.ranges = []; this.state = DataTableState(["name"]); }
+  render() {
+    const rows = Array.from({length: 100}, (_, i) => ({id: `r${this.start + i}`, name: `Row ${this.start + i}`}));
+    return div().size_full()
+      .child(`ranges:${this.ranges.map(r => r.join("-")).join(",")}`)
+      .child(new DataTable(
+        this.state,
+        () => [],
+        (row, column) => div().child(row[column])
+      ).row_count(500000).rows_window(this.start, () => rows)
+       .row_selectable(true).on_select((id, cx) => {})
+       .on_range((start, end, cx) => { this.ranges.push([start, end]); cx.notify(); })
+       .absolute().left(0).top(20).w(300).h(200));
+  }
+}
+"#;
+    let (mut context, view, _app) = mount(cx, source);
+    draw(&mut context);
+    context.update(|_, cx| assert_eq!(view.read(cx).build_error(), None));
+    assert_eq!(data_table::test_probe::errors(), 0);
+    let snapshots = data_table::test_probe::take_snapshots();
+    assert!(!snapshots.is_empty());
+    assert!(
+        snapshots.iter().all(|s| *s == (100, Some(500_000))),
+        "only the 100-row window is snapshotted: {snapshots:?}"
+    );
+    let initial = data_table::test_probe::take_ranges();
+    assert!(
+        initial.iter().all(|(start, end)| *start == 0 && *end < 100),
+        "the first range covers only the viewport: {initial:?}"
+    );
+    assert!(!initial.is_empty(), "the table reports its first range");
+    let cells = data_table::test_probe::take_cells();
+    assert!(cells.iter().any(|(row, _, v)| *row == 0 && v == "Row 0"), "{cells:?}");
+
+    context.simulate_mouse_move(point(px(100.), px(100.)), None, Modifiers::default());
+    draw(&mut context);
+    data_table::test_probe::take_ranges();
+    context.simulate_event(gpui::ScrollWheelEvent {
+        position: point(px(100.), px(100.)),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-3200.))),
+        ..Default::default()
+    });
+    draw(&mut context);
+    draw(&mut context);
+    context.update(|_, cx| assert_eq!(view.read(cx).build_error(), None));
+    let after = data_table::test_probe::take_ranges();
+    assert!(
+        after.iter().any(|(start, _)| *start >= 50),
+        "scrolling past the window emits a range the host can fetch: {after:?}"
+    );
+    let snapshots = data_table::test_probe::take_snapshots();
+    assert!(
+        snapshots.iter().all(|s| s.0 == 100),
+        "scrolling never snapshots beyond the window: {snapshots:?}"
+    );
+    let tree = context.update(|_, cx| view.read(cx).snapshot().unwrap().debug_tree());
+    assert!(tree.contains("ranges:0-"), "the script received on_range: {tree}");
+    assert_eq!(data_table::test_probe::errors(), 0);
+}
+
+/// Without a window, `rows_window` has no count to place rows against.
+#[gpui::test]
+fn rows_window_without_row_count_is_a_materialize_error(cx: &mut TestAppContext) {
+    let (mut context, view, _app) = mount(
+        cx,
+        r#"
+import { View, div } from "gpui-kit";
+import { DataTableState, DataTable } from "gpui-component";
+export default class App extends View { render() { return new DataTable(
+  DataTableState(["name"]), () => [], (row, column) => div()
+).rows_window(0, () => [{name: "a"}]); } }
+"#,
+    );
+    draw(&mut context);
+    context.update(|_, cx| {
+        let error = view.read(cx).build_error().map(|e| e.to_string());
+        assert!(error.is_some_and(|e| e.contains("row_count")));
+    });
+}
