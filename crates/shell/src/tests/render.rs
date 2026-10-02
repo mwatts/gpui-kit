@@ -8194,6 +8194,112 @@ export default class Surface extends View {
     );
 }
 
+/// A held touch reaches `on_long_press`, and its release is not also a click.
+///
+/// Driven by raw touches, as a phone delivers them, so GPUI's own recognizer
+/// decides what is a tap and what is a long press. A phone sends no mouse
+/// down until the finger lifts, so a script cannot time a hold from one; this
+/// listener is the only way it hears a hold while the finger is still down.
+#[gpui::test]
+fn a_held_touch_is_a_long_press_and_not_a_click(cx: &mut TestAppContext) {
+    cx.update(|cx| crate::init(cx));
+
+    let runtime = ShellRuntime::new_isolated().expect("runtime");
+    cx.update(|cx| runtime.set_global(cx));
+    let source = r#"
+import { View, div } from "gpui-kit";
+import { v_flex } from "gpui-base";
+
+export default class Surface extends View {
+  init(_props, _cx) {
+    this.log = [];
+  }
+
+  render(_cx) {
+    return v_flex()
+      .w(300)
+      .h(200)
+      .child(
+        div()
+          .id("target")
+          .w(100)
+          .h(50)
+          .on_click((_event, cx) => {
+            this.log.push("click");
+            cx.notify();
+          })
+          .on_long_press((event, cx) => {
+            this.log.push(`press:${Math.round(event.position.x)}`);
+            cx.notify();
+          }),
+      )
+      .child(div().child(`log=${this.log.join(" ")}`));
+  }
+}
+"#;
+    let view_type = runtime.load_source("press", source).expect("load");
+    let runtime_for_view = Rc::clone(&runtime);
+    let window = cx.add_window(move |window, cx| {
+        let view = runtime_for_view
+            .instantiate_view(&view_type, window, cx)
+            .expect("instantiate");
+        RootedScriptView(view)
+    });
+    let mut context = VisualTestContext::from_window(*window.deref(), cx);
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    let view = window
+        .root(&mut context)
+        .expect("root view")
+        .read_with(&context, |root, _| root.0.clone());
+
+    let touch = |context: &mut VisualTestContext, id: u64, phase, at| {
+        context.update(|window, cx| {
+            window.dispatch_event(
+                gpui::PlatformInput::Touch(gpui::TouchEvent {
+                    id: gpui::TouchId(id),
+                    phase,
+                    position: at,
+                    predicted_position: None,
+                    force: None,
+                }),
+                cx,
+            );
+            window.draw(cx).clear(cx);
+        });
+    };
+    let hold = std::time::Duration::from_millis(600);
+    let inside = point(px(20.), px(20.));
+    let outside = point(px(250.), px(160.));
+
+    // Held inside: a long press, and no click on release.
+    touch(&mut context, 1, gpui::TouchPhase::Started, inside);
+    context.executor().advance_clock(hold);
+    context.run_until_parked();
+    touch(&mut context, 1, gpui::TouchPhase::Ended, inside);
+    // A quick touch inside: a click only.
+    touch(&mut context, 2, gpui::TouchPhase::Started, inside);
+    touch(&mut context, 2, gpui::TouchPhase::Ended, inside);
+    // Held outside: not this element's.
+    touch(&mut context, 3, gpui::TouchPhase::Started, outside);
+    context.executor().advance_clock(hold);
+    context.run_until_parked();
+    touch(&mut context, 3, gpui::TouchPhase::Ended, outside);
+    context.run_until_parked();
+    context.update(|window, cx| window.draw(cx).clear(cx));
+
+    let tree = context.update(|_, cx| {
+        view.read(cx)
+            .snapshot()
+            .map(crate::RenderSnapshot::debug_tree)
+            .unwrap_or_default()
+    });
+    assert!(
+        tree.contains("log=press:20 click\""),
+        "a hold fires the long press and not a click, a quick touch clicks, \
+         and a hold elsewhere fires nothing: {tree}"
+    );
+}
+
 /// Input reaches base's own controls, not just a plain element.
 ///
 /// `Button.new("save").on_key_down(...)` is a reasonable thing to write and for

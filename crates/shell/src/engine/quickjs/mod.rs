@@ -7556,6 +7556,7 @@ impl ShellRuntime {
                 "on_mouse_down",
                 "on_mouse_up",
                 "on_mouse_down_out",
+                "on_long_press",
                 "on_scroll_wheel",
                 "on_action",
                 "key_context",
@@ -8583,6 +8584,7 @@ impl ShellRuntime {
             | "on_key_up"
             | "on_modifiers_changed"
             | "on_mouse_down_out"
+            | "on_long_press"
             | "on_scroll_wheel"
             | "tab_bar"
             | "empty_group"
@@ -10634,6 +10636,7 @@ fn callback_op_name(method: &str) -> Option<&'static str> {
         "on_key_up" => "on_key_up",
         "on_modifiers_changed" => "on_modifiers_changed",
         "on_mouse_down_out" => "on_mouse_down_out",
+        "on_long_press" => "on_long_press",
         "on_scroll_wheel" => "on_scroll_wheel",
         "on_item_click" => "on_item_click",
         "on_item_secondary_click" => "on_item_secondary_click",
