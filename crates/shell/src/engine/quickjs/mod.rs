@@ -1412,6 +1412,9 @@ pub struct ShellRuntime {
     components: FrozenComponentRegistry,
     component_state_proof: String,
     interactive_inline_layout: Cell<bool>,
+    /// True while a virtual list's item renderer runs. Distinguishes it from a
+    /// frame-owned page build, which is also `Layout` but owns its callbacks.
+    item_renderer_layout: Cell<bool>,
     component_states: RefCell<crate::component_registry::RetainedStateStore>,
     pending_component_state_releases: RefCell<Vec<Rc<ApplicationGeneration>>>,
     component_app_effects: RefCell<HashMap<usize, ComponentAppEffectGeneration>>,
@@ -1987,6 +1990,7 @@ impl ShellRuntime {
             components,
             component_state_proof,
             interactive_inline_layout: Cell::new(false),
+            item_renderer_layout: Cell::new(false),
             component_states: RefCell::new(Default::default()),
             pending_component_state_releases: RefCell::new(Vec::new()),
             component_app_effects: RefCell::new(HashMap::new()),
@@ -3606,6 +3610,7 @@ impl ShellRuntime {
         // so without this the enclosing render's `cx` would read as stale here
         // and every helper would need a second, list-only plumbing.
         scope::adopt(entry.registered_in);
+        let _item_renderer = ItemRendererGuard::enter(self);
 
         let outer = std::mem::take(&mut *self.arena.borrow_mut());
         // Rows may register handlers. They go into a callback generation of
@@ -9374,7 +9379,14 @@ fn guard_lazy_list(
     runtime: &Weak<ShellRuntime>,
     count: usize,
 ) -> JsResult<Rc<ShellRuntime>> {
-    if scope::current_phase() == Some(ScopePhase::Layout) {
+    let store = upgrade(runtime, ctx)?;
+    // Layout is refused when it is a list's item renderer, or any layout that
+    // is not a frame-owned interactive build. A NavStack page is the latter:
+    // its view rebuilds it every frame and holds its callbacks until that
+    // frame paints, so a list described there belongs to the page's pass.
+    let layout = scope::current_phase() == Some(ScopePhase::Layout);
+    let page_build = store.interactive_inline_layout.get() && !store.item_renderer_layout.get();
+    if layout && !page_build {
         return Err(Exception::throw_type(
             ctx,
             "a list cannot be built from inside another list's item renderer: its own \
@@ -9382,7 +9394,6 @@ fn guard_lazy_list(
              the nested list from the view's render() instead",
         ));
     }
-    let store = upgrade(runtime, ctx)?;
     if !store
         .arena
         .borrow_mut()
@@ -9628,6 +9639,27 @@ impl Drop for CallbackGuard<'_> {
         if self.active {
             self.runtime.callbacks.borrow_mut().abort();
         }
+    }
+}
+
+/// Marks layout as a virtual list's item renderer for its lifetime.
+struct ItemRendererGuard<'a> {
+    runtime: &'a ShellRuntime,
+    previous: bool,
+}
+
+impl<'a> ItemRendererGuard<'a> {
+    fn enter(runtime: &'a ShellRuntime) -> Self {
+        Self {
+            runtime,
+            previous: runtime.item_renderer_layout.replace(true),
+        }
+    }
+}
+
+impl Drop for ItemRendererGuard<'_> {
+    fn drop(&mut self) {
+        self.runtime.item_renderer_layout.set(self.previous);
     }
 }
 

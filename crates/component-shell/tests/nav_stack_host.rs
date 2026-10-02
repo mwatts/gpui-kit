@@ -146,3 +146,48 @@ export default class App extends View {
     });
     assert!(tree.contains("clicks:1"), "page click: {tree}");
 }
+
+/// A phone root list (the Inbox) lives in a NavStack page. If the kit refuses
+/// a list built there, the page shows an error and the Inbox is empty, so the
+/// page's rows must paint and a row's click must reach script.
+#[gpui::test]
+fn a_half_million_row_list_in_a_page_paints_rows_and_its_click_reaches_script(
+    cx: &mut TestAppContext,
+) {
+    let (mut context, view, _app) = mount(
+        cx,
+        r#"
+import { View, div, uniform_list } from "gpui-kit";
+import { NavStack } from "gpui-component";
+export default class App extends View {
+ init() { this.clicked = -1; }
+ render() { return div().size_full()
+  .child(new NavStack("nav", () => [{id:"root"}], () => div().size_full()
+    .child(uniform_list("rows", 500000, (i) => String(i), (range) => {
+      const items = [];
+      for (let i = range.start; i < range.end; i++) {
+        items.push(div().h(20).w_full().child(`row ${i}`)
+          .on_click((_e, cx) => { this.clicked = i; cx.notify(); }));
+      }
+      return items;
+    }).size_full()))
+   .path(["root"]).w(400).h(200))
+  .child(`clicked:${this.clicked}`); }
+}
+"#,
+    );
+    draw(&mut context);
+    draw(&mut context);
+    // The third 20px row covers 40..60.
+    context.simulate_click(point(px(100.), px(50.)), Modifiers::default());
+    draw(&mut context);
+    draw(&mut context);
+    let tree = context.update(|_, cx| {
+        assert_eq!(view.read(cx).build_error(), None);
+        view.read(cx).snapshot().unwrap().debug_tree()
+    });
+    assert!(
+        tree.contains("clicked:2"),
+        "the page's list must paint rows and row 2's click must reach script: {tree}"
+    );
+}
