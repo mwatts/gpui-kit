@@ -1475,6 +1475,12 @@ const ELEMENT_METHODS: &str = r#"    /**
      */
     on_mouse_down_out<Self extends Element>(this: Self, handler: (event: MouseButtonEvent, cx: Context) => void): Self;
     /**
+     * A touch held in place on this element (GPUI's `LongPressEvent` as it
+     * starts). The element claims the gesture, so lifting the finger is not
+     * also a tap. `event.position` is where the touch began.
+     */
+    on_long_press<Self extends Element>(this: Self, handler: (event: MouseButtonEvent, cx: Context) => void): Self;
+    /**
      * GPUI `InteractiveElement::on_scroll_wheel`: wheel and trackpad scrolling
      * over this element.
      *
@@ -4072,6 +4078,7 @@ mod tests {
         "on_mouse_down",
         "on_mouse_up",
         "on_mouse_down_out",
+        "on_long_press",
         "on_scroll_wheel",
         "on_action",
         "key_context",

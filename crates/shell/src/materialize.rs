@@ -368,6 +368,9 @@ struct Behavior {
     /// on an outside press through exactly this listener, and until now a
     /// script had no way to.
     on_mouse_down_out: Option<CallbackId>,
+    /// A touch held in place on this element: GPUI's `LongPressEvent` as it
+    /// starts. The element claims the gesture, so the release is not a tap.
+    on_long_press: Option<CallbackId>,
     /// Wheel and trackpad scrolling over this element.
     on_scroll_wheel: Option<CallbackId>,
     /// Handlers for named actions, one entry per action listened for.
@@ -566,6 +569,7 @@ impl Behavior {
         !self.on_mouse_down.is_empty()
             || !self.on_mouse_up.is_empty()
             || self.on_mouse_down_out.is_some()
+            || self.on_long_press.is_some()
             || self.on_scroll_wheel.is_some()
     }
 
@@ -591,6 +595,7 @@ impl Behavior {
             || !self.on_mouse_down.is_empty()
             || !self.on_mouse_up.is_empty()
             || self.on_mouse_down_out.is_some()
+            || self.on_long_press.is_some()
             || self.on_scroll_wheel.is_some()
             || !self.on_action.is_empty()
             || self.key_context.is_some()
@@ -1785,6 +1790,50 @@ where
                 dispatch_mouse_button(&runtime, callback, event, bounds.get(), window, cx);
             });
         }
+        if let Some(callback) = behavior.on_long_press {
+            // `Div` has no builder for a gesture event, so a zero-size,
+            // out-of-flow canvas registers the window listener during paint and
+            // tests the position against the element's own prepainted bounds.
+            let runtime = Rc::downgrade(runtime);
+            let bounds = Rc::clone(&bounds);
+            element = element.child(
+                gpui::canvas(
+                    |_, _, _| {},
+                    move |_, (), window, _| {
+                        let runtime = runtime.clone();
+                        let bounds = Rc::clone(&bounds);
+                        window.on_mouse_event(move |event: &gpui::LongPressEvent, phase, window, cx| {
+                            let Some(within) = bounds.get() else {
+                                return;
+                            };
+                            if !phase.bubble()
+                                || event.phase != gpui::TouchPhase::Started
+                                || window.default_prevented()
+                                || !within.contains(&event.start_position)
+                            {
+                                return;
+                            }
+                            window.prevent_default();
+                            cx.stop_propagation();
+                            let Some(runtime) = runtime.upgrade() else {
+                                return;
+                            };
+                            runtime.dispatch_mouse_button(
+                                callback,
+                                MouseButton::Left,
+                                event.start_position,
+                                1,
+                                gpui::Modifiers::default(),
+                                Some(within),
+                                window,
+                                cx,
+                            );
+                        });
+                    },
+                )
+                .absolute(),
+            );
+        }
         if let Some(callback) = behavior.on_scroll_wheel {
             let runtime = Rc::downgrade(runtime);
             let bounds = Rc::clone(&bounds);
@@ -1951,6 +2000,7 @@ fn warn_unhonoured_input(component: &Component, behavior: &Behavior) {
         ("on_mouse_down", !behavior.on_mouse_down.is_empty()),
         ("on_mouse_up", !behavior.on_mouse_up.is_empty()),
         ("on_mouse_down_out", behavior.on_mouse_down_out.is_some()),
+        ("on_long_press", behavior.on_long_press.is_some()),
         ("on_scroll_wheel", behavior.on_scroll_wheel.is_some()),
         ("on_action", !behavior.on_action.is_empty()),
         ("key_context", behavior.key_context.is_some()),
@@ -2074,6 +2124,7 @@ fn flex_element(
         && behavior.on_mouse_down.is_empty()
         && behavior.on_mouse_up.is_empty()
         && behavior.on_mouse_down_out.is_none()
+        && behavior.on_long_press.is_none()
         && behavior.on_scroll_wheel.is_none()
         && behavior.on_action.is_empty()
         && behavior.key_context.is_none()
@@ -2531,6 +2582,7 @@ pub(in crate::materialize) fn resolve_ops(
                 "on_mouse_up_right" => behavior.on_mouse_up.push((MouseButton::Right, *id)),
                 "on_mouse_up_middle" => behavior.on_mouse_up.push((MouseButton::Middle, *id)),
                 "on_mouse_down_out" => behavior.on_mouse_down_out = Some(*id),
+                "on_long_press" => behavior.on_long_press = Some(*id),
                 "on_scroll_wheel" => behavior.on_scroll_wheel = Some(*id),
                 "on_resize" => behavior.on_resize = Some(*id),
                 "on_change" => behavior.on_change = Some(*id),
