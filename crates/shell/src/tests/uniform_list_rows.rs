@@ -178,3 +178,61 @@ fn handlers_of_rows_scrolled_out_are_retired(cx: &mut TestAppContext) {
         "after scrolling stops the registry must not exceed the visible rows' share"
     );
 }
+
+/// A list built from a row renderer would register its own renderer in a
+/// callback generation that is already closed, so it could never be called.
+/// Allowing lists in NavStack pages (a phone's root list) must not open that
+/// door: the nested list is still refused, and it is reported, not drawn.
+#[gpui::test]
+fn a_list_built_inside_a_list_item_renderer_is_still_refused(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    let runtime = ShellRuntime::new_isolated().expect("runtime");
+    let failures = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    struct Sink(Rc<std::cell::RefCell<Vec<String>>>);
+    impl crate::DiagnosticSink for Sink {
+        fn report(&self, failure: crate::ScriptFailure) {
+            self.0.borrow_mut().push(failure.message().to_owned());
+        }
+    }
+    runtime.set_diagnostic_sink(Rc::new(Sink(failures.clone())));
+    cx.update(|cx| runtime.set_global(cx));
+    let source = r#"
+import { View, uniform_list } from "gpui-kit";
+import { v_flex } from "gpui-base";
+
+export default class Nested extends View {
+  render(cx) {
+    return v_flex().w(300).h(200).child(
+      uniform_list("outer", 10, (i) => String(i), (range) => {
+        const items = [];
+        for (let i = range.start; i < range.end; i++) {
+          items.push(v_flex().h(20).child(
+            uniform_list(`inner${i}`, 3, (j) => String(j), () => []),
+          ));
+        }
+        return items;
+      }),
+    );
+  }
+}
+"#;
+    let view_type = runtime.load_source("nested.js", source).expect("load");
+    let for_view = Rc::clone(&runtime);
+    let window = cx.add_window(move |window, cx| {
+        Root(
+            for_view
+                .instantiate_view(&view_type, window, cx)
+                .expect("instantiate"),
+        )
+    });
+    let mut context = VisualTestContext::from_window(*window.deref(), cx);
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    let failures = failures.borrow();
+    assert!(
+        failures
+            .iter()
+            .any(|message| message.contains("cannot be built from inside another list")),
+        "a nested list must be refused with the nested-list error: {failures:?}"
+    );
+}
