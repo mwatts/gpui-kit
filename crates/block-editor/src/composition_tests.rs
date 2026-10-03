@@ -551,6 +551,46 @@ fn open_editor() -> CompositionSession {
     CompositionSession::open(fixture(), EditorGate::Editor, IdSource::default())
 }
 
+/// A host's slash command turns a writable block into its registered embed;
+/// dropping the kind while keeping the reference would leave a plain block.
+#[test]
+fn editor_gate_converts_a_block_to_a_custom_embed() {
+    let mut session = open_editor();
+    for op in [
+        BlockOp::SetType {
+            id: BlockId(BLOCK_A.into()),
+            kind: BlockType::Custom("spreadsheet".into()),
+        },
+        BlockOp::SetProp {
+            id: BlockId(BLOCK_A.into()),
+            key: "url",
+            value: LwwValue::String("ashlar://object/x".into()),
+        },
+    ] {
+        session.apply(op, Some(&occ(CHILD_A1)));
+    }
+    let block = &session.snapshots()[0];
+    assert_eq!(block.block_type, BlockType::Custom("spreadsheet".into()));
+    assert_eq!(block.url.as_deref(), Some("ashlar://object/x"));
+    assert!(session.draft().content.contains_key(BLOCK_A));
+}
+
+#[test]
+fn notes_gate_refuses_a_custom_embed() {
+    let mut session = open_fixture();
+    session.apply(
+        BlockOp::SetType {
+            id: BlockId(BLOCK_A.into()),
+            kind: BlockType::Custom("spreadsheet".into()),
+        },
+        Some(&occ(CHILD_A1)),
+    );
+    assert_ne!(
+        session.snapshots()[0].block_type,
+        BlockType::Custom("spreadsheet".into())
+    );
+}
+
 const NEST_CHILD: &str = "ashlar/child/opaque/n00child00000000000000in";
 
 #[test]
