@@ -12,6 +12,10 @@ use gpui::{AnyElement, App, Global, Window};
 
 use crate::BlockSnapshot;
 
+/// Key context around a hosted leaf. The editor disables its own chords here so
+/// the leaf (a spreadsheet grid, an input) gets them; Escape leaves the leaf.
+pub const EMBED_CONTEXT: &str = "BlockEditorEmbed";
+
 /// Paint one custom block, or `None` to keep the default label+text leaf.
 pub type CustomBlockComposer =
     Arc<dyn Fn(&BlockSnapshot, &mut Window, &mut App) -> Option<AnyElement> + Send + Sync>;

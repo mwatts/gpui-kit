@@ -30,10 +30,11 @@ use crate::document::BlockDocument;
 use crate::image::{self, Prompt};
 use crate::keys::{
     self, Backspace, CancelUrl, ConfirmUrl, Copy, Cut, Delete, DeleteToHome, DeleteWordLeft,
-    DeleteWordRight, Dismiss, Down, DuplicateBlock, End, Home, Indent, KillLine, Left,
-    MoveBlockDown, MoveBlockUp, Outdent, Paste, Redo, RemoveBlock, Right, SelectAll, SelectDown,
-    SelectEnd, SelectHome, SelectLeft, SelectRight, SelectUp, SelectWordLeft, SelectWordRight,
-    SplitBlock, ToggleBold, ToggleCode, ToggleItalic, ToggleStrike, Undo, Up, WordLeft, WordRight,
+    DeleteWordRight, Dismiss, Down, DuplicateBlock, EmbedFocusNext, EmbedFocusPrev, End, Home,
+    Indent, KillLine, LeaveEmbed, Left, MoveBlockDown, MoveBlockUp, Outdent, Paste, Redo,
+    RemoveBlock, Right, SelectAll, SelectDown, SelectEnd, SelectHome, SelectLeft, SelectRight,
+    SelectUp, SelectWordLeft, SelectWordRight, SplitBlock, ToggleBold, ToggleCode, ToggleItalic,
+    ToggleStrike, Undo, Up, WordLeft, WordRight,
 };
 use crate::link::{self, Choice as LinkChoice};
 use crate::mark::Mark;
@@ -1921,6 +1922,11 @@ impl Editor {
         cx.notify();
     }
 
+    fn on_leave_embed(&mut self, _: &LeaveEmbed, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_handle.clone().focus(window, cx);
+        cx.notify();
+    }
+
     fn sync_code_leaves(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let head = self.selection.head().clone();
         if head.part != Part::Code || self.read_only {
@@ -2161,6 +2167,9 @@ impl Render for Editor {
             .on_action(cx.listener(Self::on_remove_block))
             .on_action(cx.listener(Self::on_confirm_url))
             .on_action(cx.listener(Self::on_cancel_url))
+            .on_action(cx.listener(Self::on_leave_embed))
+            .on_action(cx.listener(|_, _: &EmbedFocusNext, window, cx| window.focus_next(cx)))
+            .on_action(cx.listener(|_, _: &EmbedFocusPrev, window, cx| window.focus_prev(cx)))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
@@ -2169,6 +2178,11 @@ impl Render for Editor {
                     }
                     this.block_menu = None;
                     this.pasted = None;
+                    // An embed is its own control: it already focused what was pressed.
+                    // Mark its block so Escape (LeaveEmbed) returns the caret there.
+                    if let Some(id) = this.layouts.embed_at(event.position) {
+                        return this.select(Selection::caret(Cursor::new(id, Part::Body, 0)), cx);
+                    }
                     this.focus_handle.clone().focus(window, cx);
                     let Some(hit) = this.layouts.hit(event.position) else {
                         return cx.notify();

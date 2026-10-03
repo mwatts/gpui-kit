@@ -536,7 +536,22 @@ fn block_element(
             .into_any_element(),
         BlockType::Custom(name) => {
             if let Some(hosted) = crate::custom_block::compose(name, block, window, cx) {
-                return hosted;
+                return div()
+                    .relative()
+                    .w_full()
+                    .key_context(crate::custom_block::EMBED_CONTEXT)
+                    .children(overlay.layouts.map(|layouts| {
+                        let layouts = layouts.clone();
+                        let id = overlay.block_id.clone();
+                        canvas(
+                            move |bounds, _, _| layouts.record_embed(id, bounds),
+                            |_, _, _, _| (),
+                        )
+                        .absolute()
+                        .size_full()
+                    }))
+                    .child(hosted)
+                    .into_any_element();
             }
             div()
                 .flex()
