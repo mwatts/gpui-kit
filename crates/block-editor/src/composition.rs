@@ -35,7 +35,8 @@ pub enum EditorGate {
     #[default]
     Notes,
     /// Built-in text kinds, marks, language, and nested Child placement.
-    /// Image, unknown custom, mentions, and media stay read-only.
+    /// Image, unknown custom, mentions, and media stay read-only. A writable
+    /// block may still be converted to a custom kind (a host's embed).
     Editor,
 }
 
@@ -1060,7 +1061,10 @@ impl CompositionSession {
     }
 
     fn set_kind(&mut self, resolved: Resolved, kind: BlockType) -> ApplyResult {
-        if !self.gate.content_writable(&kind) {
+        // The Editor gate lets a writable block become a host's custom embed
+        // (a slash command). The embed then reopens read-only, like any custom.
+        let embed = self.gate == EditorGate::Editor && matches!(kind, BlockType::Custom(_));
+        if !embed && !self.gate.content_writable(&kind) {
             return ApplyResult::default();
         }
         let result = {
