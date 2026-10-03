@@ -1139,3 +1139,131 @@ fn composition_line_delete_and_cross_block_undo_use_occurrences(cx: &mut TestApp
         );
     });
 }
+
+struct EmbedProbe {
+    focus: gpui::FocusHandle,
+    keys: Vec<String>,
+}
+
+impl Render for EmbedProbe {
+    fn render(
+        &mut self,
+        _: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        use gpui::{InteractiveElement as _, Styled as _};
+        gpui::div()
+            .w(px(200.0))
+            .h(px(80.0))
+            .track_focus(&self.focus)
+            .debug_selector(|| "embed-probe".into())
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                this.keys.push(event.keystroke.key.clone());
+                cx.stop_propagation();
+            }))
+    }
+}
+
+/// A hosted embed (a spreadsheet) is its own control: a click inside it must
+/// leave keyboard focus there, the editor's chords must not edit the note
+/// behind it, and Escape must hand the keyboard back at the embed's block.
+#[gpui::test]
+fn custom_block_keeps_focus_and_keys_until_escape(cx: &mut TestAppContext) {
+    let (editor, cx) = harness(cx);
+    let probe = cx.update(|_, cx| {
+        cx.new(|cx| EmbedProbe {
+            focus: cx.focus_handle(),
+            keys: Vec::new(),
+        })
+    });
+    let composed = probe.clone();
+    cx.update(|_, cx| {
+        gpui_component_block_view::register_custom_block(
+            cx,
+            "probe",
+            std::sync::Arc::new(move |_, _, _| Some(composed.clone().into_any_element())),
+        );
+    });
+    let ids = editor.update(cx, |editor, cx| {
+        *editor = Editor::from_markdown("above\n\nembed\n\nbelow", cx);
+        let ids: Vec<_> = editor.snapshots().iter().map(|s| s.id.clone()).collect();
+        editor.apply(
+            crate::BlockOp::SetType {
+                id: ids[1].clone(),
+                kind: BlockType::Custom("probe".into()),
+            },
+            cx,
+        );
+        editor.select(
+            Selection::caret(Cursor::new(ids[0].clone(), Part::Body, 0)),
+            cx,
+        );
+        ids
+    });
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| editor.focus_handle(cx).focus(window, cx));
+        let _ = window.draw(cx);
+    });
+    cx.run_until_parked();
+    let bounds = cx.debug_bounds("embed-probe").expect("probe paints");
+    cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        assert!(
+            probe.read(cx).focus.is_focused(window),
+            "a click inside the embed keeps focus there"
+        );
+    });
+    editor.read_with(cx, |editor, _| {
+        assert_eq!(
+            editor.selection().head().id,
+            ids[1],
+            "the click marks the embed's block"
+        );
+    });
+
+    cx.simulate_keystrokes("down enter backspace");
+    cx.run_until_parked();
+    assert_eq!(
+        probe.read_with(cx, |probe, _| probe.keys.clone()),
+        vec!["down", "enter", "backspace"],
+        "the embed receives the keys"
+    );
+    editor.read_with(cx, |editor, _| {
+        assert_eq!(editor.snapshots().len(), 3, "the note behind is unchanged");
+        assert_eq!(editor.selection().head().id, ids[1]);
+    });
+
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        assert!(
+            editor.read(cx).focus_handle(cx).is_focused(window),
+            "Escape returns the keyboard to the editor"
+        );
+    });
+    cx.simulate_keystrokes("down");
+    cx.run_until_parked();
+    editor.read_with(cx, |editor, _| {
+        assert_eq!(
+            editor.selection().head().id,
+            ids[2],
+            "from the embed's block, Down reaches the next block"
+        );
+    });
+
+    // Tab moves focus on to the next control instead of indenting the note.
+    cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    cx.run_until_parked();
+    cx.simulate_keystrokes("tab");
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        assert!(
+            !probe.read(cx).focus.is_focused(window),
+            "Tab leaves the embed"
+        );
+    });
+    editor.read_with(cx, |editor, _| {
+        assert_eq!(editor.snapshots()[1].indent, 0, "Tab does not indent the embed");
+    });
+}

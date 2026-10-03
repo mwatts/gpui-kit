@@ -6,7 +6,8 @@
 //!
 //! Copyright (c) Bezel contributors. MIT. See crate `NOTICE`.
 
-use gpui::{App, KeyBinding, actions};
+use gpui::{App, KeyBinding, NoAction, actions};
+use gpui_component_block_view::EMBED_CONTEXT;
 
 use crate::image;
 
@@ -58,32 +59,41 @@ actions!(
         RemoveBlock,
         ConfirmUrl,
         CancelUrl,
+        LeaveEmbed,
+        EmbedFocusNext,
+        EmbedFocusPrev,
     ]
 );
 
+/// Bind each chord in the editor, and disable it inside a hosted embed so the
+/// embed's own control (a spreadsheet grid, an input) receives it.
+macro_rules! editor_keys {
+    ($cx:expr, $($chord:literal => $action:expr),* $(,)?) => {{
+        $cx.bind_keys([$(KeyBinding::new($chord, $action, Some(CONTEXT))),*]);
+        $cx.bind_keys([$(KeyBinding::new($chord, NoAction, Some(EMBED_CONTEXT))),*]);
+    }};
+}
+
 /// Install the editor's key bindings.
 pub fn init(cx: &mut App) {
-    let ctx = Some(CONTEXT);
-    cx.bind_keys([
-        KeyBinding::new("backspace", Backspace, ctx),
-        KeyBinding::new("delete", Delete, ctx),
-        KeyBinding::new("left", Left, ctx),
-        KeyBinding::new("right", Right, ctx),
-        KeyBinding::new("up", Up, ctx),
-        KeyBinding::new("down", Down, ctx),
-        KeyBinding::new("home", Home, ctx),
-        KeyBinding::new("end", End, ctx),
-        KeyBinding::new("shift-left", SelectLeft, ctx),
-        KeyBinding::new("shift-right", SelectRight, ctx),
-        KeyBinding::new("shift-up", SelectUp, ctx),
-        KeyBinding::new("shift-down", SelectDown, ctx),
-        KeyBinding::new("shift-home", SelectHome, ctx),
-        KeyBinding::new("shift-end", SelectEnd, ctx),
-        KeyBinding::new("enter", SplitBlock, ctx),
-        KeyBinding::new("tab", Indent, ctx),
-        KeyBinding::new("shift-tab", Outdent, ctx),
-        KeyBinding::new("escape", Dismiss, ctx),
-    ]);
+    editor_keys!(cx,
+        "backspace" => Backspace,
+        "delete" => Delete,
+        "left" => Left,
+        "right" => Right,
+        "up" => Up,
+        "down" => Down,
+        "home" => Home,
+        "end" => End,
+        "shift-left" => SelectLeft,
+        "shift-right" => SelectRight,
+        "shift-up" => SelectUp,
+        "shift-down" => SelectDown,
+        "shift-home" => SelectHome,
+        "shift-end" => SelectEnd,
+        "enter" => SplitBlock,
+        "escape" => Dismiss,
+    );
 
     let prompt = Some(image::PROMPT_CONTEXT);
     cx.bind_keys([
@@ -95,57 +105,68 @@ pub fn init(cx: &mut App) {
     // reach them from the block menu / host keymap.
 
     #[cfg(target_os = "macos")]
-    cx.bind_keys([
-        KeyBinding::new("cmd-a", SelectAll, ctx),
-        KeyBinding::new("cmd-c", Copy, ctx),
-        KeyBinding::new("cmd-x", Cut, ctx),
-        KeyBinding::new("cmd-v", Paste, ctx),
+    editor_keys!(cx,
+        "cmd-a" => SelectAll,
+        "cmd-c" => Copy,
+        "cmd-x" => Cut,
+        "cmd-v" => Paste,
         // Undo/redo before gpui-base input UndoManager can claim these.
-        KeyBinding::new("cmd-z", Undo, ctx),
-        KeyBinding::new("cmd-shift-z", Redo, ctx),
-        KeyBinding::new("cmd-b", ToggleBold, ctx),
-        KeyBinding::new("cmd-i", ToggleItalic, ctx),
-        KeyBinding::new("cmd-e", ToggleCode, ctx),
-        KeyBinding::new("cmd-shift-x", ToggleStrike, ctx),
-        KeyBinding::new("cmd-left", Home, ctx),
-        KeyBinding::new("cmd-right", End, ctx),
-        KeyBinding::new("cmd-shift-left", SelectHome, ctx),
-        KeyBinding::new("cmd-shift-right", SelectEnd, ctx),
-        KeyBinding::new("alt-left", WordLeft, ctx),
-        KeyBinding::new("alt-right", WordRight, ctx),
-        KeyBinding::new("alt-shift-left", SelectWordLeft, ctx),
-        KeyBinding::new("alt-shift-right", SelectWordRight, ctx),
-        KeyBinding::new("ctrl-a", Home, ctx),
-        KeyBinding::new("ctrl-e", End, ctx),
-        KeyBinding::new("ctrl-b", Left, ctx),
-        KeyBinding::new("ctrl-f", Right, ctx),
-        KeyBinding::new("ctrl-n", Down, ctx),
-        KeyBinding::new("ctrl-p", Up, ctx),
-        KeyBinding::new("ctrl-h", Backspace, ctx),
-        KeyBinding::new("ctrl-d", Delete, ctx),
-        KeyBinding::new("ctrl-k", KillLine, ctx),
-        KeyBinding::new("alt-backspace", DeleteWordLeft, ctx),
-        KeyBinding::new("alt-delete", DeleteWordRight, ctx),
-        KeyBinding::new("cmd-backspace", DeleteToHome, ctx),
-    ]);
+        "cmd-z" => Undo,
+        "cmd-shift-z" => Redo,
+        "cmd-b" => ToggleBold,
+        "cmd-i" => ToggleItalic,
+        "cmd-e" => ToggleCode,
+        "cmd-shift-x" => ToggleStrike,
+        "cmd-left" => Home,
+        "cmd-right" => End,
+        "cmd-shift-left" => SelectHome,
+        "cmd-shift-right" => SelectEnd,
+        "alt-left" => WordLeft,
+        "alt-right" => WordRight,
+        "alt-shift-left" => SelectWordLeft,
+        "alt-shift-right" => SelectWordRight,
+        "ctrl-a" => Home,
+        "ctrl-e" => End,
+        "ctrl-b" => Left,
+        "ctrl-f" => Right,
+        "ctrl-n" => Down,
+        "ctrl-p" => Up,
+        "ctrl-h" => Backspace,
+        "ctrl-d" => Delete,
+        "ctrl-k" => KillLine,
+        "alt-backspace" => DeleteWordLeft,
+        "alt-delete" => DeleteWordRight,
+        "cmd-backspace" => DeleteToHome,
+    );
 
     #[cfg(not(target_os = "macos"))]
+    editor_keys!(cx,
+        "ctrl-a" => SelectAll,
+        "ctrl-c" => Copy,
+        "ctrl-x" => Cut,
+        "ctrl-v" => Paste,
+        "ctrl-z" => Undo,
+        "ctrl-shift-z" => Redo,
+        "ctrl-b" => ToggleBold,
+        "ctrl-i" => ToggleItalic,
+        "ctrl-e" => ToggleCode,
+        "ctrl-shift-x" => ToggleStrike,
+        "ctrl-left" => WordLeft,
+        "ctrl-right" => WordRight,
+        "ctrl-shift-left" => SelectWordLeft,
+        "ctrl-shift-right" => SelectWordRight,
+        "ctrl-backspace" => DeleteWordLeft,
+        "ctrl-delete" => DeleteWordRight,
+    );
+
+    // Inside an embed Tab moves focus on, as it does outside the editor.
     cx.bind_keys([
-        KeyBinding::new("ctrl-a", SelectAll, ctx),
-        KeyBinding::new("ctrl-c", Copy, ctx),
-        KeyBinding::new("ctrl-x", Cut, ctx),
-        KeyBinding::new("ctrl-v", Paste, ctx),
-        KeyBinding::new("ctrl-z", Undo, ctx),
-        KeyBinding::new("ctrl-shift-z", Redo, ctx),
-        KeyBinding::new("ctrl-b", ToggleBold, ctx),
-        KeyBinding::new("ctrl-i", ToggleItalic, ctx),
-        KeyBinding::new("ctrl-e", ToggleCode, ctx),
-        KeyBinding::new("ctrl-shift-x", ToggleStrike, ctx),
-        KeyBinding::new("ctrl-left", WordLeft, ctx),
-        KeyBinding::new("ctrl-right", WordRight, ctx),
-        KeyBinding::new("ctrl-shift-left", SelectWordLeft, ctx),
-        KeyBinding::new("ctrl-shift-right", SelectWordRight, ctx),
-        KeyBinding::new("ctrl-backspace", DeleteWordLeft, ctx),
-        KeyBinding::new("ctrl-delete", DeleteWordRight, ctx),
+        KeyBinding::new("tab", Indent, Some(CONTEXT)),
+        KeyBinding::new("shift-tab", Outdent, Some(CONTEXT)),
+        KeyBinding::new("tab", EmbedFocusNext, Some(EMBED_CONTEXT)),
+        KeyBinding::new("shift-tab", EmbedFocusPrev, Some(EMBED_CONTEXT)),
     ]);
+
+    // Last, so it outranks the embed's disabled escape.
+    cx.bind_keys([KeyBinding::new("escape", LeaveEmbed, Some(EMBED_CONTEXT))]);
 }

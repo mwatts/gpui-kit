@@ -21,6 +21,7 @@ struct Frames {
     blocks: Vec<(BlockId, Bounds<Pixels>)>,
     languages: Vec<(BlockId, Bounds<Pixels>)>,
     pictures: Vec<(BlockId, Bounds<Pixels>)>,
+    embeds: Vec<(BlockId, Bounds<Pixels>)>,
 }
 
 struct Painted {
@@ -98,16 +99,39 @@ impl BlockLayouts {
         from: Point<Pixels>,
         down: bool,
     ) -> Option<(Cursor, Pixels)> {
-        let entries = &self.0.borrow().texts;
-        let ix = entries
-            .iter()
-            .position(|painted| painted.matches_cursor(at))?;
-        let here = &entries[ix];
-        let line = here.layout.line_height();
+        let frames = self.0.borrow();
+        let entries = &frames.texts;
         let index_at = |painted: &Painted, y: Pixels| {
             let (Ok(offset) | Err(offset)) = painted.layout.index_for_position(point(from.x, y));
             (painted.cursor(offset), y)
         };
+        let enter = |next: &Painted| {
+            let bounds = next.layout.bounds();
+            let row = match down {
+                true => bounds.origin.y,
+                false => bounds.origin.y + bounds.size.height - next.layout.line_height(),
+            };
+            index_at(next, row)
+        };
+        let Some(ix) = entries
+            .iter()
+            .position(|painted| painted.matches_cursor(at))
+        else {
+            // An embed paints no text: step to the text past its edge.
+            let (_, embed) = frames.embeds.iter().find(|(id, _)| *id == at.id)?;
+            let next = match down {
+                true => entries
+                    .iter()
+                    .find(|painted| painted.layout.bounds().origin.y >= embed.bottom()),
+                false => entries
+                    .iter()
+                    .rev()
+                    .find(|painted| painted.layout.bounds().bottom() <= embed.origin.y),
+            }?;
+            return Some(enter(next));
+        };
+        let here = &entries[ix];
+        let line = here.layout.line_height();
 
         let bounds = here.layout.bounds();
         let target = if down { from.y + line } else { from.y - line };
@@ -119,12 +143,7 @@ impl BlockLayouts {
             true => entries.get(ix + 1)?,
             false => entries.get(ix.checked_sub(1)?)?,
         };
-        let bounds = next.layout.bounds();
-        let row = match down {
-            true => bounds.origin.y,
-            false => bounds.origin.y + bounds.size.height - next.layout.line_height(),
-        };
-        Some(index_at(next, row))
+        Some(enter(next))
     }
 
     /// Whether `point` is inside painted text.
@@ -192,6 +211,16 @@ impl BlockLayouts {
             .map(|(_, bounds)| *bounds)
     }
 
+    /// The hosted custom block (an embed) painted under a point.
+    pub fn embed_at(&self, point: Point<Pixels>) -> Option<BlockId> {
+        self.0
+            .borrow()
+            .embeds
+            .iter()
+            .find(|(_, bounds)| bounds.contains(&point))
+            .map(|(id, _)| id.clone())
+    }
+
     pub(crate) fn record(
         &self,
         id: BlockId,
@@ -221,11 +250,16 @@ impl BlockLayouts {
         self.0.borrow_mut().pictures.push((id, bounds));
     }
 
+    pub(crate) fn record_embed(&self, id: BlockId, bounds: Bounds<Pixels>) {
+        self.0.borrow_mut().embeds.push((id, bounds));
+    }
+
     pub(crate) fn clear(&self) {
         let mut frames = self.0.borrow_mut();
         frames.texts.clear();
         frames.blocks.clear();
         frames.languages.clear();
         frames.pictures.clear();
+        frames.embeds.clear();
     }
 }
