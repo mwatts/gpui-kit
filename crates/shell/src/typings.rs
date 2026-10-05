@@ -219,9 +219,7 @@ pub(crate) fn declarations_with_components(components: &crate::FrozenComponentRe
     out.push_str(BASE);
     out.push_str("}\n\n");
     out.push_str("declare module \"gpui-component\" {\n");
-    out.push_str(
-        "  import { ClickEvent, Context, Element, ElementChild } from \"gpui-kit\";\n",
-    );
+    out.push_str("  import { ClickEvent, Context, Element, ElementChild } from \"gpui-kit\";\n");
     for state in components.states() {
         push_jsdoc(&mut out, state.documentation(), None, "  ");
         out.push_str("  export interface ");
@@ -3997,7 +3995,9 @@ mod tests {
         assert!(declarations.contains("    child(child: ElementChild): Element;"));
         assert!(declarations.contains("    children(children: Iterable<ElementChild>): Element;"));
         assert!(declarations.contains("    content(element: ElementChild): Element;"));
-        assert!(!declarations.contains("child(child: Element | Entity | string | number | boolean)"));
+        assert!(
+            !declarations.contains("child(child: Element | Entity | string | number | boolean)")
+        );
         assert!(!declarations.contains("export interface ElementBounds extends import("));
         assert!(
             declarations.contains(
