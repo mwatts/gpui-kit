@@ -1,7 +1,7 @@
 use gpui::{
     App, ClickEvent, FocusHandle, InteractiveElement as _, IntoElement, MouseButton, ParentElement,
-    Pixels, RenderOnce, Role, StatefulInteractiveElement as _, StyleRefinement, Styled, Window,
-    div,
+    Pixels, RenderOnce, Role, SharedString, StatefulInteractiveElement as _, StyleRefinement,
+    Styled, Window, div,
 };
 use smallvec::SmallVec;
 
@@ -215,6 +215,11 @@ impl AlertDialog {
     }
     pub fn popup(mut self, element: impl IntoElement) -> Self {
         self.0 = self.0.popup(element);
+        self
+    }
+    /// Sets the name announced for the alert-dialog host.
+    pub fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.0 = self.0.accessibility_label(label);
         self
     }
     pub fn close_on_escape(mut self, value: bool) -> Self {

@@ -6,9 +6,9 @@ use std::{
 
 use gpui::{
     AnyElement, App, ClickEvent, FocusHandle, InteractiveElement as _, IntoElement, KeyBinding,
-    MouseButton, ParentElement, Pixels, RenderOnce, Role, StatefulInteractiveElement as _,
-    StyleRefinement, Styled, Window, anchored, deferred, div, point, prelude::FluentBuilder as _,
-    px,
+    MouseButton, ParentElement, Pixels, RenderOnce, Role, SharedString,
+    StatefulInteractiveElement as _, StyleRefinement, Styled, Window, anchored, deferred, div,
+    point, prelude::FluentBuilder as _, px,
 };
 use smallvec::SmallVec;
 
@@ -125,6 +125,7 @@ pub struct Dialog {
     style: StyleRefinement,
     focus: FocusHandle,
     role: Role,
+    accessibility_label: Option<SharedString>,
     layer: usize,
     keyboard: bool,
     overlay_closable: bool,
@@ -392,6 +393,7 @@ impl Dialog {
             style: StyleRefinement::default(),
             focus: cx.focus_handle(),
             role: Role::Dialog,
+            accessibility_label: None,
             layer: 0,
             keyboard: true,
             overlay_closable: true,
@@ -446,6 +448,11 @@ impl Dialog {
     }
     pub fn close_on_backdrop_press(mut self, value: bool) -> Self {
         self.overlay_closable = value;
+        self
+    }
+    /// Sets the name announced for the modal host.
+    pub fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.accessibility_label = Some(label.into());
         self
     }
     pub fn dismiss_below_y(mut self, value: Pixels) -> Self {
@@ -522,6 +529,9 @@ impl RenderOnce for Dialog {
                     .w(viewport.width)
                     .h(viewport.height)
                     .role(self.role)
+                    .when_some(self.accessibility_label, |this, label| {
+                        this.aria_label(label)
+                    })
                     .track_focus(&self.focus)
                     .focus_trap(format!("dialog-{}", self.layer), &self.focus)
                     .when(self.keyboard, |this| this.key_context(CONTEXT))

@@ -1,3 +1,4 @@
+mod accessibility;
 mod alert_dialog;
 mod content;
 mod description;
@@ -13,3 +14,5 @@ pub use dialog::*;
 pub use footer::*;
 pub use header::DialogHeader;
 pub use title::DialogTitle;
+
+pub(crate) use accessibility::into_accessible_title;

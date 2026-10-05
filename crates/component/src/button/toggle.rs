@@ -40,6 +40,8 @@ pub struct Toggle {
     disabled: bool,
     border_corners: Corners<bool>,
     border_edges: Edges<bool>,
+    label: Option<SharedString>,
+    accessibility_label: Option<SharedString>,
     children: SmallVec<[AnyElement; 1]>,
     on_click: Option<Box<dyn Fn(&bool, &mut Window, &mut App) + 'static>>,
     tooltip: ComponentTooltip,
@@ -62,6 +64,8 @@ impl Toggle {
                 bottom_right: true,
             },
             border_edges: Edges::all(true),
+            label: None,
+            accessibility_label: None,
             children: smallvec![],
             on_click: None,
             tooltip: ComponentTooltip::default(),
@@ -77,7 +81,16 @@ impl Toggle {
     /// Add a label to the toggle.
     pub fn label(mut self, label: impl Into<SharedString>) -> Self {
         let label: SharedString = label.into();
+        self.label = Some(label.clone());
         self.children.push(label.into_any_element());
+        self
+    }
+
+    /// Sets the name announced for the toggle.
+    ///
+    /// This overrides both the visible label and tooltip-derived name.
+    pub fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.accessibility_label = Some(label.into());
         self
     }
 
@@ -155,14 +168,17 @@ impl RenderOnce for Toggle {
         let pressed_background = cx.theme().tokens.accent;
         let pressed_foreground = cx.theme().accent_foreground;
         let instance_style = self.style.clone();
+        let accessibility_label = self
+            .accessibility_label
+            .or_else(|| self.tooltip.text.as_ref().map(|(text, _)| text.clone()))
+            .or(self.label);
 
         BaseToggle::new(self.id)
             .pressed(checked)
             .disabled(disabled)
-            .when_some(
-                self.tooltip.text.as_ref().map(|(text, _)| text.clone()),
-                |this, label| this.accessibility_label(label),
-            )
+            .when_some(accessibility_label, |this, label| {
+                this.accessibility_label(label)
+            })
             .when_some(self.on_click, |this, on_click| {
                 this.on_change(move |next, _, window, cx| on_click(&next, window, cx))
             })
@@ -478,11 +494,55 @@ mod tests {
     #[gpui::test]
     fn canonical_toggle_supports_tab_enter_and_space(cx: &mut TestAppContext) {
         let (cx, changes, _) = harness(cx, false);
+        cx.update(|window, _| {
+            let toggle = gpui_base::test_support::find(window, &[], &ElementId::from("toggle"))
+                .expect("rendered toggle");
+            assert_eq!(toggle.role(), Some(gpui::Role::Button));
+            assert_eq!(toggle.label(), Some("Bold"));
+            assert_eq!(toggle.checked(), Some(false));
+        });
         cx.update(|window, cx| window.focus_next(cx));
         cx.update(|window, cx| assert!(window.focused(cx).is_some()));
         activate_key(cx, "enter");
         activate_key(cx, "space");
         assert_eq!(changes.borrow().as_slice(), &[true, true]);
+    }
+
+    struct ToggleLabelHarness;
+
+    impl Render for ToggleLabelHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            h_flex().size(px(300.)).children([
+                Toggle::new("visible-label").label("Board").size(px(80.)),
+                Toggle::new("tooltip-label")
+                    .label("Board")
+                    .tooltip("Switch to board")
+                    .size(px(80.)),
+                Toggle::new("explicit-label")
+                    .label("Board")
+                    .tooltip("Switch to board")
+                    .accessibility_label("Board view")
+                    .size(px(80.)),
+            ])
+        }
+    }
+
+    #[gpui::test]
+    fn visible_label_names_toggle_with_explicit_precedence(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|_, _| ToggleLabelHarness);
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let label = |id| {
+                gpui_base::test_support::find(window, &[], &ElementId::from(id))
+                    .expect("rendered toggle")
+                    .label()
+                    .map(str::to_owned)
+            };
+            assert_eq!(label("visible-label").as_deref(), Some("Board"));
+            assert_eq!(label("tooltip-label").as_deref(), Some("Switch to board"));
+            assert_eq!(label("explicit-label").as_deref(), Some("Board view"));
+        });
     }
 
     #[gpui::test]

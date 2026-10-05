@@ -327,9 +327,10 @@ impl TabGroupSkin {
             .child(
                 Button::new("menu")
                     .icon(IconName::Ellipsis)
+                    .accessibility_label("Pane menu")
                     .xsmall()
                     .ghost()
-                    .tab_stop(false)
+                    .tooltip("Pane menu")
                     .dropdown_menu(move |menu, window, cx| {
                         menu.when_some(panel.clone(), |menu, panel| {
                             panel.dropdown_menu(menu, window, cx)

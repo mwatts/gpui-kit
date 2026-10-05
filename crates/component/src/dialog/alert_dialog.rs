@@ -1,12 +1,13 @@
 use gpui::{
-    AnyElement, App, ClickEvent, IntoElement, ParentElement, Pixels, RenderOnce, StyleRefinement,
-    Styled, Window, prelude::FluentBuilder as _,
+    AnyElement, App, ClickEvent, IntoElement, ParentElement, Pixels, RenderOnce, SharedString,
+    StyleRefinement, Styled, Window, prelude::FluentBuilder as _,
 };
 
 use crate::{
     StyledExt as _, WindowExt as _,
     dialog::{
         Dialog, DialogButtonProps, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+        into_accessible_title,
     },
     h_flex, v_flex,
 };
@@ -66,6 +67,8 @@ pub struct AlertDialog {
     trigger: Option<AnyElement>,
     icon: Option<AnyElement>,
     title: Option<AnyElement>,
+    title_accessibility_label: Option<SharedString>,
+    accessibility_label: Option<SharedString>,
     description: Option<AnyElement>,
     button_props: DialogButtonProps,
     children: Vec<AnyElement>,
@@ -84,6 +87,8 @@ impl AlertDialog {
             trigger: None,
             icon: None,
             title: None,
+            title_accessibility_label: None,
+            accessibility_label: None,
             description: None,
             button_props: DialogButtonProps::default(),
             children: Vec::new(),
@@ -168,7 +173,18 @@ impl AlertDialog {
     #[track_caller]
     pub fn title(mut self, title: impl IntoElement) -> Self {
         self.debug_assert_no_trigger();
-        self.title = Some(title.into_any_element());
+        let (title, accessibility_label) = into_accessible_title(title);
+        self.title = Some(title);
+        self.title_accessibility_label = accessibility_label;
+        self
+    }
+
+    /// Sets the name announced for the alert dialog.
+    ///
+    /// Direct text passed to [`Self::title`] supplies this name automatically.
+    /// Set it explicitly when the visible title is a custom element.
+    pub fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.accessibility_label = Some(label.into());
         self
     }
 
@@ -268,12 +284,19 @@ impl AlertDialog {
     /// Build the styled dialog surface around the Base alert-dialog host.
     pub(crate) fn build_surface(self, window: &mut Window, cx: &mut App) -> Dialog {
         let button_props = self.button_props.clone();
+        let accessibility_label = self
+            .accessibility_label
+            .clone()
+            .or_else(|| self.title_accessibility_label.clone());
         let has_title = self.icon.is_some() || self.title.is_some();
         let has_header = has_title || self.description.is_some();
         let has_footer = self.base.footer.is_some();
 
         self.base
-            .button_props(button_props.clone())
+            .with_button_props(button_props.clone(), false)
+            .when_some(accessibility_label, |this, label| {
+                this.accessibility_label(label)
+            })
             .when(has_header, |this| {
                 this.header(
                     DialogHeader::new().child(
@@ -327,6 +350,10 @@ impl AlertDialog {
         let content_builder = self.base.content_builder.clone();
         let style = self.base.style.clone();
         let props = self.base.props.clone();
+        let accessibility_label = self
+            .accessibility_label
+            .clone()
+            .or_else(|| self.title_accessibility_label.clone());
         let mut button_props = self.button_props.clone();
         button_props.on_close = self.base.button_props.on_close.clone();
 
@@ -336,12 +363,16 @@ impl AlertDialog {
                 let style = style.clone();
                 let props = props.clone();
                 let button_props = button_props.clone();
+                let accessibility_label = accessibility_label.clone();
                 window.open_dialog(cx, move |dialog, _, cx| {
                     dialog
                         .with_base_alert_dialog(gpui_base::AlertDialog::new(cx))
                         .refine_style(&style)
-                        .button_props(button_props.clone())
+                        .with_button_props(button_props.clone(), false)
                         .with_props(props.clone())
+                        .when_some(accessibility_label.clone(), |this, label| {
+                            this.accessibility_label(label)
+                        })
                         .when_some(content_builder.clone(), |this, content_builder| {
                             this.content(move |content, window, cx| {
                                 content_builder(content, window, cx)

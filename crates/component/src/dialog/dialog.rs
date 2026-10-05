@@ -14,7 +14,7 @@ use crate::{
     ActiveTheme as _, IconName, Root, Sizable as _, StyledExt, TITLE_BAR_HEIGHT, WindowExt as _,
     animation::cubic_bezier,
     button::{Button, ButtonVariant, ButtonVariants as _},
-    dialog::{DialogContent, DialogTitle},
+    dialog::{DialogContent, DialogFooter, DialogTitle, into_accessible_title},
     scroll::ScrollableElement as _,
     v_flex,
 };
@@ -205,6 +205,9 @@ impl BaseDialogRoot {
     fn popup(self, element: impl IntoElement) -> Self {
         map_base_root!(self, popup(element))
     }
+    fn accessibility_label(self, label: impl Into<SharedString>) -> Self {
+        map_base_root!(self, accessibility_label(label))
+    }
     fn on_ok(self, handler: impl Fn(&ClickEvent, &mut Window, &mut App) -> bool + 'static) -> Self {
         map_base_root!(self, on_ok(handler))
     }
@@ -240,12 +243,15 @@ pub struct Dialog {
     children: Vec<AnyElement>,
     trigger: Option<AnyElement>,
     title: Option<AnyElement>,
+    title_accessibility_label: Option<SharedString>,
+    accessibility_label: Option<SharedString>,
     pub(crate) header: Option<AnyElement>,
     pub(crate) footer: Option<AnyElement>,
     pub(crate) content_builder: Option<ContentBuilderFn>,
     pub(crate) props: DialogProps,
 
     pub(super) button_props: DialogButtonProps,
+    show_default_footer: bool,
 
     /// This will be change when open the dialog, the focus handle is create when open the dialog.
     pub(crate) focus_handle: FocusHandle,
@@ -270,6 +276,8 @@ impl Dialog {
             style: StyleRefinement::default(),
             trigger: None,
             title: None,
+            title_accessibility_label: None,
+            accessibility_label: None,
             header: None,
             footer: None,
             content_builder: None,
@@ -278,6 +286,7 @@ impl Dialog {
             layer_ix: 0,
             selection_scope: TextSelectionScopeId::default(),
             button_props: DialogButtonProps::default(),
+            show_default_footer: false,
         }
     }
 
@@ -300,7 +309,18 @@ impl Dialog {
 
     /// Sets the title of the dialog.
     pub fn title(mut self, title: impl IntoElement) -> Self {
-        self.title = Some(title.into_any_element());
+        let (title, accessibility_label) = into_accessible_title(title);
+        self.title = Some(title);
+        self.title_accessibility_label = accessibility_label;
+        self
+    }
+
+    /// Sets the name announced for the dialog.
+    ///
+    /// Direct text passed to [`Self::title`] supplies this name automatically.
+    /// Set it explicitly when the visible title is a custom element.
+    pub fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.accessibility_label = Some(label.into());
         self
     }
 
@@ -323,6 +343,17 @@ impl Dialog {
     /// Set the button props of the dialog.
     pub fn button_props(mut self, button_props: DialogButtonProps) -> Self {
         self.button_props = button_props;
+        self.show_default_footer = true;
+        self
+    }
+
+    pub(super) fn with_button_props(
+        mut self,
+        button_props: DialogButtonProps,
+        show_default_footer: bool,
+    ) -> Self {
+        self.button_props = button_props;
+        self.show_default_footer = show_default_footer;
         self
     }
     pub(crate) fn with_base_alert_dialog(mut self, base: gpui_base::AlertDialog) -> Self {
@@ -425,6 +456,12 @@ impl Dialog {
         self
     }
 
+    pub(super) fn resolved_accessibility_label(&self) -> Option<SharedString> {
+        self.accessibility_label
+            .clone()
+            .or_else(|| self.title_accessibility_label.clone())
+    }
+
     fn defer_close_dialog(window: &mut Window, cx: &mut App) {
         Root::update(window, cx, |root, window, cx| {
             root.defer_close_dialog(window, cx);
@@ -450,6 +487,8 @@ impl Dialog {
         let style = self.style.clone();
         let props = self.props.clone();
         let button_props = self.button_props.clone();
+        let show_default_footer = self.show_default_footer;
+        let accessibility_label = self.resolved_accessibility_label();
 
         gpui_base::DialogTrigger::new(trigger)
             .on_open(move |window, cx| {
@@ -457,11 +496,15 @@ impl Dialog {
                 let style = style.clone();
                 let props = props.clone();
                 let button_props = button_props.clone();
+                let accessibility_label = accessibility_label.clone();
                 window.open_dialog(cx, move |dialog, _, _| {
                     dialog
                         .refine_style(&style)
-                        .button_props(button_props.clone())
+                        .with_button_props(button_props.clone(), show_default_footer)
                         .with_props(props.clone())
+                        .when_some(accessibility_label.clone(), |this, label| {
+                            this.accessibility_label(label)
+                        })
                         .content({
                             let content_builder = content_builder.clone();
                             move |content, window, cx| {
@@ -489,6 +532,21 @@ impl RenderOnce for Dialog {
         let on_close = self.button_props.on_close.clone();
         let on_ok = self.button_props.on_ok.clone();
         let on_cancel = self.button_props.on_cancel.clone();
+        let accessibility_label = self.resolved_accessibility_label();
+        let footer = if let Some(footer) = self.footer.take() {
+            Some(footer)
+        } else if self.show_default_footer {
+            Some(
+                DialogFooter::new()
+                    .when(self.button_props.show_cancel, |this| {
+                        this.child(self.button_props.render_cancel(window, cx))
+                    })
+                    .child(self.button_props.render_ok(window, cx))
+                    .into_any_element(),
+            )
+        } else {
+            None
+        };
 
         let window_paddings = crate::window_border::window_paddings(window);
         let view_size = window.viewport_size()
@@ -549,6 +607,9 @@ impl RenderOnce for Dialog {
                             .close_on_escape(self.props.keyboard)
                             .close_on_backdrop_press(self.props.overlay_closable)
                             .dismiss_below_y(TITLE_BAR_HEIGHT)
+                            .when_some(accessibility_label, |this, label| {
+                                this.accessibility_label(label)
+                            })
                             .when(self.props.overlay, |this| {
                                 this.backdrop(
                                     div()
@@ -637,7 +698,7 @@ impl RenderOnce for Dialog {
                                                 )
                                             }),
                                     )
-                                    .when_some(self.footer, |this, footer| {
+                                    .when_some(footer, |this, footer| {
                                         this.child(
                                             div()
                                                 .pl(paddings.left)

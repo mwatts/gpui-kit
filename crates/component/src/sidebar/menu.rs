@@ -1,5 +1,6 @@
 use crate::{
-    ActiveTheme as _, Collapsible, Icon, IconName, Placement, Sizable as _, StyledExt,
+    ActiveTheme as _, Collapsible, Disableable as _, Icon, IconName, Placement, Sizable as _,
+    StyledExt,
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{ContextMenuExt, PopupMenu},
@@ -12,7 +13,7 @@ use gpui::{
     ParentElement as _, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled,
     Window, div, percentage, prelude::FluentBuilder,
 };
-use gpui_base::TestSupportExt as _;
+use gpui_base::{Button as BaseButton, TestSupportExt as _};
 use std::rc::Rc;
 
 /// Menu for the [`super::Sidebar`]
@@ -276,9 +277,12 @@ impl SidebarItem for SidebarMenuItem {
             .test_support()
             .w_full()
             .child(
-                h_flex()
+                BaseButton::new("item")
                     .size_full()
-                    .id("item")
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_start()
                     .overflow_x_hidden()
                     .flex_shrink_0()
                     .p_2()
@@ -286,6 +290,11 @@ impl SidebarItem for SidebarMenuItem {
                     .rounded(cx.theme().radius)
                     .text_sm()
                     .refine_style(&self.style)
+                    .accessibility_label(self.label.clone())
+                    .selected(is_active)
+                    .aria_selected(is_active)
+                    .when(is_submenu, |this| this.aria_expanded(is_open))
+                    .disabled(is_disabled)
                     .when(is_hoverable, |this| {
                         this.hover(|this| {
                             this.bg(cx.theme().sidebar_accent.opacity(0.8))
@@ -328,6 +337,7 @@ impl SidebarItem for SidebarMenuItem {
                                     Button::new("caret")
                                         .xsmall()
                                         .ghost()
+                                        .disabled(is_disabled)
                                         .icon(
                                             Icon::new(IconName::ChevronRight)
                                                 .size_4()
@@ -351,28 +361,26 @@ impl SidebarItem for SidebarMenuItem {
                     .when(is_disabled, |this| {
                         this.text_color(cx.theme().muted_foreground)
                     })
-                    .when(!is_disabled, |this| {
-                        this.on_click({
-                            let open_state = open_state.clone();
-                            move |ev, window, cx| {
-                                if click_to_open {
-                                    if let Some(ref s) = open_state {
-                                        s.update(cx, |is_open: &mut bool, cx| {
-                                            *is_open = true;
-                                            cx.notify();
-                                        });
-                                    }
-                                } else if click_to_toggle {
-                                    if let Some(ref s) = open_state {
-                                        s.update(cx, |is_open: &mut bool, cx| {
-                                            *is_open = !*is_open;
-                                            cx.notify();
-                                        });
-                                    }
+                    .on_click({
+                        let open_state = open_state.clone();
+                        move |ev, window, cx| {
+                            if click_to_open {
+                                if let Some(ref s) = open_state {
+                                    s.update(cx, |is_open: &mut bool, cx| {
+                                        *is_open = true;
+                                        cx.notify();
+                                    });
                                 }
-                                handler(ev, window, cx)
+                            } else if click_to_toggle {
+                                if let Some(ref s) = open_state {
+                                    s.update(cx, |is_open: &mut bool, cx| {
+                                        *is_open = !*is_open;
+                                        cx.notify();
+                                    });
+                                }
                             }
-                        })
+                            handler(ev, window, cx)
+                        }
                     })
                     .map(|this| {
                         if let Some(tooltip) = collapsed_tooltip {
@@ -422,6 +430,11 @@ impl Styled for SidebarMenuItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{
+        Context, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, Render, TestAppContext,
+        VisualTestContext, point, px,
+    };
+    use std::cell::Cell;
 
     #[test]
     fn collapsed_icon_item_uses_label_as_tooltip() {
@@ -439,5 +452,145 @@ mod tests {
 
         assert!(expanded.collapsed_tooltip().is_none());
         assert!(iconless.collapsed_tooltip().is_none());
+    }
+
+    struct MenuItemHarness {
+        active: bool,
+        disabled: bool,
+        click_to_toggle: bool,
+        clicks: Rc<Cell<usize>>,
+        keyboard_clicks: Rc<Cell<usize>>,
+    }
+
+    impl Render for MenuItemHarness {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let clicks = self.clicks.clone();
+            let keyboard_clicks = self.keyboard_clicks.clone();
+            v_flex().id("sidebar").tab_group().w(px(240.)).child(
+                SidebarMenuItem::new("Projects")
+                    .active(self.active)
+                    .disable(self.disabled)
+                    .click_to_toggle(self.click_to_toggle)
+                    .children([SidebarMenuItem::new("Archive")])
+                    .on_click(move |event, _, _| {
+                        clicks.set(clicks.get() + 1);
+                        if matches!(event, ClickEvent::Keyboard(_)) {
+                            keyboard_clicks.set(keyboard_clicks.get() + 1);
+                        }
+                    })
+                    .render("projects", window, cx),
+            )
+        }
+    }
+
+    fn menu_item_harness(
+        cx: &mut TestAppContext,
+        active: bool,
+        disabled: bool,
+        click_to_toggle: bool,
+    ) -> (&mut VisualTestContext, Rc<Cell<usize>>, Rc<Cell<usize>>) {
+        cx.update(crate::init);
+        let clicks = Rc::new(Cell::new(0));
+        let keyboard_clicks = Rc::new(Cell::new(0));
+        let (_, cx) = cx.add_window_view({
+            let clicks = clicks.clone();
+            let keyboard_clicks = keyboard_clicks.clone();
+            move |_, _| MenuItemHarness {
+                active,
+                disabled,
+                click_to_toggle,
+                clicks,
+                keyboard_clicks,
+            }
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        (cx, clicks, keyboard_clicks)
+    }
+
+    fn item_snapshot(cx: &mut VisualTestContext) -> gpui_base::test_support::ElementSnapshot {
+        cx.update(|window, _| {
+            let mut path =
+                gpui_base::test_support::scope(window, &[], &ElementId::from("projects"));
+            path.push(ElementId::from("item"));
+            gpui_base::test_support::snapshots(window)
+                .into_iter()
+                .find(|snapshot| snapshot.path() == path)
+                .expect("rendered sidebar menu item")
+        })
+    }
+
+    fn caret_snapshot(cx: &mut VisualTestContext) -> gpui_base::test_support::ElementSnapshot {
+        cx.update(|window, _| {
+            let scope = gpui_base::test_support::scope(window, &[], &ElementId::from("projects"));
+            gpui_base::test_support::find(window, &scope, &ElementId::from("caret"))
+                .expect("rendered submenu caret")
+        })
+    }
+
+    fn activate_key(cx: &mut VisualTestContext, key: &str) {
+        let keystroke = Keystroke::parse(key).unwrap();
+        cx.simulate_event(KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(KeyUpEvent { keystroke });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    #[gpui::test]
+    fn menu_item_exports_state_and_pointer_and_keyboard_toggle_once(cx: &mut TestAppContext) {
+        let (cx, clicks, keyboard_clicks) = menu_item_harness(cx, true, false, true);
+
+        let item = item_snapshot(cx);
+        assert_eq!(item.role(), Some(gpui::Role::Button));
+        assert_eq!(item.label(), Some("Projects"));
+        assert_eq!(item.selected(), Some(true));
+        assert_eq!(item.expanded(), Some(false));
+
+        cx.simulate_click(item.bounds().center(), Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(clicks.get(), 1);
+        assert_eq!(keyboard_clicks.get(), 0);
+        assert_eq!(item_snapshot(cx).expanded(), Some(true));
+
+        activate_key(cx, "enter");
+        assert_eq!(clicks.get(), 2);
+        assert_eq!(keyboard_clicks.get(), 1);
+        assert_eq!(item_snapshot(cx).expanded(), Some(false));
+
+        activate_key(cx, "space");
+        assert_eq!(clicks.get(), 3);
+        assert_eq!(keyboard_clicks.get(), 2);
+        assert_eq!(item_snapshot(cx).expanded(), Some(true));
+    }
+
+    #[gpui::test]
+    fn submenu_caret_expands_without_calling_the_row(cx: &mut TestAppContext) {
+        let (cx, clicks, _) = menu_item_harness(cx, false, false, false);
+        let caret = caret_snapshot(cx);
+        cx.simulate_click(caret.bounds().center(), Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert_eq!(clicks.get(), 0);
+        assert_eq!(item_snapshot(cx).expanded(), Some(true));
+    }
+
+    #[gpui::test]
+    fn disabled_menu_item_and_caret_are_inert_and_skip_focus(cx: &mut TestAppContext) {
+        let (cx, clicks, _) = menu_item_harness(cx, false, true, true);
+        let item = item_snapshot(cx);
+        let caret = caret_snapshot(cx);
+
+        cx.simulate_click(item.bounds().center(), Modifiers::default());
+        cx.simulate_click(caret.bounds().center(), Modifiers::default());
+        cx.update(|window, cx| {
+            window.focus_next(cx);
+            window.draw(cx).clear(cx);
+            assert!(window.focused(cx).is_none());
+        });
+
+        assert_eq!(clicks.get(), 0);
+        assert_eq!(item_snapshot(cx).expanded(), Some(false));
     }
 }

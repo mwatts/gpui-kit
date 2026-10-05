@@ -3,8 +3,9 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, ClickEvent, FocusHandle, InteractiveElement as _, IntoElement, KeyBinding,
-    MouseButton, ParentElement, Pixels, RenderOnce, StyleRefinement, Styled, Window, anchored, div,
-    point, prelude::FluentBuilder as _, px,
+    MouseButton, ParentElement, Pixels, RenderOnce, Role, SharedString,
+    StatefulInteractiveElement as _, StyleRefinement, Styled, Window, anchored, div, point,
+    prelude::FluentBuilder as _, px,
 };
 
 use crate::{FocusTrapElement as _, StyledExt as _, actions::Cancel};
@@ -33,6 +34,7 @@ pub struct Sheet {
     base: gpui::Div,
     style: StyleRefinement,
     focus: FocusHandle,
+    accessibility_label: Option<SharedString>,
     overlay_interactive: bool,
     overlay_closable: bool,
     dismiss_before_y: Option<Pixels>,
@@ -48,6 +50,7 @@ impl Sheet {
             base: div(),
             style: StyleRefinement::default(),
             focus: cx.focus_handle(),
+            accessibility_label: None,
             overlay_interactive: true,
             overlay_closable: true,
             dismiss_before_y: None,
@@ -65,6 +68,12 @@ impl Sheet {
 
     pub fn surface(mut self, surface: impl IntoElement) -> Self {
         self.surface = Some(surface.into_any_element());
+        self
+    }
+
+    /// Sets the name announced for the modal sheet host.
+    pub fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.accessibility_label = Some(label.into());
         self
     }
 
@@ -129,6 +138,10 @@ impl RenderOnce for Sheet {
                 .left_0()
                 .w(viewport.width)
                 .h(viewport.height)
+                .role(Role::Dialog)
+                .when_some(self.accessibility_label, |this, label| {
+                    this.aria_label(label)
+                })
                 .key_context(CONTEXT)
                 .track_focus(&self.focus)
                 .focus_trap("sheet", &self.focus)

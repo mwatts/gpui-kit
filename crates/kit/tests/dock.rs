@@ -7,8 +7,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::test::{TestAppContextExt, TestSupportExt, TestWindowExt};
 use gpui_kit::{
-    App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, TestAppContext, Window,
-    div, prelude::*, px, size,
+    App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, Role, TestAppContext,
+    Window, div, prelude::*, px, size,
 };
 use std::time::Duration;
 struct Document {
@@ -94,6 +94,50 @@ async fn dock_switches_and_reorders_real_tabs(cx: &mut TestAppContext) {
             "dragging beta to slot zero must move alpha to slot one"
         );
         assert!(window.try_find("beta").is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn pane_menu_is_named_and_opens_from_keyboard_focus(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let handle = cx.open_window(size(px(900.), px(600.)), |window, cx| {
+        let (area, skin) = DockSkin::dock_area("editor", None, window, cx);
+        skin.set_panel_style(PanelStyle::Auto, cx);
+        let document = cx.new(|cx| Document {
+            name: "alpha",
+            focus: cx.focus_handle(),
+        });
+        let layout = DockLayout::tabs().panel_view(panel_handle(document), cx);
+        area.update(cx, |area, cx| area.set_center(layout, window, cx));
+        let editor = cx.new(|_| Editor { area });
+        Root::new(editor, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let menu = window.find("menu");
+        assert_eq!(menu.role(), Some(Role::Button));
+        assert_eq!(menu.label(), Some("Pane menu"));
+
+        for _ in 0..8 {
+            if window.find("menu").focused() == Some(true) {
+                break;
+            }
+            window.focus_next(cx);
+            window.render_frame(cx);
+        }
+        assert_eq!(window.find("menu").focused(), Some(true));
+        window.press("enter", cx);
+    })
+    .unwrap();
+
+    cx.wait_for(handle.into(), Duration::from_secs(1), |window, _| {
+        window.try_find("popup-menu").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, _| {
+        assert_eq!(window.find("popup-menu").focused(), Some(true));
     })
     .unwrap();
 }

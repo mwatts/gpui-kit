@@ -4,7 +4,8 @@ use std::{rc::Rc, time::Duration};
 use gpui::{
     Animation, AnimationExt as _, AnyElement, App, ClickEvent, DefiniteLength, DismissEvent, Edges,
     EventEmitter, FocusHandle, InteractiveElement as _, IntoElement, ParentElement, Pixels,
-    RenderOnce, StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _, px,
+    RenderOnce, SharedString, StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _,
+    px,
 };
 use gpui_base::{ElementExt as _, Sheet as BaseSheet, TextSelectionScopeId, actions::Cancel};
 use schemars::JsonSchema;
@@ -13,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     ActiveTheme, IconName, Placement, Sizable, StyledExt as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
-    dialog::overlay_color,
+    dialog::{into_accessible_title, overlay_color},
     h_flex,
     scroll::ScrollableElement as _,
     title_bar::TITLE_BAR_HEIGHT,
@@ -47,6 +48,8 @@ pub struct Sheet {
     resizable: bool,
     on_close: Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>,
     title: Option<AnyElement>,
+    title_accessibility_label: Option<SharedString>,
+    accessibility_label: Option<SharedString>,
     footer: Option<AnyElement>,
     style: StyleRefinement,
     children: Vec<AnyElement>,
@@ -64,6 +67,8 @@ impl Sheet {
             selection_scope: TextSelectionScopeId::default(),
             resizable: true,
             title: None,
+            title_accessibility_label: None,
+            accessibility_label: None,
             footer: None,
             style: StyleRefinement::default(),
             children: Vec::new(),
@@ -75,7 +80,18 @@ impl Sheet {
 
     /// Sets the title of the sheet.
     pub fn title(mut self, title: impl IntoElement) -> Self {
-        self.title = Some(title.into_any_element());
+        let (title, accessibility_label) = into_accessible_title(title);
+        self.title = Some(title);
+        self.title_accessibility_label = accessibility_label;
+        self
+    }
+
+    /// Sets the name announced for the sheet.
+    ///
+    /// Direct text passed to [`Self::title`] supplies this name automatically.
+    /// Set it explicitly when the visible title is a custom element.
+    pub fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.accessibility_label = Some(label.into());
         self
     }
 
@@ -135,6 +151,10 @@ impl RenderOnce for Sheet {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let placement = self.placement;
         let selection_scope = self.selection_scope;
+        let accessibility_label = self
+            .accessibility_label
+            .clone()
+            .or_else(|| self.title_accessibility_label.clone());
         let frame_insets = crate::window_border::window_content_insets(window);
         let size = window.viewport_size()
             - gpui::size(
@@ -252,6 +272,9 @@ impl RenderOnce for Sheet {
             .focus_handle(self.focus_handle)
             .overlay_interactive(self.overlay)
             .overlay_closable(self.overlay && self.overlay_closable)
+            .when_some(accessibility_label, |this, label| {
+                this.accessibility_label(label)
+            })
             .request_close(|window, cx| window.close_sheet(cx))
             .on_close(move |event, window, cx| (self.on_close)(event, window, cx))
             .overlay(overlay)
