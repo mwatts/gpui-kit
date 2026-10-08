@@ -122,6 +122,10 @@ enum ViewOwnership {
     Root,
     /// A nested view owns only work keyed to its exact GPUI entity identity.
     Nested(EntityId),
+    /// An additional root view of an application that another view already
+    /// owns. Dropping it cancels only its own work: the application generation
+    /// stays with the view that mounted it.
+    Additional(EntityId),
 }
 
 impl ScriptView {
@@ -146,6 +150,25 @@ impl ScriptView {
         entity_id: EntityId,
     ) -> Self {
         Self::with_ownership(runtime, object, policy, ViewOwnership::Nested(entity_id))
+    }
+
+    /// A view mounted beside the application's first one. It is not the
+    /// application's first render, so it never reports [`FirstRender`].
+    pub(crate) fn additional(
+        runtime: Rc<ShellRuntime>,
+        object: ViewObject,
+        policy: Rc<Policy>,
+        entity_id: EntityId,
+    ) -> Self {
+        let mut view = Self::with_ownership(
+            runtime,
+            object,
+            policy,
+            ViewOwnership::Additional(entity_id),
+        );
+        view.emitted_first_render = true;
+        view.scheduled_first_render = true;
+        view
     }
 
     fn with_ownership(
@@ -418,7 +441,7 @@ impl Drop for ScriptView {
                         .release_application_generation_without_context(&application);
                 }
             }
-            ViewOwnership::Nested(entity_id) => {
+            ViewOwnership::Nested(entity_id) | ViewOwnership::Additional(entity_id) => {
                 // Child-owned retained records are removed by EntityStore in
                 // the same operation that removes the child handle. Reaching
                 // back into that RefCell here would re-enter its mutable borrow.

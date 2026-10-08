@@ -917,6 +917,16 @@ impl LoadedApplication {
     }
 }
 
+#[cfg(test)]
+impl LoadedApplication {
+    pub(crate) fn test_generation(&self) -> Rc<ApplicationGeneration> {
+        self.view_type
+            .application
+            .clone()
+            .expect("loaded applications always hold a generation")
+    }
+}
+
 impl Drop for LoadedApplication {
     fn drop(&mut self) {
         if self.mounted.get() {
@@ -1645,6 +1655,91 @@ impl ShellRuntime {
             window,
             cx,
         )
+    }
+
+    /// Mounts one more [`ScriptView`] from an application that is already
+    /// mounted, for another window or popup.
+    ///
+    /// Every view of an application comes from the same evaluated module and
+    /// the same view class, so they share module-scope JavaScript state. Host
+    /// each in its own [`crate::ShellRoot::new`]. To re-render a sibling after
+    /// a change made through another view, call [`ScriptView::refresh`] on it.
+    ///
+    /// The first [`Self::mount_application`] view owns the application
+    /// generation; releasing it (as reload does) retires every view. A failed
+    /// construction or `init` here rolls back only this view's own entities and
+    /// tasks, and leaves the generation and the other views untouched.
+    pub fn mount_additional_view(
+        self: &Rc<Self>,
+        application: &LoadedApplication,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Result<Entity<ScriptView>> {
+        anyhow::ensure!(
+            application
+                .runtime
+                .upgrade()
+                .is_some_and(|runtime| Rc::ptr_eq(&runtime, self)),
+            "loaded application belongs to a different ShellRuntime"
+        );
+        anyhow::ensure!(
+            application.mounted.get(),
+            "loaded application must be mounted before an additional view is added"
+        );
+        let generation = application.view_type.application.clone();
+        anyhow::ensure!(
+            generation
+                .as_ref()
+                .is_some_and(|generation| generation.is_active()),
+            "loaded application has been retired"
+        );
+        let policy = crate::policy::default();
+        scheduler::drain_jobs_transactionally(self, window, cx)?;
+        let entity_checkpoint = { self.entities().checkpoint() };
+        let task_checkpoint = scheduler::checkpoint_runtime_tasks(self);
+
+        let (construct_scope, _) = scope::enter_with_application(
+            self,
+            window,
+            cx,
+            ScopePhase::Event,
+            None,
+            policy.clone(),
+            generation.clone(),
+        );
+        let constructed = self.construct(&application.view_type);
+        let construction_jobs = scheduler::drain_jobs_transactionally(self, window, cx);
+        drop(construct_scope);
+        let object = match construction_jobs.and(constructed) {
+            Ok(object) => object,
+            Err(error) => {
+                self.rollback_retained_since(entity_checkpoint, task_checkpoint, cx);
+                return Err(error);
+            }
+        };
+
+        let view = cx
+            .new(|cx| ScriptView::additional(self.clone(), object, policy.clone(), cx.entity_id()));
+        let object = view.read(cx).object().clone();
+        let (_initialize_scope, _) = scope::enter_with_application(
+            self,
+            window,
+            cx,
+            ScopePhase::Event,
+            Some(view.clone()),
+            policy,
+            generation,
+        );
+        let initialized = self.initialize(&object, None);
+        let nested = self.flush_pending_nested_views(window, cx);
+        let init_jobs = scheduler::drain_jobs_transactionally(self, window, cx);
+        if let Err(error) = initialized.and(nested).and(init_jobs) {
+            self.retire_view_callbacks(view.entity_id());
+            self.rollback_retained_since(entity_checkpoint, task_checkpoint, cx);
+            view.update(cx, |view, _| view.retire());
+            return Err(error);
+        }
+        Ok(view)
     }
 
     /// Installs the host sink that receives owned execution failures.
