@@ -12,6 +12,7 @@ mod dock;
 mod fs;
 mod host_api;
 mod http_request;
+mod multi_view;
 mod network;
 mod process;
 mod render;
