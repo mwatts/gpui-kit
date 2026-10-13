@@ -738,7 +738,7 @@ impl RenderOnce for Input {
         let id = self
             .id
             .unwrap_or_else(|| ("input", state.entity_id()).into());
-        let input = BaseInput::new(id)
+        BaseInput::new(id)
             .focused(focused)
             .disabled(disabled)
             .track_focus(&frame_focus_handle)
