@@ -1,11 +1,21 @@
 #[cfg(feature = "gpui-fast")]
 extern crate gpui_fast as gpui;
 
+#[allow(dead_code)] // retained_forms uses part of it.
+#[path = "../src/shell/input_tokens.rs"]
+mod input_tokens;
+
 #[path = "../src/shell/support.rs"]
 mod support;
 
 #[path = "../src/shell/media/mod.rs"]
 mod media;
+
+#[path = "../src/shell/retained_forms/mod.rs"]
+pub(crate) mod retained_forms;
+mod shell {
+    pub(crate) use crate::retained_forms;
+}
 
 use gpui::{Entity, IntoElement as _, TestAppContext, VisualTestContext};
 use std::{

@@ -71,7 +71,11 @@ impl gpui::Render for Root {
 
 fn mount(
     cx: &mut TestAppContext,
-) -> (Rc<ShellRuntime>, gpui::Entity<ScriptView>, VisualTestContext) {
+) -> (
+    Rc<ShellRuntime>,
+    gpui::Entity<ScriptView>,
+    VisualTestContext,
+) {
     cx.update(crate::init);
     let runtime = ShellRuntime::new_isolated().expect("runtime");
     cx.update(|cx| runtime.set_global(cx));

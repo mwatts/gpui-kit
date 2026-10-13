@@ -1814,33 +1814,35 @@ where
                     move |_, (), window, _| {
                         let runtime = runtime.clone();
                         let bounds = Rc::clone(&bounds);
-                        window.on_mouse_event(move |event: &gpui::LongPressEvent, phase, window, cx| {
-                            let Some(within) = bounds.get() else {
-                                return;
-                            };
-                            if !phase.bubble()
-                                || event.phase != gpui::TouchPhase::Started
-                                || window.default_prevented()
-                                || !within.contains(&event.start_position)
-                            {
-                                return;
-                            }
-                            window.prevent_default();
-                            cx.stop_propagation();
-                            let Some(runtime) = runtime.upgrade() else {
-                                return;
-                            };
-                            runtime.dispatch_mouse_button(
-                                callback,
-                                MouseButton::Left,
-                                event.start_position,
-                                1,
-                                gpui::Modifiers::default(),
-                                Some(within),
-                                window,
-                                cx,
-                            );
-                        });
+                        window.on_mouse_event(
+                            move |event: &gpui::LongPressEvent, phase, window, cx| {
+                                let Some(within) = bounds.get() else {
+                                    return;
+                                };
+                                if !phase.bubble()
+                                    || event.phase != gpui::TouchPhase::Started
+                                    || window.default_prevented()
+                                    || !within.contains(&event.start_position)
+                                {
+                                    return;
+                                }
+                                window.prevent_default();
+                                cx.stop_propagation();
+                                let Some(runtime) = runtime.upgrade() else {
+                                    return;
+                                };
+                                runtime.dispatch_mouse_button(
+                                    callback,
+                                    MouseButton::Left,
+                                    event.start_position,
+                                    1,
+                                    gpui::Modifiers::default(),
+                                    Some(within),
+                                    window,
+                                    cx,
+                                );
+                            },
+                        );
                     },
                 )
                 .absolute(),

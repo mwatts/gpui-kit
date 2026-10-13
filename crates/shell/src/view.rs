@@ -99,6 +99,9 @@ pub struct ScriptView {
     /// every frame: a broken render is exactly as frame-coupled as a working one
     /// if the failure re-triggers the build.
     error: Option<ScriptFailure>,
+    /// `error` as text: its message, then the script's stack, so a reader
+    /// of [`Self::build_error`] still sees where the script failed.
+    error_text: Option<String>,
     /// Set once the completed first frame has emitted [`FirstRender`].
     emitted_first_render: bool,
     /// Whether the completion callback for the first demanded frame is queued.
@@ -186,6 +189,7 @@ impl ScriptView {
             policy,
             theme: None,
             error: None,
+            error_text: None,
             emitted_first_render: false,
             scheduled_first_render: false,
             local_first_failure: None,
@@ -248,7 +252,17 @@ impl ScriptView {
     /// finds `snapshot()` empty should report this rather than the absence,
     /// because the absence is the symptom and this is the cause.
     pub fn build_error(&self) -> Option<&str> {
-        self.error.as_ref().map(ScriptFailure::message)
+        self.error_text.as_deref()
+    }
+
+    fn set_error(&mut self, failure: Option<ScriptFailure>) {
+        self.error_text = failure
+            .as_ref()
+            .map(|f| match f.stack().map(str::trim_end) {
+                Some(stack) if !stack.is_empty() => format!("{}\n{stack}", f.message()),
+                _ => f.message().to_owned(),
+            });
+        self.error = failure;
     }
 
     pub fn build_failure(&self) -> Option<&ScriptFailure> {
@@ -295,7 +309,7 @@ impl ScriptView {
     pub(crate) fn retire(&mut self) {
         self.retired = true;
         self.dirty = false;
-        self.error = None;
+        self.set_error(None);
         self.emitted_first_render = true;
         self.scheduled_first_render = true;
         self.local_first_failure = None;
@@ -339,13 +353,13 @@ impl ScriptView {
                 // Assigning through `previous` is what retires the snapshot
                 // before last: dropping it releases its callbacks.
                 self.previous = self.current.replace(snapshot);
-                self.error = None;
+                self.set_error(None);
             }
             Err(error) => {
                 let failure = ScriptFailure::from_error(&error);
                 self.record_initial_failure(&failure);
                 runtime.report_script_failure(failure.clone());
-                self.error = Some(failure);
+                self.set_error(Some(failure));
             }
         }
     }
@@ -467,7 +481,7 @@ impl Render for ScriptView {
                 Err(error) => {
                     let failure = self.runtime.report_materialize_error(&error);
                     self.record_initial_failure(&failure);
-                    self.error = Some(failure.clone());
+                    self.set_error(Some(failure.clone()));
                     self.schedule_first_render(window, cx);
                     self.present_failure(&failure, true, window, cx)
                 }

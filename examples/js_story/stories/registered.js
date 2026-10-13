@@ -2529,6 +2529,8 @@ export function registeredExamples(surface, cx) {
             )
               .stripe(true)
               .sortable(true)
+              // A sortable table must say what a header click does.
+              .on_sort(() => {})
               .column_resizable(true)
               .h(180),
           ),

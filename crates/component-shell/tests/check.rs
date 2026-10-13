@@ -157,7 +157,7 @@ fn check_reports_load_and_render_failures_without_hanging() {
             export default class App extends View {
                 render() { while (true) {} }
             }"#,
-            "interrupted",
+            "script execution exceeded its time budget",
         ),
     ] {
         let (status, stdout, stderr) = CheckApp::new(source).run();
