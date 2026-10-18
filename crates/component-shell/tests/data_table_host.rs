@@ -448,7 +448,10 @@ export default class App extends View {
     );
     assert!(!initial.is_empty(), "the table reports its first range");
     let cells = data_table::test_probe::take_cells();
-    assert!(cells.iter().any(|(row, _, v)| *row == 0 && v == "Row 0"), "{cells:?}");
+    assert!(
+        cells.iter().any(|(row, _, v)| *row == 0 && v == "Row 0"),
+        "{cells:?}"
+    );
 
     context.simulate_mouse_move(point(px(100.), px(100.)), None, Modifiers::default());
     draw(&mut context);
@@ -472,7 +475,10 @@ export default class App extends View {
         "scrolling never snapshots beyond the window: {snapshots:?}"
     );
     let tree = context.update(|_, cx| view.read(cx).snapshot().unwrap().debug_tree());
-    assert!(tree.contains("ranges:0-"), "the script received on_range: {tree}");
+    assert!(
+        tree.contains("ranges:0-"),
+        "the script received on_range: {tree}"
+    );
     assert_eq!(data_table::test_probe::errors(), 0);
 }
 

@@ -1264,6 +1264,10 @@ fn custom_block_keeps_focus_and_keys_until_escape(cx: &mut TestAppContext) {
         );
     });
     editor.read_with(cx, |editor, _| {
-        assert_eq!(editor.snapshots()[1].indent, 0, "Tab does not indent the embed");
+        assert_eq!(
+            editor.snapshots()[1].indent,
+            0,
+            "Tab does not indent the embed"
+        );
     });
 }

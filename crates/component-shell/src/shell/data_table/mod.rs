@@ -700,7 +700,11 @@ impl RenderOnce for DataTableHost {
             }
             state.refresh(cx);
             if let Some(id) = target {
-                match ids.iter().position(|row| row == &id).map(|i| i + window_start) {
+                match ids
+                    .iter()
+                    .position(|row| row == &id)
+                    .map(|i| i + window_start)
+                {
                     // The selected row is scrolled out of the window: keep it.
                     None if windowed => {}
                     Some(index) => {
