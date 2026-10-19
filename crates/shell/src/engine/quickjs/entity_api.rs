@@ -221,6 +221,18 @@ pub fn install(ctx: &Ctx<'_>, module: &Object<'_>, runtime: Weak<ShellRuntime>) 
         ),
     )?;
 
+    let focus_runtime = runtime.clone();
+    globals.set(
+        "__input_focus",
+        Func::from(move |ctx: Ctx<'_>, handle: EntityHandle| -> JsResult<()> {
+            let state = live(&ctx, &focus_runtime, handle)?;
+            scope::with_current(|window, cx| {
+                state.update(cx, |state, cx| state.focus(window, cx));
+            })
+            .ok_or_else(|| needs_call(&ctx, "focus()"))
+        }),
+    )?;
+
     let loading_runtime = runtime.clone();
     globals.set(
         "__input_set_loading",

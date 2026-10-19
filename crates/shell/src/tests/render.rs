@@ -10510,6 +10510,107 @@ export default class Probe extends View {
     );
 }
 
+/// A host whose window has a root of its own mounts the application below
+/// it. The script's overlays still need the `ShellRoot`: it is found as the
+/// one mounted in that window, not only as the window's first view.
+#[gpui::test]
+fn a_dialog_opens_on_a_shell_root_mounted_below_a_host_root(cx: &mut TestAppContext) {
+    struct HostRoot(gpui::AnyView);
+    impl gpui::Render for HostRoot {
+        fn render(
+            &mut self,
+            _: &mut gpui::Window,
+            _: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            gpui::div().child(self.0.clone())
+        }
+    }
+    cx.update(|cx| crate::init(cx));
+    let runtime = ShellRuntime::new_isolated().expect("runtime");
+    cx.update(|cx| runtime.set_global(cx));
+    let source = r#"
+import { View } from "gpui-kit";
+import { v_flex } from "gpui-base";
+
+export default class Probe extends View {
+  init(_props, cx) {
+    cx.timer.after(5, () => {
+      window.open_dialog(() => v_flex().child("nested dialog"), {});
+    });
+  }
+  render() {
+    return v_flex().child("content");
+  }
+}
+"#;
+    let view_type = runtime.load_source("nested-root.js", source).expect("load");
+    let runtime_for_view = Rc::clone(&runtime);
+    let shell_root = Rc::new(RefCell::new(None));
+    let slot = Rc::clone(&shell_root);
+    let (_host, context) = cx.add_window_view(move |window, cx| {
+        let object = runtime_for_view
+            .instantiate(&view_type, window, cx)
+            .expect("instantiate");
+        let view = cx.new(|_| ScriptView::new(runtime_for_view, object));
+        let root = cx.new(|cx| crate::root::ShellRoot::new(view.into(), window, cx));
+        *slot.borrow_mut() = Some(root.clone());
+        HostRoot(root.into())
+    });
+    context
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(10));
+    context.run_until_parked();
+    context.update(|window, cx| window.draw(cx).clear(cx));
+
+    let root = shell_root.borrow().clone().expect("the mounted root");
+    assert_eq!(context.update(|_, cx| root.read(cx).dialog_count()), 1);
+}
+
+/// An input's focus belongs to its state, so `focus()` on the state is how a
+/// script puts the caret in a field it just opened.
+#[gpui::test]
+fn an_input_state_takes_focus_when_asked(cx: &mut TestAppContext) {
+    cx.update(|cx| crate::init(cx));
+    let runtime = ShellRuntime::new_isolated().expect("runtime");
+    cx.update(|cx| runtime.set_global(cx));
+    let source = r#"
+import { View } from "gpui-kit";
+import { Input, InputState, v_flex } from "gpui-base";
+
+export default class Probe extends View {
+  init(_props, cx) {
+    this.input = InputState.new({ value: "Title" });
+    cx.timer.after(20, () => this.input.focus());
+  }
+  render() {
+    return v_flex().child(Input.new(this.input));
+  }
+}
+"#;
+    let view_type = runtime.load_source("input-focus.js", source).expect("load");
+    let runtime_for_view = Rc::clone(&runtime);
+    let (_root, context) = cx.add_window_view(move |window, cx| {
+        let object = runtime_for_view
+            .instantiate(&view_type, window, cx)
+            .expect("instantiate");
+        let view = cx.new(|_| ScriptView::new(runtime_for_view, object));
+        crate::root::ShellRoot::new(view.into(), window, cx)
+    });
+    context.run_until_parked();
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(context.update(|window, cx| window.focused(cx).is_none()));
+
+    context
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(30));
+    context.run_until_parked();
+    context.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        context.update(|window, cx| window.focused(cx).is_some()),
+        "focus() moves the keyboard into the field"
+    );
+}
+
 #[gpui::test]
 fn a_virtual_list_rejects_a_sparse_item_size_array_without_allocating_it(cx: &mut TestAppContext) {
     cx.update(|cx| crate::init(cx));

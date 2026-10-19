@@ -355,8 +355,8 @@ fn with_root<R>(
         Err(Exception::throw_type(
             ctx,
             &format!(
-                "{api} needs a ShellRoot as the window's first view; this window was \
-                 opened with another view"
+                "{api} needs a ShellRoot in this window, as its first view or mounted \
+                 below the host's own root"
             ),
         ))
     })

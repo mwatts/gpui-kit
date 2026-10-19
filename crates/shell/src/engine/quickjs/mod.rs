@@ -6554,6 +6554,7 @@ globalThis.__gpui = (() => {
     set_max: (max) => __input_set_max(handle, max === null || max === undefined ? null : Number(max)),
     set_masked: (masked) => __input_set_masked(handle, Boolean(masked)),
     set_loading: (loading) => __input_set_loading(handle, Boolean(loading)),
+    focus: () => __input_focus(handle),
     release: () => __input_release(handle),
   });
 

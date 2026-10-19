@@ -2383,7 +2383,10 @@ stacking order plus a dismissal order, with the smallest presentation that makes
 them visible. The first view of a shell window is always a `ShellRoot`, the same
 way the first view of a `gpui-component` window is always a `Root`, and a script
 reaches it only through `ShellRoot::update` — never by constructing overlays
-itself.
+itself. A host whose window already has a root of its own mounts the
+application's `ShellRoot` below it; `ShellRoot::update` and the tooltip layer
+find that one when the first view is not a `ShellRoot`, and its overlays cover
+the area it is mounted in rather than the whole window.
 
 **Stacking**, painted back to front: the script's content; at most one sheet,
 anchored to a viewport edge; the dialog stack in open order, each deferred at

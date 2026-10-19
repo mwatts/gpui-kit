@@ -12,14 +12,14 @@
 //! `gpui-base` only (see `docs/gpui-shell.md` §4.2), so the equivalent
 //! host has to be written here rather than reused.
 
-use std::{path::PathBuf, rc::Rc, time::Duration};
+use std::{collections::HashMap, path::PathBuf, rc::Rc, time::Duration};
 
 use gpui::{
     Anchor, AnyElement, AnyView, App, AppContext as _, ClickEvent, ClipboardItem, Context,
     ElementId, Entity, FocusHandle, Global, Hsla, InteractiveElement as _, IntoElement, KeyBinding,
     MouseButton, MouseDownEvent, ParentElement as _, Render, Role, SharedString,
-    StatefulInteractiveElement as _, StyleRefinement, Styled as _, WeakFocusHandle, Window,
-    actions, deferred, div, hsla, prelude::FluentBuilder as _, px,
+    StatefulInteractiveElement as _, StyleRefinement, Styled as _, WeakEntity, WeakFocusHandle,
+    Window, WindowId, actions, deferred, div, hsla, prelude::FluentBuilder as _, px,
 };
 use gpui_base::{
     ColorTokens, Dialog, POPUP_PRIORITY, Placement, RadiusTokens, Sheet, SpacingTokens,
@@ -209,6 +209,27 @@ struct KeyBindingsInstalled;
 
 impl Global for KeyBindingsInstalled {}
 
+/// The `ShellRoot` of each window whose first view is something else: a host
+/// with a root of its own (`gpui_component::Root`, say) that mounts the
+/// script application below it. Script overlays and tooltips reach it here
+/// when [`Window::root`] does not name one.
+#[derive(Default)]
+struct NestedRoots(HashMap<WindowId, WeakEntity<ShellRoot>>);
+
+impl Global for NestedRoots {}
+
+impl ShellRoot {
+    /// The window's first view when it is a `ShellRoot`, else the one a host
+    /// mounted below its own root.
+    fn find(window: &mut Window, cx: &mut App) -> Option<Entity<Self>> {
+        if let Some(root) = window.root::<Self>().flatten() {
+            return Some(root);
+        }
+        let id = window.window_handle().window_id();
+        cx.try_global::<NestedRoots>()?.0.get(&id)?.upgrade()
+    }
+}
+
 impl ShellRoot {
     /// Wraps a script view as the content of a window.
     ///
@@ -218,6 +239,11 @@ impl ShellRoot {
     pub fn new(content: AnyView, window: &mut Window, cx: &mut Context<Self>) -> Self {
         install_key_bindings(cx);
         Self::spawn_toast_clock(window, cx);
+        let id = window.window_handle().window_id();
+        let this = cx.entity().downgrade();
+        let nested = &mut cx.default_global::<NestedRoots>().0;
+        nested.retain(|_, root| root.upgrade().is_some());
+        nested.insert(id, this);
 
         Self {
             content,
@@ -254,7 +280,8 @@ impl ShellRoot {
     ///
     /// This is how a script-facing binding gets from the `&mut Window` its call
     /// scope carries to the overlay host, without the script ever holding the
-    /// root itself. `None` when the window's first view is not a `ShellRoot`,
+    /// root itself. The root is the window's first view, or one a host
+    /// mounted below a root of its own. `None` when the window has neither,
     /// which is a host wiring mistake rather than a script error — hence an
     /// `Option` and not a panic.
     pub fn update<R>(
@@ -262,7 +289,7 @@ impl ShellRoot {
         cx: &mut App,
         f: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) -> R,
     ) -> Option<R> {
-        let root = window.root::<Self>().flatten()?;
+        let root = Self::find(window, cx)?;
         Some(root.update(cx, |root, cx| f(root, window, cx)))
     }
 
@@ -271,10 +298,10 @@ impl ShellRoot {
     /// The counterpart to [`ShellRoot::update`] for the one overlay a script
     /// never opens by hand: a tooltip trigger is an element, so what reaches it
     /// is a hover listener holding a `&mut Window`, not a call scope. `None`
-    /// when the window's first view is not a `ShellRoot` — the same host wiring
-    /// mistake `update` reports, and the same reason it is not a panic.
+    /// when the window has no `ShellRoot` — the same host wiring mistake
+    /// `update` reports, and the same reason it is not a panic.
     pub fn tooltip_overlay(window: &mut Window, cx: &mut App) -> Option<Entity<TooltipOverlay>> {
-        let root = window.root::<Self>().flatten()?;
+        let root = Self::find(window, cx)?;
         Some(root.read(cx).tooltip_overlay.clone())
     }
 

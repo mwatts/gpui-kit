@@ -3066,6 +3066,12 @@ const BASE: &str = r#"  /** A row. */
     set_masked(masked: boolean): void;
     /** Marks the state as working; the presentation is the application's. */
     set_loading(loading: boolean): void;
+    /**
+     * Moves the keyboard into the field, caret blinking. An input's focus
+     * belongs to its state, so this is how a script focuses one: a field that
+     * opens for typing, such as a rename, calls it as it appears.
+     */
+    focus(): void;
     release(): boolean;
   }
 
