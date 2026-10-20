@@ -254,8 +254,8 @@ fn outgoing_message<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Message> {
     let bytes = TypedArray::<u8>::from_js(ctx, value).map_err(|_| {
         Exception::throw_type(ctx, "WebSocket.write(data) expects a string or Uint8Array")
     })?;
-    let bytes = bytes
-        .as_bytes()
+    // SAFETY: the bytes are copied out before any JavaScript runs.
+    let bytes = unsafe { bytes.as_bytes() }
         .ok_or_else(|| {
             Exception::throw_type(ctx, "WebSocket.write(data) received a detached Uint8Array")
         })?

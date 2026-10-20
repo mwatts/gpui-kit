@@ -182,13 +182,16 @@ fn parse_body<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Vec<u8>> {
             "fetch(url, options).body expects a string or Uint8Array",
         )
     })?;
-    let bytes = bytes.as_bytes().ok_or_else(|| {
-        Exception::throw_type(
-            ctx,
-            "fetch(url, options).body received a detached Uint8Array",
-        )
-    })?;
-    limited_body(ctx, bytes.to_vec())
+    // SAFETY: the bytes are copied out before any JavaScript runs.
+    let bytes = unsafe { bytes.as_bytes() }
+        .ok_or_else(|| {
+            Exception::throw_type(
+                ctx,
+                "fetch(url, options).body received a detached Uint8Array",
+            )
+        })?
+        .to_vec();
+    limited_body(ctx, bytes)
 }
 
 fn limited_body<'js>(ctx: &Ctx<'js>, body: Vec<u8>) -> Result<Vec<u8>> {
