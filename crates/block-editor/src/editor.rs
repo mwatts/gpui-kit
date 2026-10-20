@@ -789,12 +789,16 @@ impl Editor {
             .map(|annotation| annotation.key.clone())
     }
 
-    /// Where the end of `range` is painted, to anchor a host's popover.
+    /// Where the end of `range` is painted, relative to the editor's top
+    /// left, to anchor a host's popover beside it.
     #[must_use]
     pub fn range_bounds(&self, range: &Selection) -> Option<Bounds<Pixels>> {
         let (_, end) = range.ordered();
         let (point, line_height) = self.layouts.position(&end)?;
-        Some(Bounds::new(point, gpui::size(px(0.0), line_height)))
+        Some(Bounds::new(
+            point - self.origin,
+            gpui::size(px(0.0), line_height),
+        ))
     }
 
     /// The selection toolbar's Comment.
