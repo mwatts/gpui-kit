@@ -253,7 +253,11 @@ struct ContentSession {
     internal_id: BlockId,
     document: Option<BlockDocument>,
     intact_bytes: Vec<u8>,
-    baseline: Vec<u8>,
+    /// The document's operation log when it last matched the store, or None
+    /// for a block not yet stored. A Loro snapshot does not re-export byte for
+    /// byte, so the bytes cannot say whether the block changed; the version
+    /// vector moves only when an operation is applied.
+    baseline: Option<loro::VersionVector>,
     version: ObjectVersion,
     writable: bool,
     created: bool,
@@ -271,7 +275,18 @@ impl ContentSession {
     }
 
     fn dirty(&self) -> bool {
-        self.created || self.export_bytes() != self.baseline
+        self.created || self.oplog() != self.baseline
+    }
+
+    fn oplog(&self) -> Option<loro::VersionVector> {
+        self.document
+            .as_ref()
+            .map(|document| document.doc().oplog_vv())
+    }
+
+    fn mark_stored(&mut self) {
+        self.baseline = self.oplog();
+        self.created = false;
     }
 
     fn kind(&self) -> BlockType {
@@ -642,7 +657,7 @@ impl CompositionSession {
                 internal_id: BlockId(content_id.clone()),
                 document: Some(document),
                 intact_bytes: bytes.clone(),
-                baseline: Vec::new(),
+                baseline: None,
                 version: ObjectVersion(String::new()),
                 writable: true,
                 created: true,
@@ -903,15 +918,13 @@ impl CompositionSession {
         self.collection_versions.extend(collections);
         if versions.is_empty() {
             for session in self.objects.values_mut() {
-                session.baseline = session.export_bytes();
-                session.created = false;
+                session.mark_stored();
             }
         } else {
             for (id, version) in versions {
                 if let Some(session) = self.objects.get_mut(&id) {
                     session.version = version;
-                    session.baseline = session.export_bytes();
-                    session.created = false;
+                    session.mark_stored();
                 }
             }
         }
@@ -1141,7 +1154,7 @@ impl CompositionSession {
                 internal_id: BlockId(suffix_id.clone()),
                 document: Some(suffix_doc),
                 intact_bytes: bytes.clone(),
-                baseline: Vec::new(),
+                baseline: None,
                 version: ObjectVersion(String::new()),
                 writable: true,
                 created: true,
@@ -1767,12 +1780,13 @@ fn load_object(object: CompositionObject, gate: EditorGate) -> ContentSession {
         let kind = object.kind_hint.unwrap_or(BlockType::Paragraph);
         let document = new_block_document(&object.id, kind.clone(), &[]);
         let bytes = document.export_snapshot().unwrap_or_default();
+        let baseline = Some(document.doc().oplog_vv());
         return ContentSession {
             object_id: object.id.clone(),
             internal_id: BlockId(object.id.clone()),
             document: Some(document),
-            intact_bytes: bytes.clone(),
-            baseline: bytes,
+            intact_bytes: bytes,
+            baseline,
             version: object.version,
             writable: gate.content_writable(&kind),
             created: false,
@@ -1792,12 +1806,13 @@ fn load_object(object: CompositionObject, gate: EditorGate) -> ContentSession {
                 .or(object.kind_hint)
                 .unwrap_or(BlockType::Custom("unknown".into()));
             let writable = gate.content_writable(&kind);
+            let baseline = Some(document.doc().oplog_vv());
             ContentSession {
                 object_id: object.id,
                 internal_id,
                 document: Some(document),
-                intact_bytes: object.bytes.clone(),
-                baseline: object.bytes,
+                intact_bytes: object.bytes,
+                baseline,
                 version: object.version,
                 writable,
                 created: false,
@@ -1807,8 +1822,8 @@ fn load_object(object: CompositionObject, gate: EditorGate) -> ContentSession {
             object_id: object.id,
             internal_id: BlockId("unimported".into()),
             document: None,
-            intact_bytes: object.bytes.clone(),
-            baseline: object.bytes,
+            intact_bytes: object.bytes,
+            baseline: None,
             version: object.version,
             writable: false,
             created: false,

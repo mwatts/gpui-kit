@@ -1126,3 +1126,32 @@ fn reload_of_a_join_survivor_drops_the_join_but_keeps_the_source_edits() {
     assert!(session.is_object_dirty(BLOCK_B));
     assert!(!session.can_undo());
 }
+
+/// A block edited by two peers, opened and left alone, is not dirty. A Loro
+/// snapshot does not re-export byte for byte, so a byte comparison with the
+/// stored snapshot called some untouched blocks edited.
+#[test]
+fn an_untouched_two_peer_block_is_clean() {
+    let mut dirty = 0;
+    for round in 0..200 {
+        let mut doc = BlockDocument::import_snapshot(&encode_block(
+            BLOCK_A,
+            BlockType::Paragraph,
+            "alpha",
+        ))
+        .unwrap();
+        let id = doc.snapshots()[0].id.clone();
+        doc.apply(BlockOp::InsertText {
+            id,
+            offset: 5,
+            text: format!(" and {round}"),
+        });
+        let mut read = fixture();
+        read.objects.get_mut(BLOCK_A).unwrap().bytes = doc.export_snapshot().unwrap();
+        let session = CompositionSession::open(read, EditorGate::Notes, IdSource::default());
+        if session.is_object_dirty(BLOCK_A) {
+            dirty += 1;
+        }
+    }
+    assert_eq!(dirty, 0, "untouched blocks reported dirty");
+}

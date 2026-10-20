@@ -29,7 +29,7 @@ pub use composition::{
     RelationMutation, ReloadError, encode_block,
 };
 pub use document::BlockDocument;
-pub use editor::{CommentThread, Editor, EditorEvent};
+pub use editor::{CommentThread, Editor, EditorEvent, HostAnnotation};
 pub use image::{ImageStore, Source, saved_image_reference, set_image_store};
 pub use keys::{CONTEXT, init as keys_init};
 pub use layout::{Layout, set_layout};

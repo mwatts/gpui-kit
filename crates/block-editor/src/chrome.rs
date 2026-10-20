@@ -232,6 +232,7 @@ impl Editor {
             bounds.origin.y + bounds.size.height + px(6.0),
         );
         let selection = self.selection.clone();
+        let read_only = self.read_only();
         let marks = [
             ("B", Mark::Bold),
             ("I", Mark::Italic),
@@ -263,9 +264,7 @@ impl Editor {
             .child("Comment")
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    let _ = this.add_comment(String::new(), cx);
-                }),
+                cx.listener(|this, _, _, cx| this.comment_clicked(cx)),
             );
 
         Some(
@@ -288,14 +287,15 @@ impl Editor {
                             .border_color(hairline(cx, 0.12))
                             .bg(frost(cx))
                             .occlude()
-                            .children(buttons)
-                            .child(
-                                div()
-                                    .w(px(1.0))
-                                    .h(px(16.0))
-                                    .mx(px(3.0))
-                                    .bg(hairline(cx, 0.14)),
-                            )
+                            .when(!read_only, |bar| {
+                                bar.children(buttons).child(
+                                    div()
+                                        .w(px(1.0))
+                                        .h(px(16.0))
+                                        .mx(px(3.0))
+                                        .bg(hairline(cx, 0.14)),
+                                )
+                            })
                             .child(comment),
                     ),
             )

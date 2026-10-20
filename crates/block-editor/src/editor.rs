@@ -59,6 +59,21 @@ pub enum EditorEvent {
     /// secondary-modifier click (Cmd on macOS, Ctrl elsewhere), since a
     /// plain click places the caret and Enter splits the block.
     OpenReference(String),
+    /// The selection toolbar's Comment, while the host keeps comments
+    /// ([`Editor::set_host_comments`]): the selected range, not yet stored.
+    CommentRequested(Selection),
+    /// A click on a host annotation ([`Editor::set_host_annotations`]).
+    AnnotationActivated(SharedString),
+}
+
+/// A range the host keeps outside the document (a passage another store
+/// holds), painted like a comment and reported by key when clicked. The
+/// document never holds it, so it changes no bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostAnnotation {
+    pub key: SharedString,
+    pub range: Selection,
+    pub resolved: bool,
 }
 
 /// One comment thread projected for the host list.
@@ -111,6 +126,9 @@ pub struct Editor {
     active_comment: Option<CommentId>,
     annotations_cache: Vec<(Selection, Annotation)>,
     comments_cache: Vec<CommentThread>,
+    host_comments: bool,
+    host_annotations: Vec<HostAnnotation>,
+    active_host: Option<SharedString>,
 }
 
 impl Editor {
@@ -179,6 +197,9 @@ impl Editor {
             active_comment: None,
             annotations_cache: Vec::new(),
             comments_cache: Vec::new(),
+            host_comments: false,
+            host_annotations: Vec::new(),
+            active_host: None,
         };
         editor.refresh_annotations();
         editor
@@ -718,6 +739,75 @@ impl Editor {
         None
     }
 
+    /// Route the selection toolbar's Comment to the host: it emits
+    /// [`EditorEvent::CommentRequested`] instead of writing a comment mark,
+    /// and it shows in a read-only editor too.
+    pub fn set_host_comments(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.host_comments = on;
+        cx.notify();
+    }
+
+    #[must_use]
+    pub fn host_comments(&self) -> bool {
+        self.host_comments
+    }
+
+    /// The host's annotations, replacing the previous set. One whose key was
+    /// active stays active.
+    pub fn set_host_annotations(
+        &mut self,
+        annotations: Vec<HostAnnotation>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.host_annotations == annotations {
+            return;
+        }
+        self.host_annotations = annotations;
+        if let Some(key) = &self.active_host {
+            if !self.host_annotations.iter().any(|a| &a.key == key) {
+                self.active_host = None;
+            }
+        }
+        self.refresh_annotations();
+        cx.notify();
+    }
+
+    /// The host annotation under `at`, if any.
+    #[must_use]
+    pub fn host_annotation_at(&self, at: Point<Pixels>) -> Option<SharedString> {
+        let hit = self.layouts.hit(at)?;
+        self.host_annotations
+            .iter()
+            .find(|annotation| {
+                let (start, end) = annotation.range.ordered();
+                start.paint_id() == hit.paint_id()
+                    && end.paint_id() == hit.paint_id()
+                    && start.part == hit.part
+                    && start.offset <= hit.offset
+                    && hit.offset < end.offset
+            })
+            .map(|annotation| annotation.key.clone())
+    }
+
+    /// Where the end of `range` is painted, to anchor a host's popover.
+    #[must_use]
+    pub fn range_bounds(&self, range: &Selection) -> Option<Bounds<Pixels>> {
+        let (_, end) = range.ordered();
+        let (point, line_height) = self.layouts.position(&end)?;
+        Some(Bounds::new(point, gpui::size(px(0.0), line_height)))
+    }
+
+    /// The selection toolbar's Comment.
+    pub(crate) fn comment_clicked(&mut self, cx: &mut Context<Self>) {
+        if self.host_comments {
+            if !self.selection.is_collapsed() {
+                cx.emit(EditorEvent::CommentRequested(self.selection.clone()));
+            }
+        } else {
+            let _ = self.add_comment(String::new(), cx);
+        }
+    }
+
     #[must_use]
     pub fn comments(&self) -> &[CommentThread] {
         &self.comments_cache
@@ -871,6 +961,18 @@ impl Editor {
                 (t.range.clone(), ann)
             })
             .collect();
+        let active_host = self.active_host.clone();
+        self.annotations_cache
+            .extend(self.host_annotations.iter().map(|a| {
+                let ann = if Some(&a.key) == active_host.as_ref() {
+                    Annotation::Active
+                } else if a.resolved {
+                    Annotation::Resolved
+                } else {
+                    Annotation::Open
+                };
+                (a.range.clone(), ann)
+            }));
     }
 
     fn clamp_selection(&self, selection: Selection) -> Selection {
@@ -2239,6 +2341,10 @@ impl Render for Editor {
                         this.active_comment = Some(id.clone());
                         this.refresh_annotations();
                         cx.emit(EditorEvent::CommentActivated(id));
+                    } else if let Some(key) = this.host_annotation_at(event.position) {
+                        this.active_host = Some(key.clone());
+                        this.refresh_annotations();
+                        cx.emit(EditorEvent::AnnotationActivated(key));
                     }
                     // Task checkbox
                     if this
@@ -2305,7 +2411,9 @@ impl Render for Editor {
                     .children(self.slash_menu(window, cx))
                     .children(self.paste_menu(window, cx))
                     .children(self.language_menu(window, cx))
-                    .children(self.format_toolbar(window, cx))
+            })
+            .when(!self.read_only || self.host_comments, |this| {
+                this.children(self.format_toolbar(window, cx))
             })
             .children(self.url_prompt.as_ref().map(|p| {
                 let origin = self

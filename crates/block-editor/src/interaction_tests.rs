@@ -1271,3 +1271,84 @@ fn custom_block_keeps_focus_and_keys_until_escape(cx: &mut TestAppContext) {
         );
     });
 }
+
+/// With host comments on, the toolbar's Comment hands the selected range to
+/// the host and writes nothing; it shows in a read-only editor too. A click
+/// on a host annotation reports its key, and the annotation is no mark.
+#[gpui::test]
+fn host_comments_and_annotations_leave_the_document_alone(cx: &mut TestAppContext) {
+    let (editor, cx) = harness(cx);
+    editor.update(cx, |editor, cx| {
+        *editor = Editor::from_markdown("compare the two prototypes", cx);
+        editor.set_read_only(true, cx);
+        editor.set_host_comments(true, cx);
+    });
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::<crate::EditorEvent>::new()));
+    let sink = events.clone();
+    cx.update(|_, cx| {
+        cx.subscribe(&editor, move |_, event: &crate::EditorEvent, _| {
+            sink.borrow_mut().push(event.clone());
+        })
+        .detach();
+    });
+    let (id, before) = editor.read_with(cx, |editor, _| {
+        (
+            editor.snapshots()[0].id.clone(),
+            editor.snapshots()[0].runs.clone(),
+        )
+    });
+    let range = Selection::new(
+        Cursor::new(id.clone(), Part::Body, 0),
+        Cursor::new(id.clone(), Part::Body, 7),
+    );
+    editor.update(cx, |editor, cx| {
+        editor.select(range.clone(), cx);
+        editor.comment_clicked(cx);
+    });
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+    assert!(
+        cx.debug_bounds("format-toolbar").is_some(),
+        "read-only toolbar offers Comment"
+    );
+    assert_eq!(
+        events.borrow().as_slice(),
+        [crate::EditorEvent::CommentRequested(range.clone())]
+    );
+
+    editor.update(cx, |editor, cx| {
+        editor.set_host_annotations(
+            vec![crate::HostAnnotation {
+                key: "passage-1".into(),
+                range: range.clone(),
+                resolved: false,
+            }],
+            cx,
+        );
+        editor.select(
+            Selection::caret(Cursor::new(id.clone(), Part::Body, 20)),
+            cx,
+        );
+    });
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+    let point = editor.read_with(cx, |editor, _| {
+        let (point, line) = editor
+            .layouts
+            .position(&Cursor::new(id.clone(), Part::Body, 3))
+            .expect("painted text");
+        point + gpui::point(px(1.0), line / 2.0)
+    });
+    cx.simulate_click(point, gpui::Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(
+        events.borrow().last(),
+        Some(&crate::EditorEvent::AnnotationActivated("passage-1".into()))
+    );
+    editor.read_with(cx, |editor, _| {
+        assert_eq!(editor.snapshots()[0].runs, before, "no mark was written");
+        assert!(editor.comments().is_empty());
+    });
+}
