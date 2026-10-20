@@ -398,6 +398,29 @@ mod tests {
         })
     }
 
+    /// Two components each initialise the base layer (a shell over a
+    /// component catalog does). Its key bindings stay single, so one Enter
+    /// in a single-line input is one `PressEnter`, not one per registration.
+    #[gpui::test]
+    fn one_enter_is_one_press_enter_after_a_second_init(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (input, cx) = open_input(cx, "a root");
+        let presses = std::rc::Rc::new(std::cell::Cell::new(0));
+        let count = presses.clone();
+        cx.update(|window, cx| {
+            cx.subscribe(&input, move |_, event: &crate::input::InputEvent, _| {
+                if matches!(event, crate::input::InputEvent::PressEnter { .. }) {
+                    count.set(count.get() + 1);
+                }
+            })
+            .detach();
+            input.update(cx, |state, cx| state.focus(window, cx));
+        });
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(presses.get(), 1);
+    }
+
     #[gpui::test]
     fn long_press_selects_word_then_release_opens_menu(cx: &mut TestAppContext) {
         let (input, cx) = open_input(cx, "quick select value");

@@ -224,8 +224,22 @@ pub const fn is_mobile() -> bool {
     cfg!(any(target_os = "ios", target_os = "android"))
 }
 
+/// Marks an app whose base layer is initialized.
+struct Initialized;
+
+impl gpui::Global for Initialized {}
+
 /// Initializes global infrastructure owned by the base layer.
+///
+/// Runs once per app. A shell over a component catalog reaches it through
+/// both, and a second run would bind every key twice: a single-line input
+/// lets Enter propagate, so the second binding ran it again and one press
+/// submitted twice.
 pub fn init(cx: &mut App) {
+    if cx.has_global::<Initialized>() {
+        return;
+    }
+    cx.set_global(Initialized);
     let _ = Theme::global_mut(cx);
     GlobalState::init(cx);
     reduce_motion::init(cx);
