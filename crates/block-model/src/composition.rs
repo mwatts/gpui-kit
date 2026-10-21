@@ -78,10 +78,10 @@ impl EditorGate {
                 | BlockOp::Indent { .. }
                 | BlockOp::Outdent { .. }
                 | BlockOp::SetProp { .. }
-                | BlockOp::ToggleCheck { .. } => true,
-                BlockOp::SetLink { .. }
-                | BlockOp::RemoveLink { .. }
-                | BlockOp::AddComment { .. }
+                | BlockOp::ToggleCheck { .. }
+                | BlockOp::SetLink { .. }
+                | BlockOp::RemoveLink { .. } => true,
+                BlockOp::AddComment { .. }
                 | BlockOp::SetCommentBody { .. }
                 | BlockOp::SetCommentState { .. }
                 | BlockOp::DeleteComment { .. }
@@ -638,7 +638,9 @@ impl CompositionSession {
             | BlockOp::ImeCommit { .. }
             | BlockOp::ToggleMark { .. }
             | BlockOp::SetProp { .. }
-            | BlockOp::ToggleCheck { .. } => {
+            | BlockOp::ToggleCheck { .. }
+            | BlockOp::SetLink { .. }
+            | BlockOp::RemoveLink { .. } => {
                 let Some(id) = op.target_id().cloned() else {
                     return ApplyResult::default();
                 };
@@ -1932,6 +1934,17 @@ fn remap_op(op: BlockOp, internal: &BlockId) -> BlockOp {
         },
         BlockOp::ToggleCheck { .. } => BlockOp::ToggleCheck {
             id: internal.clone(),
+        },
+        BlockOp::SetLink { start, end, url, .. } => BlockOp::SetLink {
+            id: internal.clone(),
+            start,
+            end,
+            url,
+        },
+        BlockOp::RemoveLink { start, end, .. } => BlockOp::RemoveLink {
+            id: internal.clone(),
+            start,
+            end,
         },
         other => other,
     }

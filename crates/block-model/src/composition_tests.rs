@@ -684,6 +684,44 @@ fn editor_gate_writes_code_marks_and_language() {
     assert!(draft.relations.is_empty());
 }
 
+/// Why: the NSH block editor writes a mention's marker and a typed link
+/// through the session, so the Editor gate must apply and remove links on
+/// the archive's block id, and save them in the draft.
+#[test]
+fn editor_gate_sets_and_removes_links() {
+    let mut session = open_editor();
+    let link = |session: &CompositionSession| {
+        session.snapshots()[0].runs.iter().find_map(|run| match run {
+            loro::TextDelta::Insert {
+                attributes: Some(attrs),
+                ..
+            } => attrs.get("link").map(|value| format!("{value:?}")),
+            _ => None,
+        })
+    };
+    session.apply(
+        BlockOp::SetLink {
+            id: BlockId(BLOCK_A.into()),
+            start: 0,
+            end: 2,
+            url: "ashlar://object/abc".into(),
+        },
+        Some(&occ(CHILD_A1)),
+    );
+    let set = link(&session).expect("the link mark applies");
+    assert!(set.contains("ashlar://object/abc"), "{set}");
+    assert!(session.draft().content.contains_key(BLOCK_A));
+    session.apply(
+        BlockOp::RemoveLink {
+            id: BlockId(BLOCK_A.into()),
+            start: 0,
+            end: 2,
+        },
+        Some(&occ(CHILD_A1)),
+    );
+    assert_eq!(link(&session), None, "the link mark is removed");
+}
+
 #[test]
 fn editor_indent_reparents_child_and_undo_restores_occurrence() {
     let mut session = CompositionSession::open(
