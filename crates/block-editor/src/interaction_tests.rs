@@ -1352,3 +1352,94 @@ fn host_comments_and_annotations_leave_the_document_alone(cx: &mut TestAppContex
         assert!(editor.comments().is_empty());
     });
 }
+
+/// A page of one paragraph, "alpha", with the caret at its end.
+fn composed_page(cx: &mut TestAppContext) -> (gpui::Entity<Editor>, &mut VisualTestContext) {
+    use std::collections::BTreeMap;
+
+    use crate::{
+        ChildOccurrence, CompositionObject, CompositionRead, CompositionSession, EditorGate,
+        IdSource, ObjectVersion, encode_block,
+    };
+
+    let read = CompositionRead {
+        root: "note".into(),
+        root_type: "ashlar.Note".into(),
+        version_tip: "tip".into(),
+        objects: BTreeMap::from([(
+            "block-a".into(),
+            CompositionObject {
+                id: "block-a".into(),
+                version: ObjectVersion("v1".into()),
+                bytes: encode_block("block-a", BlockType::Paragraph, "alpha"),
+                kind_hint: Some(BlockType::Paragraph),
+            },
+        )]),
+        children: vec![ChildOccurrence {
+            relation_id: "c-a".into(),
+            parent: "note".into(),
+            child: "block-a".into(),
+            slot: "body".into(),
+            position: "a0".into(),
+            child_missing: false,
+            cycle_unresolved: false,
+        }],
+        collection_versions: BTreeMap::new(),
+    };
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init(cx);
+    });
+    let (root, cx) = cx.add_window_view(|window, cx| {
+        let session = CompositionSession::open(read, EditorGate::Notes, IdSource::default());
+        let editor = cx.new(|cx| Editor::from_composition(session, cx));
+        editor.update(cx, |editor, cx| editor.focus_handle(cx).focus(window, cx));
+        Root::new(editor, window, cx)
+    });
+    let editor = root.read_with(cx, |root, _| {
+        root.view().clone().downcast::<Editor>().unwrap()
+    });
+    let cx: &mut VisualTestContext = cx;
+    caret_at(&editor, 5, cx);
+    (editor, cx)
+}
+
+fn caret_at(editor: &gpui::Entity<Editor>, offset: usize, cx: &mut VisualTestContext) {
+    editor.update(cx, |editor, cx| {
+        editor.select(
+            Selection::caret(
+                Cursor::new(crate::BlockId("block-a".into()), Part::Body, offset)
+                    .with_occurrence(crate::BlockId("c-a".into())),
+            ),
+            cx,
+        );
+    });
+}
+
+fn undo_to(editor: &gpui::Entity<Editor>, expected: &str, cx: &mut VisualTestContext) {
+    #[cfg(target_os = "macos")]
+    cx.simulate_keystrokes("cmd-z");
+    #[cfg(not(target_os = "macos"))]
+    cx.simulate_keystrokes("ctrl-z");
+    let plain = editor.read_with(cx, |editor, _| editor.snapshots()[0].plain.clone());
+    assert_eq!(plain, expected);
+}
+
+#[gpui::test]
+fn undo_takes_back_typing_a_word_at_a_time(cx: &mut TestAppContext) {
+    let (editor, cx) = composed_page(cx);
+    cx.simulate_input(" one two");
+    undo_to(&editor, "alpha one ", cx);
+    undo_to(&editor, "alpha ", cx);
+    undo_to(&editor, "alpha", cx);
+}
+
+#[gpui::test]
+fn moving_the_caret_ends_a_typing_step(cx: &mut TestAppContext) {
+    let (editor, cx) = composed_page(cx);
+    cx.simulate_input("xy");
+    caret_at(&editor, 0, cx);
+    cx.simulate_input("z");
+    undo_to(&editor, "alphaxy", cx);
+    undo_to(&editor, "alpha", cx);
+}
