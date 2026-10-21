@@ -363,13 +363,17 @@ enum UndoEntry {
 #[derive(Clone)]
 enum StructureUndo {
     Split {
-        prefix: ObjectId,
+        /// The block the split cut text from; `None` when it cut nothing,
+        /// so undo leaves that block's own history alone.
+        prefix: Option<ObjectId>,
         _suffix: ObjectId,
         occurrence: ChildOccurrence,
         index: usize,
     },
     Join {
-        survivor: ObjectId,
+        /// The block the join appended text to; `None` when the joined
+        /// block was empty.
+        survivor: Option<ObjectId>,
         restored: ChildOccurrence,
         index: usize,
     },
@@ -400,8 +404,8 @@ impl StructureUndo {
     /// reverses, if any.
     fn content_object(&self) -> Option<&str> {
         match self {
-            Self::Split { prefix, .. } => Some(prefix),
-            Self::Join { survivor, .. } => Some(survivor),
+            Self::Split { prefix, .. } => prefix.as_deref(),
+            Self::Join { survivor, .. } => survivor.as_deref(),
             Self::Move { .. }
             | Self::Create { .. }
             | Self::Unlink { .. }
@@ -1204,10 +1208,11 @@ impl CompositionSession {
         let Ok(tail) = slice_delta_utf8(&content, offset, len) else {
             return ApplyResult::default();
         };
-        if offset < len {
+        let cut = offset < len;
+        if cut {
             let _ = content.delete_utf8(offset, len - offset);
+            document.finish_direct();
         }
-        document.finish_direct();
 
         let suffix_id = self.ids.alloc_block();
         let relation_id = self.ids.alloc_child();
@@ -1248,7 +1253,7 @@ impl CompositionSession {
             .push(child_relation(&occurrence, false));
         self.pending_placements.push((relation_id.clone(), place));
         self.push_undo(UndoEntry::Structure(StructureUndo::Split {
-            prefix: resolved.content_id,
+            prefix: cut.then_some(resolved.content_id),
             _suffix: suffix_id.clone(),
             occurrence,
             index,
@@ -1318,14 +1323,17 @@ impl CompositionSession {
             return ApplyResult::default();
         };
         let caret = survivor_text.len_utf8();
-        let _ = replay_delta_at(&survivor_text, caret, &delta);
-        survivor_doc.finish_direct();
+        let appended = !delta.is_empty();
+        if appended {
+            let _ = replay_delta_at(&survivor_text, caret, &delta);
+            survivor_doc.finish_direct();
+        }
 
         let index = resolved.occurrence_index;
         self.occurrences.remove(index);
         self.pending_relations.push(child_relation(&source, true));
         self.push_undo(UndoEntry::Structure(StructureUndo::Join {
-            survivor: survivor_id.clone(),
+            survivor: appended.then(|| survivor_id.clone()),
             restored: source,
             index,
         }));
@@ -1488,6 +1496,20 @@ impl CompositionSession {
         }
     }
 
+    fn step_document(&mut self, id: Option<&str>, redo: bool) {
+        let Some(document) = id
+            .and_then(|id| self.objects.get_mut(id))
+            .and_then(|session| session.document.as_mut())
+        else {
+            return;
+        };
+        if redo {
+            document.redo();
+        } else {
+            document.undo();
+        }
+    }
+
     fn reverse_structure(&mut self, change: &StructureUndo, redo: bool) {
         match change {
             StructureUndo::Split {
@@ -1512,11 +1534,7 @@ impl CompositionSession {
                                 .unwrap_or_else(|| occurrence.relation_id.clone()),
                         },
                     ));
-                    if let Some(session) = self.objects.get_mut(prefix) {
-                        if let Some(document) = session.document.as_mut() {
-                            document.redo();
-                        }
-                    }
+                    self.step_document(prefix.as_deref(), true);
                 } else {
                     if *index < self.occurrences.len()
                         && self.occurrences[*index].relation_id == occurrence.relation_id
@@ -1525,11 +1543,7 @@ impl CompositionSession {
                     }
                     self.pending_relations
                         .push(child_relation(occurrence, true));
-                    if let Some(session) = self.objects.get_mut(prefix) {
-                        if let Some(document) = session.document.as_mut() {
-                            document.undo();
-                        }
-                    }
+                    self.step_document(prefix.as_deref(), false);
                 }
             }
             StructureUndo::Join {
@@ -1550,19 +1564,11 @@ impl CompositionSession {
                         self.occurrences.remove(ix);
                     }
                     self.pending_relations.push(child_relation(restored, true));
-                    if let Some(session) = self.objects.get_mut(survivor) {
-                        if let Some(document) = session.document.as_mut() {
-                            document.redo();
-                        }
-                    }
+                    self.step_document(survivor.as_deref(), true);
                 } else {
                     self.occurrences.insert(*index, restored.clone());
                     self.pending_relations.push(child_relation(restored, false));
-                    if let Some(session) = self.objects.get_mut(survivor) {
-                        if let Some(document) = session.document.as_mut() {
-                            document.undo();
-                        }
-                    }
+                    self.step_document(survivor.as_deref(), false);
                 }
             }
             StructureUndo::Move { from, to } => {

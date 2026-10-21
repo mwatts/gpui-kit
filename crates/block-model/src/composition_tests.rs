@@ -1341,3 +1341,80 @@ fn an_acknowledgement_marks_only_what_its_draft_carried() {
     assert!(session.draft().relations.is_empty());
     assert!(session.draft().placements.is_empty());
 }
+
+fn split(session: &mut CompositionSession, block: &str, child: &str, offset: usize) {
+    session.apply(
+        BlockOp::SplitBlock {
+            id: BlockId(block.into()),
+            offset,
+        },
+        Some(&occ(child)),
+    );
+}
+
+#[test]
+fn undoing_a_split_at_the_end_keeps_the_edit_before_it() {
+    let mut session = CompositionSession::open(
+        fixture(),
+        EditorGate::Notes,
+        ids(&[SUFFIX_BLOCK], &[SUFFIX_CHILD]),
+    );
+    insert(&mut session, BLOCK_A, CHILD_A1, 5, "x");
+    split(&mut session, BLOCK_A, CHILD_A1, 6);
+    assert_eq!(plains(&session), ["alphax", "", "bravo", "alphax"]);
+
+    assert!(session.undo());
+    assert_eq!(plains(&session), ["alphax", "bravo", "alphax"]);
+    assert!(session.redo());
+    assert_eq!(plains(&session), ["alphax", "", "bravo", "alphax"]);
+    assert!(session.undo());
+    assert!(session.undo());
+    assert_eq!(plains(&session), ["alpha", "bravo", "alpha"]);
+    assert!(!session.can_undo());
+}
+
+#[test]
+fn undoing_a_split_in_the_middle_restores_the_text_in_one_step() {
+    let mut session = CompositionSession::open(
+        fixture(),
+        EditorGate::Notes,
+        ids(&[SUFFIX_BLOCK], &[SUFFIX_CHILD]),
+    );
+    insert(&mut session, BLOCK_A, CHILD_A1, 5, "x");
+    split(&mut session, BLOCK_A, CHILD_A1, 2);
+    assert_eq!(plains(&session), ["al", "phax", "bravo", "al"]);
+
+    assert!(session.undo());
+    assert_eq!(plains(&session), ["alphax", "bravo", "alphax"]);
+    assert!(session.redo());
+    assert_eq!(plains(&session), ["al", "phax", "bravo", "al"]);
+    assert!(session.undo());
+    assert!(session.undo());
+    assert_eq!(plains(&session), ["alpha", "bravo", "alpha"]);
+}
+
+#[test]
+fn undoing_a_join_of_an_empty_block_keeps_the_edit_before_it() {
+    let mut session = CompositionSession::open(
+        fixture(),
+        EditorGate::Notes,
+        ids(&[SUFFIX_BLOCK], &[SUFFIX_CHILD]),
+    );
+    split(&mut session, BLOCK_A, CHILD_A1, 5);
+    insert(&mut session, BLOCK_A, CHILD_A1, 5, "x");
+    session.apply(
+        BlockOp::MergeWithPrevious {
+            id: BlockId(SUFFIX_BLOCK.into()),
+        },
+        Some(&occ(SUFFIX_CHILD)),
+    );
+    assert_eq!(plains(&session), ["alphax", "bravo", "alphax"]);
+
+    assert!(session.undo());
+    assert_eq!(plains(&session), ["alphax", "", "bravo", "alphax"]);
+    assert!(session.redo());
+    assert_eq!(plains(&session), ["alphax", "bravo", "alphax"]);
+    assert!(session.undo());
+    assert!(session.undo());
+    assert_eq!(plains(&session), ["alpha", "", "bravo", "alpha"]);
+}
