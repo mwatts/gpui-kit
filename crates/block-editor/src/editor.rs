@@ -128,6 +128,27 @@ pub struct Editor {
     host_comments: bool,
     host_annotations: Vec<HostAnnotation>,
     active_host: Option<SharedString>,
+    typing: Option<TypingRun>,
+}
+
+/// Typing that undo takes back as one step: a word and the spaces after
+/// it, typed with nothing else between the keystrokes.
+struct TypingRun {
+    /// The session undo checkpoint where the run's step starts.
+    start: usize,
+    /// The checkpoint after the run's last keystroke; any other edit moves it.
+    end: usize,
+    caret: Cursor,
+    spaced: bool,
+}
+
+impl TypingRun {
+    fn continues(&self, selection: &Selection, checkpoint: usize, text: &str) -> bool {
+        selection.is_collapsed()
+            && *selection.head() == self.caret
+            && checkpoint == self.end
+            && !(self.spaced && !text.starts_with(char::is_whitespace))
+    }
 }
 
 impl Editor {
@@ -199,6 +220,7 @@ impl Editor {
             host_comments: false,
             host_annotations: Vec::new(),
             active_host: None,
+            typing: None,
         };
         editor.refresh_annotations();
         editor
@@ -1049,6 +1071,9 @@ impl Editor {
             .bridge
             .as_ref()
             .map(|session| session.undo_checkpoint());
+        let run = self.typing.take().filter(|run| {
+            checkpoint.is_some_and(|checkpoint| run.continues(&self.selection, checkpoint, text))
+        });
         // Prefix shortcut: completing character must not be inserted.
         let head = self.selection.head().clone();
         if self.selection.is_collapsed() && head.part == Part::Body {
@@ -1103,8 +1128,10 @@ impl Editor {
         }
 
         // Inline rule after insert (plain now includes the typed close).
+        let mut converted = false;
         if let Some(snap) = self.snapshots().iter().find(|s| s.id == head.id) {
             if let Some(ops) = inline_ops(head.id.clone(), &snap.plain, offset) {
+                converted = true;
                 self.apply_many(&ops, cx);
                 if let Some(last) = self.snapshots().iter().find(|s| s.id == head.id) {
                     offset = last.plain.len().min(offset);
@@ -1120,7 +1147,18 @@ impl Editor {
             .unwrap_or(offset);
         self.selection = Selection::caret(head.with_offset(offset.min(len)));
         if let (Some(session), Some(checkpoint)) = (self.bridge.as_mut(), checkpoint) {
-            session.group_since(checkpoint);
+            if converted {
+                session.group_since(checkpoint);
+            } else {
+                let start = run.map_or(checkpoint, |run| run.start);
+                session.group_since(start);
+                self.typing = Some(TypingRun {
+                    start,
+                    end: session.undo_checkpoint(),
+                    caret: self.selection.head().clone(),
+                    spaced: text.ends_with(char::is_whitespace),
+                });
+            }
         }
         self.after_edit(text, cx);
     }
