@@ -7,16 +7,16 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
+use std::sync::Arc;
 
 use block_markdown::{
     BlockId, BlockType, blocks_list, configure_text_styles, ensure_content, find_block,
     insert_block_map, replay_delta_at, slice_delta_utf8,
 };
-use gpui_component_block_view::{BlockSnapshot, Cursor, Part, Selection};
 use loro::{LoroDoc, TextDelta};
 
 use crate::document::BlockDocument;
-use crate::types::{ApplyResult, BlockOp};
+use crate::types::{ApplyResult, BlockOp, BlockSnapshot, Cursor, Part, Selection};
 
 /// Relation type name for ordered Child occurrences.
 pub const CHILD_TYPE: &str = "ashlar.Child";
@@ -208,8 +208,18 @@ impl fmt::Display for ReloadError {
 
 impl std::error::Error for ReloadError {}
 
+/// Which identity [`IdSource`] is asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IdKind {
+    Block,
+    Child,
+}
+
+/// Mints an identity when the session makes a Block or a `Child`.
+pub type IdGenerator = Arc<dyn Fn(IdKind) -> ObjectId + Send + Sync>;
+
 /// How new Block and Child identities are allocated.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub enum IdSource {
     #[default]
     Uuid,
@@ -218,34 +228,46 @@ pub enum IdSource {
         blocks: Vec<ObjectId>,
         children: Vec<ObjectId>,
     },
+    /// The host's allocator, so each new object has its stored id when it is made.
+    Generator(IdGenerator),
+}
+
+impl fmt::Debug for IdSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Uuid => f.write_str("Uuid"),
+            Self::Queue { blocks, children } => f
+                .debug_struct("Queue")
+                .field("blocks", blocks)
+                .field("children", children)
+                .finish(),
+            Self::Generator(_) => f.write_str("Generator"),
+        }
+    }
 }
 
 impl IdSource {
+    fn alloc(&mut self, kind: IdKind) -> ObjectId {
+        let queued = match (self, kind) {
+            (Self::Uuid, _) => None,
+            (Self::Generator(generate), kind) => return generate(kind),
+            (Self::Queue { blocks, .. }, IdKind::Block) => queue_pop(blocks),
+            (Self::Queue { children, .. }, IdKind::Child) => queue_pop(children),
+        };
+        queued.unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+    }
+
     fn alloc_block(&mut self) -> ObjectId {
-        match self {
-            Self::Uuid => uuid::Uuid::new_v4().to_string(),
-            Self::Queue { blocks, .. } => {
-                if blocks.is_empty() {
-                    uuid::Uuid::new_v4().to_string()
-                } else {
-                    blocks.remove(0)
-                }
-            }
-        }
+        self.alloc(IdKind::Block)
     }
 
     fn alloc_child(&mut self) -> ObjectId {
-        match self {
-            Self::Uuid => uuid::Uuid::new_v4().to_string(),
-            Self::Queue { children, .. } => {
-                if children.is_empty() {
-                    uuid::Uuid::new_v4().to_string()
-                } else {
-                    children.remove(0)
-                }
-            }
-        }
+        self.alloc(IdKind::Child)
     }
+}
+
+fn queue_pop(queue: &mut Vec<ObjectId>) -> Option<ObjectId> {
+    (!queue.is_empty()).then(|| queue.remove(0))
 }
 
 struct ContentSession {
@@ -704,7 +726,7 @@ impl CompositionSession {
     }
 
     /// Keep a single keyboard range operation atomic in per-object undo.
-    pub(crate) fn apply_group(&mut self, ops: &[(BlockOp, Option<BlockId>)]) -> ApplyResult {
+    pub fn apply_group(&mut self, ops: &[(BlockOp, Option<BlockId>)]) -> ApplyResult {
         let start = self.undo_checkpoint();
         let mut result = ApplyResult::default();
         for (op, occurrence) in ops {
@@ -714,11 +736,13 @@ impl CompositionSession {
         result
     }
 
-    pub(crate) fn undo_checkpoint(&self) -> usize {
+    /// The session undo log's length, to pass to [`Self::group_since`].
+    pub fn undo_checkpoint(&self) -> usize {
         self.undo_log.len()
     }
 
-    pub(crate) fn group_since(&mut self, start: usize) {
+    /// Fold every undo entry after `start` into one step.
+    pub fn group_since(&mut self, start: usize) {
         if self.undo_log.len() > start + 1 {
             let entries = self.undo_log.drain(start..).collect();
             self.undo_log.push(UndoEntry::Group(entries));

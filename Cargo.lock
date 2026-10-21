@@ -932,6 +932,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "block-model"
+version = "0.1.0"
+dependencies = [
+ "block-markdown",
+ "loro",
+ "uuid",
+]
+
+[[package]]
 name = "block-padding"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4067,6 +4076,7 @@ name = "gpui-component-block-editor"
 version = "0.1.0"
 dependencies = [
  "block-markdown",
+ "block-model",
  "gpui-base",
  "gpui-component",
  "gpui-component-block-view",
@@ -4080,6 +4090,7 @@ name = "gpui-component-block-view"
 version = "0.1.0"
 dependencies = [
  "block-markdown",
+ "block-model",
  "gpui-component",
  "gpui-pre",
  "loro",

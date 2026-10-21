@@ -1,0 +1,19 @@
+[package]
+name = "block-model"
+description = "The block editor's Loro model: documents, ops, compositions, and snapshots, without GPUI"
+version = "0.1.0"
+edition.workspace = true
+license = "MIT"
+publish = false
+
+[lib]
+name = "block_model"
+doctest = false
+
+[dependencies]
+block-markdown.workspace = true
+loro = { workspace = true }
+uuid = { workspace = true }
+
+[lints]
+workspace = true

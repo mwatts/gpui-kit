@@ -12,6 +12,7 @@ doctest = false
 
 [dependencies]
 block-markdown.workspace = true
+block-model.workspace = true
 loro = { workspace = true }
 uuid = { workspace = true }
 

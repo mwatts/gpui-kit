@@ -12,6 +12,7 @@ doctest = false
 
 [dependencies]
 block-markdown.workspace = true
+block-model.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
 loro = { workspace = true }

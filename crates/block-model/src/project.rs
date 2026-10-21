@@ -8,7 +8,7 @@ use block_markdown::{
 };
 use loro::LoroDoc;
 
-use gpui_component_block_view::BlockSnapshot;
+use crate::types::BlockSnapshot;
 
 #[must_use]
 pub fn project(doc: &LoroDoc) -> Vec<BlockSnapshot> {

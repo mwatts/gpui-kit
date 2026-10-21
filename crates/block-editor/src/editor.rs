@@ -24,9 +24,6 @@ use gpui_component_block_view::{
 use loro::{LoroDoc, LoroError};
 
 use crate::accessibility::AccessibilityText;
-use crate::backspace::backspace_at_start;
-use crate::composition::{CompositionDraft, CompositionSession, ObjectVersion, ReloadError};
-use crate::document::BlockDocument;
 use crate::image::{self, Prompt};
 use crate::keys::{
     self, Backspace, CancelUrl, ConfirmUrl, Copy, Cut, Delete, DeleteToHome, DeleteWordLeft,
@@ -36,12 +33,14 @@ use crate::keys::{
     SelectUp, SelectWordLeft, SelectWordRight, SplitBlock, ToggleBold, ToggleCode, ToggleItalic,
     ToggleStrike, Undo, Up, WordLeft, WordRight,
 };
-use crate::link::{self, Choice as LinkChoice};
 use crate::mark::Mark;
 use crate::registry::SlashAction;
-use crate::shortcut::{inline_ops, try_prefix};
 use crate::slash::Slash;
-use crate::types::{ApplyResult, BlockOp, BlockSnapshot, CommentId, LwwValue};
+use block_model::{
+    ApplyResult, BlockDocument, BlockOp, BlockSnapshot, CommentId, CompositionDraft,
+    CompositionSession, LinkChoice, LinkPaste, LwwValue, ObjectVersion, ReloadError,
+    backspace_at_start, inline_ops, try_prefix,
+};
 
 const PLACEHOLDER: &str = "Type / for commands";
 const BLINK: Duration = Duration::from_millis(500);
@@ -108,7 +107,7 @@ pub struct Editor {
     /// Scroll offset for the slash menu. Arrow keys reveal the active row;
     /// the wheel moves this handle.
     pub(crate) slash_scroll: ScrollHandle,
-    pub(crate) pasted: Option<link::Paste>,
+    pub(crate) pasted: Option<LinkPaste>,
     url_prompt: Option<Prompt>,
     pub(crate) dropping: Option<BlockId>,
     pub(crate) hovered: Option<BlockId>,
@@ -1309,7 +1308,7 @@ impl Editor {
             .is_some_and(|s| s.plain.is_empty() || s.plain == url);
         self.insert_text(&url, cx);
         let at = at.with_offset(self.selection.head().offset.saturating_sub(url.len()));
-        self.pasted = Some(link::Paste::open(at, url, alone));
+        self.pasted = Some(LinkPaste::open(at, url, alone));
         cx.notify();
     }
 

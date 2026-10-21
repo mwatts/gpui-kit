@@ -3,49 +3,34 @@
 //! Ported from Bezel editor chrome and Catena/Mikra Loro patterns. See `NOTICE`.
 
 mod accessibility;
-mod apply;
-mod backspace;
 mod chrome;
-mod composition;
-mod document;
 mod editor;
 mod icons;
 mod image;
 mod input;
 mod keys;
 mod layout;
-mod link;
 mod mark;
-mod project;
 mod registry;
-mod shortcut;
 mod slash;
-mod types;
 
-pub use backspace::backspace_at_start;
-pub use composition::{
-    CHILD_TYPE, ChildOccurrence, CompositionDraft, CompositionObject, CompositionRead,
-    CompositionSession, EditorGate, IdSource, MutationReadSet, ObjectVersion, PlaceIntent,
-    RelationMutation, ReloadError, encode_block,
+pub use block_model::{
+    Align, ApplyResult, BlockDocument, BlockId, BlockOp, BlockSnapshot, BlockType, CHILD_TYPE,
+    ChildOccurrence, CommentId, CommentState, CompositionDraft, CompositionObject, CompositionRead,
+    CompositionSession, Cursor, EditorGate, Form, IdGenerator, IdKind, IdSource, LinkChoice,
+    LinkPaste, LwwValue, MutationReadSet, ObjectVersion, Part, PlaceIntent, PrefixKind,
+    RelationMutation, ReloadError, Selection, TableData, backspace_at_start, encode_block,
+    inline_ops, match_inline, match_prefix, prefix_ops, try_inline, try_prefix,
 };
-pub use document::BlockDocument;
 pub use editor::{CommentThread, Editor, EditorEvent, HostAnnotation};
 pub use image::{ImageStore, Source, saved_image_reference, set_image_store};
 pub use keys::{CONTEXT, init as keys_init};
 pub use layout::{Layout, set_layout};
-pub use link::{Choice as LinkChoice, Paste as LinkPaste};
 pub use mark::Mark;
 pub use registry::{MarkRegistry, MarkSpec, SlashAction, SlashCommand, SlashRegistry};
-pub use shortcut::{
-    PrefixKind, inline_ops, match_inline, match_prefix, prefix_ops, try_inline, try_prefix,
-};
 pub use slash::{Filter as SlashFilter, Slash, filter_indices, items as slash_items};
-pub use types::{
-    Align, ApplyResult, BlockOp, BlockSnapshot, CommentId, Cursor, LwwValue, Part, Selection,
-    TableData,
-};
 
-pub use block_markdown::{BlockId, BlockType, CommentState, Form};
+pub use block_model;
 pub use gpui_component_block_view as block_view;
 
 use std::borrow::Cow;
@@ -91,11 +76,6 @@ fn register_geist_fonts(cx: &mut App) {
 #[must_use]
 pub const fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
-}
-
-#[cfg(test)]
-mod tests {
-    include!("lib_model_tests.rs");
 }
 
 #[cfg(test)]

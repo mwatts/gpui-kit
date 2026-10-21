@@ -1,7 +1,7 @@
 //! Paste-URL menu: a URL landed, and what it could be instead (Bezel `link.rs`).
 
+use crate::types::Cursor;
 use block_markdown::is_image;
-use gpui_component_block_view::Cursor;
 
 /// What a row does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,7 +72,7 @@ impl Paste {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui_component_block_view::Part;
+    use crate::types::Part;
 
     #[test]
     fn choices_not_alone() {

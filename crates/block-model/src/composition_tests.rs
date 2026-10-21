@@ -346,6 +346,49 @@ fn create_emits_block_and_child_intents() {
 }
 
 #[test]
+fn generator_names_each_block_and_child_as_it_is_made() {
+    let minted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = minted.clone();
+    let source = IdSource::Generator(std::sync::Arc::new(move |kind| {
+        let mut log = log.lock().unwrap();
+        log.push(kind);
+        format!("ashlar/{kind:?}/opaque/gen{}", log.len()).to_lowercase()
+    }));
+    let mut session = CompositionSession::open(fixture(), EditorGate::Notes, source);
+    session.create(BlockType::Paragraph, Some(CHILD_B1));
+    session.apply(
+        BlockOp::SplitBlock {
+            id: BlockId(BLOCK_A.into()),
+            offset: 2,
+        },
+        Some(&occ(CHILD_A1)),
+    );
+    let rows: Vec<(String, String)> = session
+        .snapshots()
+        .iter()
+        .map(|snap| (snap.id.0.clone(), snap.paint_id().0.clone()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (BLOCK_A, CHILD_A1),
+            ("ashlar/block/opaque/gen3", "ashlar/child/opaque/gen4"),
+            (BLOCK_B, CHILD_B1),
+            ("ashlar/block/opaque/gen1", "ashlar/child/opaque/gen2"),
+            (BLOCK_A, CHILD_A2),
+        ]
+        .map(|(id, occurrence)| (id.to_string(), occurrence.to_string()))
+    );
+    let draft = session.draft();
+    assert!(draft.content.contains_key("ashlar/block/opaque/gen1"));
+    assert!(draft.content.contains_key("ashlar/block/opaque/gen3"));
+    assert_eq!(
+        *minted.lock().unwrap(),
+        [IdKind::Block, IdKind::Child, IdKind::Block, IdKind::Child]
+    );
+}
+
+#[test]
 fn undo_survives_save_flush_per_object() {
     let mut session = open_fixture();
     session.apply(

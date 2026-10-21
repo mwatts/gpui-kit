@@ -2,8 +2,7 @@
 
 use block_markdown::BlockType;
 
-use crate::types::{BlockOp, Cursor, Part};
-use gpui_component_block_view::BlockSnapshot;
+use crate::types::{BlockOp, BlockSnapshot, Cursor, Part};
 
 /// Emit ops for Backspace at offset 0 (Bezel `merge_back` order).
 ///
@@ -87,8 +86,8 @@ pub fn backspace_at_start(snapshots: &[BlockSnapshot], cursor: &Cursor) -> Vec<B
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::BlockSnapshot;
     use block_markdown::BlockId;
-    use gpui_component_block_view::BlockSnapshot;
     use loro::TextDelta;
 
     fn snap(id: &str, kind: BlockType, indent: i64, plain: &str) -> BlockSnapshot {

@@ -8,7 +8,7 @@ use gpui::{Context, EntityInputHandler, UTF16Selection, Window};
 use gpui_component_block_view::{Composition, Cursor, Part, Selection};
 
 use crate::editor::Editor;
-use crate::types::BlockOp;
+use block_model::BlockOp;
 
 impl Editor {
     /// Plain UTF-8 text for one editable block part.

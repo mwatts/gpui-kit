@@ -2,6 +2,7 @@
 default-members = ["crates/story"]
 members = [
     "crates/block-editor",
+    "crates/block-model",
     "crates/block-view",
     "crates/markdown",
     "crates/kit",
@@ -51,6 +52,7 @@ edition = "2024"
 
 [workspace.dependencies]
 block-markdown = { path = "crates/markdown" }
+block-model = { path = "crates/block-model" }
 gpui-component-block-editor = { path = "crates/block-editor" }
 gpui-component-block-view = { path = "crates/block-view" }
 loro = "1.13"

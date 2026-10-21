@@ -5,8 +5,7 @@ use loro::{ExportMode, LoroDoc, LoroResult, UndoManager};
 
 use crate::apply;
 use crate::project;
-use crate::types::{ApplyResult, BlockOp};
-use gpui_component_block_view::BlockSnapshot;
+use crate::types::{ApplyResult, BlockOp, BlockSnapshot};
 
 const MERGE_INTERVAL_MS: i64 = 500;
 
