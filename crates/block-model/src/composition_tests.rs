@@ -994,8 +994,7 @@ fn insert(session: &mut CompositionSession, block: &str, child: &str, offset: us
     );
 }
 
-/// A structure commit on `block`, so it is its own step in that object's
-/// document history rather than merging into recent typing.
+/// A structure commit on `block`.
 fn to_paragraph(session: &mut CompositionSession, block: &str, child: &str) {
     session.apply(
         BlockOp::SetType {
@@ -1235,4 +1234,110 @@ fn an_untouched_two_peer_block_is_clean() {
         }
     }
     assert_eq!(dirty, 0, "untouched blocks reported dirty");
+}
+
+#[test]
+fn each_edit_is_its_own_undo_step() {
+    let mut session = open_fixture();
+    insert(&mut session, BLOCK_A, CHILD_A1, 5, "1");
+    insert(&mut session, BLOCK_A, CHILD_A1, 6, "2");
+    insert(&mut session, BLOCK_A, CHILD_A1, 7, "3");
+    assert_eq!(plains(&session)[0], "alpha123");
+
+    assert!(session.undo());
+    assert_eq!(plains(&session)[0], "alpha12");
+    assert!(session.undo());
+    assert_eq!(plains(&session)[0], "alpha1");
+    assert!(session.undo());
+    assert_eq!(plains(&session)[0], "alpha");
+    assert!(!session.can_undo());
+    assert!(session.redo());
+    assert_eq!(plains(&session)[0], "alpha1");
+}
+
+#[test]
+fn a_group_undoes_as_one_step() {
+    let mut session = open_fixture();
+    insert(&mut session, BLOCK_A, CHILD_A1, 5, "1");
+    let start = session.undo_checkpoint();
+    insert(&mut session, BLOCK_A, CHILD_A1, 6, "2");
+    insert(&mut session, BLOCK_A, CHILD_A1, 7, "3");
+    session.group_since(start);
+
+    assert!(session.undo());
+    assert_eq!(plains(&session)[0], "alpha1");
+    assert!(session.undo());
+    assert_eq!(plains(&session)[0], "alpha");
+}
+
+#[test]
+fn an_acknowledgement_marks_only_what_its_draft_carried() {
+    let mut session = CompositionSession::open(
+        fixture(),
+        EditorGate::Notes,
+        ids(&[NEW_BLOCK, SUFFIX_BLOCK], &[NEW_CHILD, SUFFIX_CHILD]),
+    );
+    let body = (NOTE.to_string(), "body".to_string());
+    insert(&mut session, BLOCK_A, CHILD_A1, 5, "1");
+    session.create(BlockType::Paragraph, Some(CHILD_B1));
+    let sent = session.draft();
+    let mark = session.save_mark();
+    assert_eq!(sent.content.len(), 2);
+    assert_eq!(sent.placements.len(), 1);
+
+    // While the draft is in flight: more typing in A, a first edit of B,
+    // and another new block.
+    insert(&mut session, BLOCK_A, CHILD_A1, 6, "2");
+    insert(&mut session, BLOCK_B, CHILD_B1, 5, "!");
+    session.create(BlockType::Paragraph, Some(NEW_CHILD));
+
+    session.acknowledge(
+        mark,
+        BTreeMap::from([
+            (BLOCK_A.to_string(), ObjectVersion("a2".into())),
+            (NEW_BLOCK.to_string(), ObjectVersion("n1".into())),
+        ]),
+        BTreeMap::from([(body.clone(), ObjectVersion("col-2".into()))]),
+    );
+
+    let next = session.draft();
+    assert_eq!(
+        next.content.keys().cloned().collect::<Vec<_>>(),
+        [BLOCK_A, BLOCK_B, SUFFIX_BLOCK],
+        "edits made during the save stay unsaved; the saved new block does not"
+    );
+    assert_eq!(
+        next.read_set.objects,
+        BTreeMap::from([
+            (BLOCK_A.to_string(), ObjectVersion("a2".into())),
+            (BLOCK_B.to_string(), ObjectVersion("v1".into())),
+        ])
+    );
+    let alpha = BlockDocument::import_snapshot(&next.content[BLOCK_A]).unwrap();
+    assert_eq!(alpha.snapshots()[0].plain, "alpha12");
+    assert_eq!(
+        next.relations
+            .iter()
+            .map(|relation| relation.id.as_str())
+            .collect::<Vec<_>>(),
+        [SUFFIX_CHILD],
+        "only the Child made during the save is new"
+    );
+    assert_eq!(
+        next.placements
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .collect::<Vec<_>>(),
+        [SUFFIX_CHILD]
+    );
+    assert_eq!(
+        next.read_set.collections.get(&body),
+        Some(&ObjectVersion("col-2".into()))
+    );
+
+    let mark = session.save_mark();
+    session.acknowledge(mark, BTreeMap::new(), BTreeMap::new());
+    assert_eq!(session.draft().content.len(), 0);
+    assert!(session.draft().relations.is_empty());
+    assert!(session.draft().placements.is_empty());
 }

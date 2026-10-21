@@ -300,24 +300,6 @@ pub enum BlockOp {
 }
 
 impl BlockOp {
-    #[must_use]
-    pub fn is_structure(&self) -> bool {
-        matches!(
-            self,
-            Self::SplitBlock { .. }
-                | Self::SetType { .. }
-                | Self::Move { .. }
-                | Self::Indent { .. }
-                | Self::Outdent { .. }
-                | Self::DeleteBlock { .. }
-                | Self::MergeWithPrevious { .. }
-                | Self::DeleteCrossBlock { .. }
-                | Self::UnwrapToParagraph { .. }
-                | Self::AddComment { .. }
-                | Self::DeleteComment { .. }
-        )
-    }
-
     /// Content or occurrence id named by this op, when it targets a block.
     #[must_use]
     pub fn target_id(&self) -> Option<&BlockId> {

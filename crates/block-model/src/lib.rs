@@ -18,7 +18,7 @@ pub use backspace::backspace_at_start;
 pub use composition::{
     CHILD_TYPE, ChildOccurrence, CompositionDraft, CompositionObject, CompositionRead,
     CompositionSession, EditorGate, IdGenerator, IdKind, IdSource, MutationReadSet, ObjectVersion,
-    PlaceIntent, RelationMutation, ReloadError, encode_block,
+    PlaceIntent, RelationMutation, ReloadError, SaveMark, encode_block,
 };
 pub use document::BlockDocument;
 pub use link::{Choice as LinkChoice, Paste as LinkPaste};

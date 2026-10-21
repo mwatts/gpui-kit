@@ -7,9 +7,11 @@ use crate::apply;
 use crate::project;
 use crate::types::{ApplyResult, BlockOp, BlockSnapshot};
 
-const MERGE_INTERVAL_MS: i64 = 500;
-
 /// Loro-backed block document. View paints [`Self::snapshots`] only.
+///
+/// Each commit is its own undo step: Loro never merges commits by time,
+/// so a caller that keeps its own undo log (a [`crate::CompositionSession`])
+/// pops exactly the step it pushed. Callers group steps themselves.
 pub struct BlockDocument {
     doc: LoroDoc,
     undo: UndoManager,
@@ -29,7 +31,7 @@ impl BlockDocument {
     pub fn from_loro(doc: LoroDoc) -> Self {
         let mut undo = UndoManager::new(&doc);
         undo.set_max_undo_steps(100);
-        undo.set_merge_interval(MERGE_INTERVAL_MS);
+        undo.set_merge_interval(0);
         let snapshots = project::project(&doc);
         Self {
             doc,
@@ -64,7 +66,6 @@ impl BlockDocument {
         if ops.is_empty() {
             return ApplyResult::default();
         }
-        let structure = ops.iter().any(BlockOp::is_structure);
         let mut last = ApplyResult::default();
         for op in ops {
             match apply::perform(&self.doc, op.clone()) {
@@ -74,28 +75,14 @@ impl BlockDocument {
                 }
             }
         }
-        self.commit(structure);
+        self.doc.commit();
         self.snapshots = project::project(&self.doc);
         last
     }
 
-    fn commit(&mut self, structure: bool) {
-        if structure {
-            // Structure must not merge into the previous typing group.
-            self.undo.set_merge_interval(0);
-            self.doc.set_next_commit_origin("structure:");
-        } else {
-            self.doc.set_next_commit_origin("typing");
-        }
-        self.doc.commit();
-        if structure {
-            self.undo.set_merge_interval(MERGE_INTERVAL_MS);
-        }
-    }
-
     /// Commit a direct Loro mutation so per-object undo still tracks it.
-    pub(crate) fn finish_direct(&mut self, structure: bool) {
-        self.commit(structure);
+    pub(crate) fn finish_direct(&mut self) {
+        self.doc.commit();
         self.snapshots = project::project(&self.doc);
     }
 

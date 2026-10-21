@@ -187,6 +187,18 @@ pub struct CompositionDraft {
     pub new_images: BTreeMap<String, Vec<u8>>,
 }
 
+/// What one draft carried, from [`CompositionSession::save_mark`]: what
+/// [`CompositionSession::acknowledge`] marks saved.
+#[derive(Debug, Clone)]
+pub struct SaveMark {
+    /// Each dirty object and its operation log when the draft was taken.
+    objects: BTreeMap<ObjectId, Option<loro::VersionVector>>,
+    occurrences: Vec<ChildOccurrence>,
+    /// How many staged relations and placements the draft carried.
+    relations: usize,
+    placements: usize,
+}
+
 /// Why [`CompositionSession::reload_object`] refused to reload an object.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReloadError {
@@ -304,11 +316,6 @@ impl ContentSession {
         self.document
             .as_ref()
             .map(|document| document.doc().oplog_vv())
-    }
-
-    fn mark_stored(&mut self) {
-        self.baseline = self.oplog();
-        self.created = false;
     }
 
     fn kind(&self) -> BlockType {
@@ -924,43 +931,76 @@ impl CompositionSession {
         placements
     }
 
-    /// Mark the current draft as saved without clearing per-object undo.
+    /// What [`Self::draft`] carries now, for [`Self::acknowledge`] once
+    /// that draft is saved. Take both in the same borrow.
+    #[must_use]
+    pub fn save_mark(&self) -> SaveMark {
+        SaveMark {
+            objects: self
+                .objects
+                .iter()
+                .filter(|(_, session)| session.dirty())
+                .map(|(id, session)| (id.clone(), session.oplog()))
+                .collect(),
+            occurrences: self.occurrences.clone(),
+            relations: self.pending_relations.len(),
+            placements: self.pending_placements.len(),
+        }
+    }
+
+    /// The draft `mark` describes is saved: its objects at the operations
+    /// it carried, its structure, and the versions the save wrote. Edits
+    /// applied since the mark stay unsaved, so a session may keep editing
+    /// while a save is in flight. Undo history is kept.
     ///
-    /// After a save that carried relations or placements, use
-    /// [`Self::acknowledge_save_with_collections`] so the next draft's
-    /// `read_set.collections` expects the versions that save wrote.
+    /// `versions` names each saved object's new version; when it is empty
+    /// every marked object counts as saved and keeps its expected version.
+    /// `collections` are the `(parent, slot)` versions the save wrote;
+    /// collections not named keep their previous expected version.
+    pub fn acknowledge(
+        &mut self,
+        mark: SaveMark,
+        versions: BTreeMap<ObjectId, ObjectVersion>,
+        collections: BTreeMap<(ObjectId, String), ObjectVersion>,
+    ) {
+        self.collection_versions.extend(collections);
+        for (id, oplog) in mark.objects {
+            if !versions.is_empty() && !versions.contains_key(&id) {
+                continue;
+            }
+            if let Some(session) = self.objects.get_mut(&id) {
+                if let Some(version) = versions.get(&id) {
+                    session.version = version.clone();
+                }
+                session.baseline = oplog;
+                session.created = false;
+            }
+        }
+        self.pending_relations
+            .drain(..mark.relations.min(self.pending_relations.len()));
+        self.pending_placements
+            .drain(..mark.placements.min(self.pending_placements.len()));
+        self.saved_occurrences = mark
+            .occurrences
+            .into_iter()
+            .map(|child| (child.relation_id.clone(), child))
+            .collect();
+    }
+
+    /// [`Self::acknowledge`] for the session as it is now: for a caller
+    /// that applies nothing while its draft is in flight.
     pub fn acknowledge_save(&mut self, versions: BTreeMap<ObjectId, ObjectVersion>) {
         self.acknowledge_save_with_collections(versions, BTreeMap::new());
     }
 
-    /// [`Self::acknowledge_save`] plus the ordered-collection versions the
-    /// save wrote, keyed by `(parent, slot)`. Collections not named keep
-    /// their previous expected version.
+    /// [`Self::acknowledge_save`] plus the collection versions the save
+    /// wrote.
     pub fn acknowledge_save_with_collections(
         &mut self,
         versions: BTreeMap<ObjectId, ObjectVersion>,
         collections: BTreeMap<(ObjectId, String), ObjectVersion>,
     ) {
-        self.collection_versions.extend(collections);
-        if versions.is_empty() {
-            for session in self.objects.values_mut() {
-                session.mark_stored();
-            }
-        } else {
-            for (id, version) in versions {
-                if let Some(session) = self.objects.get_mut(&id) {
-                    session.version = version;
-                    session.mark_stored();
-                }
-            }
-        }
-        self.pending_relations.clear();
-        self.pending_placements.clear();
-        self.saved_occurrences = self
-            .occurrences
-            .iter()
-            .map(|child| (child.relation_id.clone(), child.clone()))
-            .collect();
+        self.acknowledge(self.save_mark(), versions, collections);
     }
 
     /// Replace one content object's bytes and acknowledged version, for
@@ -1167,7 +1207,7 @@ impl CompositionSession {
         if offset < len {
             let _ = content.delete_utf8(offset, len - offset);
         }
-        document.finish_direct(true);
+        document.finish_direct();
 
         let suffix_id = self.ids.alloc_block();
         let relation_id = self.ids.alloc_child();
@@ -1279,7 +1319,7 @@ impl CompositionSession {
         };
         let caret = survivor_text.len_utf8();
         let _ = replay_delta_at(&survivor_text, caret, &delta);
-        survivor_doc.finish_direct(true);
+        survivor_doc.finish_direct();
 
         let index = resolved.occurrence_index;
         self.occurrences.remove(index);
@@ -1935,7 +1975,9 @@ fn remap_op(op: BlockOp, internal: &BlockId) -> BlockOp {
         BlockOp::ToggleCheck { .. } => BlockOp::ToggleCheck {
             id: internal.clone(),
         },
-        BlockOp::SetLink { start, end, url, .. } => BlockOp::SetLink {
+        BlockOp::SetLink {
+            start, end, url, ..
+        } => BlockOp::SetLink {
             id: internal.clone(),
             start,
             end,
